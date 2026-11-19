@@ -1,6 +1,8 @@
 package com.voxora.player.navigation
 
+import android.Manifest
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.WindowInsets
@@ -30,6 +32,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -49,6 +54,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.voxora.player.VoxoraApplication
+import com.voxora.player.data.update.UpdateUiState
+import com.voxora.player.ui.components.InAppUpdateDialog
 import com.voxora.player.ui.screens.FolderDetailScreen
 import com.voxora.player.ui.screens.FoldersScreen
 import com.voxora.player.ui.screens.HistoryScreen
@@ -60,7 +67,9 @@ import com.voxora.player.ui.theme.LocalVoxoraColors
 import com.voxora.player.ui.viewmodel.LibraryViewModel
 import com.voxora.player.ui.viewmodel.PlayerViewModel
 import com.voxora.player.ui.viewmodel.SettingsViewModel
+import com.voxora.player.ui.viewmodel.UpdateViewModel
 import kotlinx.serialization.Serializable
+import java.io.File
 
 @Serializable data object HomeRoute
 @Serializable data object VideosRoute
@@ -85,7 +94,9 @@ private data class BottomNavTab(
 @Composable
 fun VoxoraApp(
     incomingVideoUri: Uri?,
-    onIncomingUriConsumed: () -> Unit
+    onIncomingUriConsumed: () -> Unit,
+    openUpdateDialogRequest: Boolean = false,
+    onUpdateDialogRequestConsumed: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as VoxoraApplication
@@ -95,10 +106,27 @@ fun VoxoraApp(
 
     val libraryViewModel: LibraryViewModel = viewModel(factory = LibraryViewModel.Factory(app))
     val settingsViewModel: SettingsViewModel = viewModel(factory = SettingsViewModel.Factory(app))
+    val updateViewModel: UpdateViewModel = viewModel(factory = UpdateViewModel.Factory(app))
 
     val libraryState by libraryViewModel.uiState.collectAsStateWithLifecycle()
     val preferences by settingsViewModel.preferences.collectAsStateWithLifecycle()
     val statusBanner by settingsViewModel.statusBanner.collectAsStateWithLifecycle()
+    val updateState by updateViewModel.updateState.collectAsStateWithLifecycle()
+    val showUpdateDialog by updateViewModel.showUpdateDialog.collectAsStateWithLifecycle()
+    val pendingInstallAfterPermission by updateViewModel.pendingInstallAfterPermission.collectAsStateWithLifecycle()
+
+    var hasNotificationPermission by remember {
+        mutableStateOf(app.updateNotificationHelper.hasNotificationPermission())
+    }
+    var canInstallPackages by remember {
+        mutableStateOf(app.appUpdateManager.canRequestPackageInstalls())
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasNotificationPermission = granted || app.updateNotificationHelper.hasNotificationPermission()
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -122,11 +150,58 @@ fun VoxoraApp(
         }
     }
 
-    // Refresh library when returning from permission settings or background
-    DisposableEffect(lifecycleOwner) {
+    fun launchApkInstaller(apkPath: String) {
+        val file = File(apkPath)
+        if (!file.exists()) return
+        if (app.appUpdateManager.canRequestPackageInstalls()) {
+            runCatching {
+                context.startActivity(app.appUpdateManager.createInstallApkIntent(file))
+            }
+        } else {
+            updateViewModel.markPendingInstallAfterPermission(true)
+            runCatching {
+                context.startActivity(app.appUpdateManager.createUnknownAppSourcesIntent())
+            }
+        }
+    }
+
+    // Request notification permission once on Android 13+ so update alerts appear reliably
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    // Check GitHub Releases automatically on launch when enabled
+    LaunchedEffect(preferences.autoCheckUpdates) {
+        updateViewModel.checkOnStartupIfEnabled(preferences.autoCheckUpdates)
+    }
+
+    // Handle tapping an update notification
+    LaunchedEffect(openUpdateDialogRequest) {
+        if (openUpdateDialogRequest) {
+            val current = updateState
+            if (current is UpdateUiState.Idle || current is UpdateUiState.UpToDate) {
+                updateViewModel.checkForUpdates(isManual = true)
+            }
+            updateViewModel.openUpdateDialog()
+            onUpdateDialogRequestConsumed()
+        }
+    }
+
+    // Refresh library and re-check install/notification permissions on resume
+    DisposableEffect(lifecycleOwner, updateState, pendingInstallAfterPermission) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 libraryViewModel.refreshLibrary()
+                hasNotificationPermission = app.updateNotificationHelper.hasNotificationPermission()
+                val nowCanInstall = app.appUpdateManager.canRequestPackageInstalls()
+                canInstallPackages = nowCanInstall
+                val readyState = updateState as? UpdateUiState.ReadyToInstall
+                if (pendingInstallAfterPermission && nowCanInstall && readyState != null) {
+                    updateViewModel.markPendingInstallAfterPermission(false)
+                    launchApkInstaller(readyState.apkFilePath)
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -243,6 +318,8 @@ fun VoxoraApp(
             composable<HomeRoute> {
                 HomeScreen(
                     uiState = libraryState,
+                    updateState = updateState,
+                    onOpenUpdateDialog = updateViewModel::openUpdateDialog,
                     onPlayVideo = { video ->
                         navController.navigate(
                             PlayerRoute(video.uriString, video.title, -1L)
@@ -333,7 +410,16 @@ fun VoxoraApp(
                 SettingsScreen(
                     preferences = preferences,
                     statusBanner = statusBanner,
-                    viewModel = settingsViewModel
+                    viewModel = settingsViewModel,
+                    updateState = updateState,
+                    hasNotificationPermission = hasNotificationPermission,
+                    onCheckForUpdates = { updateViewModel.checkForUpdates(isManual = true) },
+                    onOpenUpdateDialog = updateViewModel::openUpdateDialog,
+                    onRequestNotificationPermission = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    }
                 )
             }
 
@@ -352,5 +438,28 @@ fun VoxoraApp(
                 )
             }
         }
+    }
+
+    if (showUpdateDialog) {
+        InAppUpdateDialog(
+            state = updateState,
+            canInstallPackages = canInstallPackages,
+            onDownload = updateViewModel::startDownload,
+            onCancelDownload = updateViewModel::cancelDownload,
+            onInstallApk = ::launchApkInstaller,
+            onOpenUnknownSourcesSettings = {
+                updateViewModel.markPendingInstallAfterPermission(true)
+                runCatching {
+                    context.startActivity(app.appUpdateManager.createUnknownAppSourcesIntent())
+                }
+            },
+            onOpenReleasePage = { url ->
+                runCatching {
+                    context.startActivity(app.appUpdateManager.createOpenReleasePageIntent(url))
+                }
+            },
+            onRetryCheck = { updateViewModel.checkForUpdates(isManual = true) },
+            onDismiss = updateViewModel::dismissUpdateDialog
+        )
     }
 }

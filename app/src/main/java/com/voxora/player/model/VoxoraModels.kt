@@ -195,7 +195,8 @@ data class UserPreferences(
     val batterySaverMode: BatterySaverMode = BatterySaverMode.AUTO,
     val batterySaverThresholdPercent: Int = 20,
     val batterySaverCapRefreshRate: Boolean = true,
-    val batterySaverDisableAnimations: Boolean = true
+    val batterySaverDisableAnimations: Boolean = true,
+    val autoCheckUpdates: Boolean = true
 )
 
 enum class MediaPermissionState {

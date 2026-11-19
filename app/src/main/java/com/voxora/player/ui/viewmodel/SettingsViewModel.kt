@@ -159,6 +159,10 @@ class SettingsViewModel(
         viewModelScope.launch { settingsRepository.setBatterySaverDisableAnimations(enabled) }
     }
 
+    fun setAutoCheckUpdates(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setAutoCheckUpdates(enabled) }
+    }
+
     fun dismissBanner() {
         _statusBanner.value = null
     }

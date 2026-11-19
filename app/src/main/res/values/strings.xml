@@ -21,4 +21,7 @@
     <string name="cd_ai_dubbing">AI Dubbing</string>
     <string name="cd_clear_history">Clear playback history</string>
     <string name="cd_battery_saver">Battery saver mode</string>
+    <string name="cd_app_update">App update</string>
+    <string name="update_channel_name">App Updates</string>
+    <string name="update_channel_description">Notifications when a new version of VOXORA is available to download and install</string>
 </resources>

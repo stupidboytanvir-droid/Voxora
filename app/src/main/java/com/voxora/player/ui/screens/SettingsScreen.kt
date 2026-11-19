@@ -23,10 +23,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BatterySaver
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PlayCircleOutline
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.AlertDialog
@@ -34,6 +36,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -63,6 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.voxora.player.BuildConfig
+import com.voxora.player.data.update.UpdateUiState
 import com.voxora.player.model.AspectRatioMode
 import com.voxora.player.model.BatterySaverMode
 import com.voxora.player.model.ThemeMode
@@ -79,6 +83,11 @@ fun SettingsScreen(
     preferences: UserPreferences,
     statusBanner: String?,
     viewModel: SettingsViewModel,
+    updateState: UpdateUiState = UpdateUiState.Idle,
+    hasNotificationPermission: Boolean = true,
+    onCheckForUpdates: () -> Unit = {},
+    onOpenUpdateDialog: () -> Unit = {},
+    onRequestNotificationPermission: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val voxoraColors = LocalVoxoraColors.current
@@ -550,6 +559,111 @@ fun SettingsScreen(
                             Icon(Icons.Rounded.DeleteSweep, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("Clear History")
+                        }
+                    }
+                }
+            }
+
+            // App Updates (GitHub Releases In-App Updater)
+            item {
+                SettingsSectionCard(
+                    title = "App Updates",
+                    icon = Icons.Rounded.SystemUpdate
+                ) {
+                    val statusText = when (updateState) {
+                        UpdateUiState.Idle -> "Installed: v${BuildConfig.VERSION_NAME} · Ready to check GitHub Releases"
+                        UpdateUiState.Checking -> "Checking GitHub Releases for updates..."
+                        is UpdateUiState.UpToDate -> "You are on the latest version (v${updateState.currentVersion})"
+                        is UpdateUiState.UpdateAvailable -> "New version v${updateState.release.versionName} is available!"
+                        is UpdateUiState.Downloading -> "Downloading v${updateState.release.versionName} (${(updateState.progressFraction * 100).toInt()}%)..."
+                        is UpdateUiState.ReadyToInstall -> "v${updateState.release.versionName} downloaded and ready to install"
+                        is UpdateUiState.Error -> updateState.message
+                    }
+
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = when (updateState) {
+                            is UpdateUiState.UpdateAvailable,
+                            is UpdateUiState.ReadyToInstall -> voxoraColors.success
+                            is UpdateUiState.Error -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+
+                    SettingsSwitchRow(
+                        title = "Auto-Check & Notify Updates",
+                        subtitle = "Check GitHub Releases on launch and send a notification when a new update arrives",
+                        checked = preferences.autoCheckUpdates,
+                        onCheckedChange = viewModel::setAutoCheckUpdates,
+                        testTag = "settings_auto_update_switch"
+                    )
+
+                    if (!hasNotificationPermission) {
+                        OutlinedButton(
+                            onClick = onRequestNotificationPermission,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("settings_enable_update_notifications_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.NotificationsActive,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Enable Update Notifications")
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        val isUpdateActionable = updateState is UpdateUiState.UpdateAvailable ||
+                            updateState is UpdateUiState.Downloading ||
+                            updateState is UpdateUiState.ReadyToInstall
+
+                        if (isUpdateActionable) {
+                            Button(
+                                onClick = onOpenUpdateDialog,
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("settings_open_update_button")
+                            ) {
+                                Text(
+                                    text = when (updateState) {
+                                        is UpdateUiState.ReadyToInstall -> "Install v${updateState.release.versionName}"
+                                        is UpdateUiState.Downloading -> "View Download"
+                                        is UpdateUiState.UpdateAvailable -> "Download v${updateState.release.versionName}"
+                                        else -> "Update"
+                                    }
+                                )
+                            }
+                        } else {
+                            Button(
+                                onClick = onCheckForUpdates,
+                                enabled = updateState !is UpdateUiState.Checking,
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("settings_check_updates_button")
+                            ) {
+                                if (updateState is UpdateUiState.Checking) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = Color.White
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Checking...")
+                                } else {
+                                    Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Check for Updates")
+                                }
+                            }
                         }
                     }
                 }

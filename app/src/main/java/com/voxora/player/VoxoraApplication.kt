@@ -11,6 +11,8 @@ import com.voxora.player.data.local.storage.StorageAccessManager
 import com.voxora.player.data.repository.MediaRepository
 import com.voxora.player.data.repository.PlaybackHistoryRepository
 import com.voxora.player.data.repository.SettingsRepository
+import com.voxora.player.data.update.AppUpdateManager
+import com.voxora.player.data.update.UpdateNotificationHelper
 import com.voxora.player.dubbing.AiDubbingPipeline
 import com.voxora.player.dubbing.Version1AiDubbingPipeline
 
@@ -28,6 +30,10 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         private set
     lateinit var batteryMonitor: BatteryMonitor
         private set
+    lateinit var appUpdateManager: AppUpdateManager
+        private set
+    lateinit var updateNotificationHelper: UpdateNotificationHelper
+        private set
     lateinit var aiDubbingPipeline: AiDubbingPipeline
         private set
 
@@ -40,6 +46,8 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         historyRepository = PlaybackHistoryRepository(database.playbackHistoryDao())
         settingsRepository = SettingsRepository(this)
         batteryMonitor = BatteryMonitor(this)
+        appUpdateManager = AppUpdateManager(this)
+        updateNotificationHelper = UpdateNotificationHelper(this).also { it.ensureChannel() }
         aiDubbingPipeline = Version1AiDubbingPipeline()
     }
 

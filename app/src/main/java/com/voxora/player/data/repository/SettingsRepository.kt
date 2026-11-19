@@ -42,6 +42,7 @@ class SettingsRepository(private val context: Context) {
         val BATTERY_SAVER_THRESHOLD = intPreferencesKey("battery_saver_threshold_percent")
         val BATTERY_SAVER_CAP_REFRESH = booleanPreferencesKey("battery_saver_cap_refresh")
         val BATTERY_SAVER_DISABLE_ANIMS = booleanPreferencesKey("battery_saver_disable_anims")
+        val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
     }
 
     val preferencesFlow: Flow<UserPreferences> = context.voxoraDataStore.data.map { prefs ->
@@ -72,7 +73,8 @@ class SettingsRepository(private val context: Context) {
             } ?: BatterySaverMode.AUTO,
             batterySaverThresholdPercent = prefs[Keys.BATTERY_SAVER_THRESHOLD] ?: 20,
             batterySaverCapRefreshRate = prefs[Keys.BATTERY_SAVER_CAP_REFRESH] ?: true,
-            batterySaverDisableAnimations = prefs[Keys.BATTERY_SAVER_DISABLE_ANIMS] ?: true
+            batterySaverDisableAnimations = prefs[Keys.BATTERY_SAVER_DISABLE_ANIMS] ?: true,
+            autoCheckUpdates = prefs[Keys.AUTO_CHECK_UPDATES] ?: true
         )
     }
 
@@ -152,5 +154,9 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setBatterySaverDisableAnimations(enabled: Boolean) {
         context.voxoraDataStore.edit { it[Keys.BATTERY_SAVER_DISABLE_ANIMS] = enabled }
+    }
+
+    suspend fun setAutoCheckUpdates(enabled: Boolean) {
+        context.voxoraDataStore.edit { it[Keys.AUTO_CHECK_UPDATES] = enabled }
     }
 }

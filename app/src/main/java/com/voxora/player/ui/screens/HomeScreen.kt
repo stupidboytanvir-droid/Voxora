@@ -43,12 +43,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.voxora.player.R
+import com.voxora.player.data.update.UpdateUiState
 import com.voxora.player.model.PlaybackHistoryItem
 import com.voxora.player.model.VideoFolder
 import com.voxora.player.model.VideoItem
 import com.voxora.player.ui.components.ContinueWatchingCard
 import com.voxora.player.ui.components.EmptyLibraryView
 import com.voxora.player.ui.components.MediaPermissionBanner
+import com.voxora.player.ui.components.UpdateAvailableBanner
 import com.voxora.player.ui.components.VideoRowCard
 import com.voxora.player.ui.components.VideoThumbnail
 import com.voxora.player.ui.components.VoxoraTopHeader
@@ -60,6 +62,8 @@ import com.voxora.player.util.FormatUtils
 @Composable
 fun HomeScreen(
     uiState: LibraryUiState,
+    updateState: UpdateUiState = UpdateUiState.Idle,
+    onOpenUpdateDialog: () -> Unit = {},
     onPlayVideo: (VideoItem) -> Unit,
     onResumeHistory: (PlaybackHistoryItem) -> Unit,
     onOpenFolder: (VideoFolder) -> Unit,
@@ -92,6 +96,19 @@ fun HomeScreen(
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp),
                     color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+
+        if (updateState is UpdateUiState.UpdateAvailable ||
+            updateState is UpdateUiState.Downloading ||
+            updateState is UpdateUiState.ReadyToInstall
+        ) {
+            item {
+                UpdateAvailableBanner(
+                    state = updateState,
+                    onClick = onOpenUpdateDialog,
+                    modifier = Modifier.padding(horizontal = 16.dp)
                 )
             }
         }

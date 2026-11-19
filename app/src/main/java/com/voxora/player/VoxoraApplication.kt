@@ -18,6 +18,7 @@ import com.voxora.player.dubbing.AndroidVideoAudioExtractor
 import com.voxora.player.dubbing.DubbingPreferencesRepository
 import com.voxora.player.dubbing.Version1AiDubbingPipeline
 import com.voxora.player.dubbing.VideoAudioExtractor
+import com.voxora.player.dubbing.whisper.WhisperCppSpeechRecognitionEngine
 
 class VoxoraApplication : Application(), ImageLoaderFactory {
 
@@ -43,6 +44,8 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         private set
     lateinit var dubbingPreferencesRepository: DubbingPreferencesRepository
         private set
+    lateinit var whisperSpeechEngine: WhisperCppSpeechRecognitionEngine
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -58,6 +61,7 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         aiDubbingPipeline = Version1AiDubbingPipeline()
         videoAudioExtractor = AndroidVideoAudioExtractor(this)
         dubbingPreferencesRepository = DubbingPreferencesRepository(this)
+        whisperSpeechEngine = WhisperCppSpeechRecognitionEngine(this)
     }
 
     override fun newImageLoader(): ImageLoader {

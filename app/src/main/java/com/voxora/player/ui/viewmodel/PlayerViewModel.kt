@@ -22,6 +22,12 @@ import com.voxora.player.dubbing.MovieSpeakerAssignment
 import com.voxora.player.dubbing.PlayerDubbingUiState
 import com.voxora.player.dubbing.TtsVoicePreviewEngine
 import com.voxora.player.dubbing.VideoAudioExtractor
+import com.voxora.player.dubbing.whisper.TranscriptExportFormat
+import com.voxora.player.dubbing.whisper.TranscriptExporter
+import com.voxora.player.dubbing.whisper.WhisperCppSpeechRecognitionEngine
+import com.voxora.player.dubbing.whisper.WhisperModelCatalog
+import com.voxora.player.dubbing.whisper.WhisperModelStatus
+import com.voxora.player.dubbing.whisper.WhisperTranscriptionState
 import com.voxora.player.model.AspectRatioMode
 import com.voxora.player.model.AudioTrackInfo
 import com.voxora.player.model.BatterySaverEvaluation
@@ -57,14 +63,15 @@ data class PlayerScreenUiState(
 )
 
 class PlayerViewModel(
-    app: VoxoraApplication,
+    private val app: VoxoraApplication,
     private val mediaRepository: MediaRepository,
     private val historyRepository: PlaybackHistoryRepository,
     private val settingsRepository: SettingsRepository,
     private val batteryMonitor: BatteryMonitor,
     private val aiDubbingPipeline: AiDubbingPipeline,
     private val videoAudioExtractor: VideoAudioExtractor,
-    private val dubbingPreferencesRepository: DubbingPreferencesRepository
+    private val dubbingPreferencesRepository: DubbingPreferencesRepository,
+    private val whisperSpeechEngine: WhisperCppSpeechRecognitionEngine
 ) : ViewModel() {
 
     val playerEngine = VoxoraPlayerEngine(app)
@@ -124,13 +131,35 @@ class PlayerViewModel(
         initialValue = emptyList()
     )
 
+    val whisperModelStatus: StateFlow<WhisperModelStatus> = whisperSpeechEngine.modelStatus
+    val whisperTranscriptionState: StateFlow<WhisperTranscriptionState> = whisperSpeechEngine.transcriptionState
+
+    private val whisperSnapshotFlow = combine(
+        whisperModelStatus,
+        whisperTranscriptionState
+    ) { modelStatus, transState ->
+        WhisperPipelineSnapshot(
+            isModelLoaded = modelStatus is WhisperModelStatus.LoadedReady,
+            isTranscribing = transState.isRunning,
+            detail = when (modelStatus) {
+                is WhisperModelStatus.LoadedReady -> "whisper.cpp loaded ${modelStatus.model.fileName} · Ready offline"
+                is WhisperModelStatus.InstalledUnloaded -> "Model ${modelStatus.model.fileName} installed locally · Tap Load Model in Transcribe tab"
+                is WhisperModelStatus.Downloading -> "Downloading ggml-base.en.bin (${(modelStatus.progressFraction * 100).toInt()}%)..."
+                is WhisperModelStatus.Loading -> "Loading ${modelStatus.model.fileName} into native whisper.cpp..."
+                is WhisperModelStatus.Error -> modelStatus.message
+                else -> "Native whisper.cpp compiled · Download or import ggml-base.en.bin in Transcribe tab"
+            }
+        )
+    }
+
     private val extractionSnapshotFlow = combine(
         _extractedAudioInfo,
         _isInspectingAudio,
         _isExtractingAudio,
-        _extractionMessage
-    ) { audioInfo, inspecting, extracting, msg ->
-        ExtractionUiSnapshot(audioInfo, inspecting, extracting, msg)
+        _extractionMessage,
+        whisperSnapshotFlow
+    ) { audioInfo, inspecting, extracting, msg, whisperSnap ->
+        ExtractionUiSnapshot(audioInfo, inspecting, extracting, msg, whisperSnap)
     }
 
     val dubbingState: StateFlow<PlayerDubbingUiState> = combine(
@@ -150,7 +179,10 @@ class PlayerViewModel(
             hasSynthesizedBengaliTrack = false,
             pipelineStages = aiDubbingPipeline.buildStageStatuses(
                 extractedAudioInfo = extraction.audioInfo,
-                isExtractingAudio = extraction.isExtracting
+                isExtractingAudio = extraction.isExtracting,
+                isWhisperModelLoaded = extraction.whisper.isModelLoaded,
+                isTranscribing = extraction.whisper.isTranscribing,
+                whisperModelDetail = extraction.whisper.detail
             ),
             movieSpeakerAssignments = movieAssignments,
             ttsPreviewState = ttsState
@@ -594,17 +626,107 @@ class PlayerViewModel(
         }
     }
 
+    // --- Phase 2 Real Offline English Speech Recognition (whisper.cpp) ---
+
+    fun downloadWhisperBaseEnModel() {
+        whisperSpeechEngine.startDownloadBaseEnModel()
+    }
+
+    fun cancelWhisperModelOperation() {
+        whisperSpeechEngine.cancelModelOperation()
+    }
+
+    fun importLocalWhisperModel(uri: Uri) {
+        val displayName = resolveDocumentDisplayName(uri)
+        whisperSpeechEngine.importLocalModelFile(uri, displayName)
+    }
+
+    fun loadInstalledWhisperModel() {
+        whisperSpeechEngine.loadInstalledModel()
+    }
+
+    fun unloadWhisperModel() {
+        whisperSpeechEngine.unloadModel()
+    }
+
+    fun deleteWhisperModel() {
+        whisperSpeechEngine.deleteInstalledModel()
+    }
+
+    fun startVideoTranscription() {
+        val uri = activeUriString.orEmpty()
+        val title = _uiState.value.videoTitle
+        val durationMs = playbackState.value.durationMs
+        whisperSpeechEngine.startVideoTranscription(
+            mediaUriString = uri,
+            videoTitle = title,
+            totalDurationMsHint = durationMs
+        )
+    }
+
+    fun stopVideoTranscription() {
+        whisperSpeechEngine.stopTranscription()
+    }
+
+    fun exportTranscriptionToUri(targetUri: Uri, format: TranscriptExportFormat) {
+        val transState = whisperTranscriptionState.value
+        if (transState.segments.isEmpty()) return
+        val modelName = when (val m = whisperModelStatus.value) {
+            is WhisperModelStatus.LoadedReady -> m.model.fileName
+            is WhisperModelStatus.InstalledUnloaded -> m.model.fileName
+            else -> WhisperModelCatalog.BASE_EN.fileName
+        }
+        val content = TranscriptExporter.format(
+            format = format,
+            videoTitle = transState.activeVideoTitle.ifBlank { _uiState.value.videoTitle },
+            modelName = modelName,
+            segments = transState.segments
+        )
+        viewModelScope.launch {
+            runCatching {
+                app.contentResolver.openOutputStream(targetUri)?.use { out ->
+                    out.write(content.toByteArray(Charsets.UTF_8))
+                    out.flush()
+                } ?: error("Unable to open destination file for writing.")
+            }.fold(
+                onSuccess = {
+                    whisperSpeechEngine.setExportFeedback("Exported ${format.label} successfully.")
+                },
+                onFailure = { err ->
+                    whisperSpeechEngine.setExportFeedback("Export failed: ${err.message ?: "Unknown error"}")
+                }
+            )
+        }
+    }
+
+    private fun resolveDocumentDisplayName(uri: Uri): String? {
+        return runCatching {
+            app.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                }
+        }.getOrNull()
+    }
+
     override fun onCleared() {
+        whisperSpeechEngine.stopTranscription()
         ttsPreviewEngine.release()
         playerEngine.release()
         super.onCleared()
     }
 
+    private data class WhisperPipelineSnapshot(
+        val isModelLoaded: Boolean = false,
+        val isTranscribing: Boolean = false,
+        val detail: String? = null
+    )
+
     private data class ExtractionUiSnapshot(
         val audioInfo: ExtractedAudioTrackInfo?,
         val isInspecting: Boolean,
         val isExtracting: Boolean,
-        val message: String?
+        val message: String?,
+        val whisper: WhisperPipelineSnapshot = WhisperPipelineSnapshot()
     )
 
     class Factory(private val app: VoxoraApplication) : ViewModelProvider.Factory {
@@ -618,7 +740,8 @@ class PlayerViewModel(
                 batteryMonitor = app.batteryMonitor,
                 aiDubbingPipeline = app.aiDubbingPipeline,
                 videoAudioExtractor = app.videoAudioExtractor,
-                dubbingPreferencesRepository = app.dubbingPreferencesRepository
+                dubbingPreferencesRepository = app.dubbingPreferencesRepository,
+                whisperSpeechEngine = app.whisperSpeechEngine
             ) as T
         }
     }

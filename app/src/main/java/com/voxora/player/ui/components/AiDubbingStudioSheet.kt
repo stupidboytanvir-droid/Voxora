@@ -77,12 +77,16 @@ import com.voxora.player.dubbing.PlayerDubbingUiState
 import com.voxora.player.ui.theme.TabularTimeStyle
 import com.voxora.player.ui.theme.VoxoraCharcoal
 import com.voxora.player.ui.theme.VoxoraElectricPurple
+import com.voxora.player.dubbing.whisper.TranscriptExportFormat
+import com.voxora.player.dubbing.whisper.WhisperModelStatus
+import com.voxora.player.dubbing.whisper.WhisperTranscriptionState
 import com.voxora.player.ui.theme.VoxoraElectricPurpleBright
 import com.voxora.player.ui.theme.VoxoraSubtleBlue
 import com.voxora.player.util.FormatUtils
 
 private enum class DubbingStudioTab(val label: String) {
     CONTROLS("Controls"),
+    TRANSCRIBE("Transcribe"),
     CHARACTERS("Characters"),
     PIPELINE("Pipeline")
 }
@@ -90,7 +94,10 @@ private enum class DubbingStudioTab(val label: String) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AiDubbingStudioSheet(
+    videoTitle: String,
     state: PlayerDubbingUiState,
+    whisperModelStatus: WhisperModelStatus,
+    whisperTranscriptionState: WhisperTranscriptionState,
     onSetEnabled: (Boolean) -> Unit,
     onSelectSourceLanguage: (DubbingLanguage) -> Unit,
     onSelectTargetLanguage: (DubbingLanguage) -> Unit,
@@ -106,12 +113,22 @@ fun AiDubbingStudioSheet(
     onResetDefaultCharacters: () -> Unit,
     onPreviewCharacterVoice: (CharacterVoiceProfile) -> Unit,
     onStopVoicePreview: () -> Unit,
+    onDownloadWhisperModel: () -> Unit,
+    onImportWhisperModel: () -> Unit,
+    onCancelWhisperModelOp: () -> Unit,
+    onLoadWhisperModel: () -> Unit,
+    onUnloadWhisperModel: () -> Unit,
+    onDeleteWhisperModel: () -> Unit,
+    onStartTranscription: () -> Unit,
+    onStopTranscription: () -> Unit,
+    onExportTranscription: (TranscriptExportFormat) -> Unit,
+    onSeekToTimestamp: (Long) -> Unit,
     onInspectAudioTrack: () -> Unit,
     onRunStage1Extraction: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var selectedTab by remember { mutableStateOf(DubbingStudioTab.CONTROLS) }
+    var selectedTab by remember { mutableStateOf(DubbingStudioTab.TRANSCRIBE) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -165,7 +182,7 @@ fun AiDubbingStudioSheet(
                             border = BorderStroke(1.dp, VoxoraElectricPurple)
                         ) {
                             Text(
-                                text = "PHASE 1",
+                                text = "PHASE 2",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = VoxoraElectricPurpleBright,
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
@@ -173,7 +190,7 @@ fun AiDubbingStudioSheet(
                         }
                     }
                     Text(
-                        text = "${state.config.sourceLanguage.displayName} → ${state.config.targetLanguage.displayName} (${state.config.targetLanguage.nativeName}) · Zero-Cost Offline",
+                        text = "${state.config.sourceLanguage.displayName} → ${state.config.targetLanguage.displayName} (${state.config.targetLanguage.nativeName}) · Offline whisper.cpp",
                         style = MaterialTheme.typography.bodySmall,
                         color = VoxoraSubtleBlue
                     )
@@ -205,7 +222,7 @@ fun AiDubbingStudioSheet(
                         modifier = Modifier.size(18.dp)
                     )
                     Text(
-                        text = "${state.readyComponentCount}/${state.totalComponentCount} stages ready on-device (Audio Extraction & Live Mixer). Offline AI speech, translation & Bengali voice models plug in during Phase 2 — zero paid APIs.",
+                        text = "${state.readyComponentCount}/${state.totalComponentCount} stages ready on-device. Native whisper.cpp English ASR is integrated — install & load base.en in Transcribe for offline recognition (zero paid APIs).",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.White.copy(alpha = 0.85f)
                     )
@@ -232,12 +249,13 @@ fun AiDubbingStudioSheet(
                             .testTag("dubbing_tab_${tab.name}")
                     ) {
                         Row(
-                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 6.dp),
+                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
                             horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             val icon = when (tab) {
                                 DubbingStudioTab.CONTROLS -> Icons.Rounded.Tune
+                                DubbingStudioTab.TRANSCRIBE -> Icons.Rounded.GraphicEq
                                 DubbingStudioTab.CHARACTERS -> Icons.Rounded.People
                                 DubbingStudioTab.PIPELINE -> Icons.Rounded.Layers
                             }
@@ -245,16 +263,17 @@ fun AiDubbingStudioSheet(
                                 imageVector = icon,
                                 contentDescription = null,
                                 tint = if (selected) Color.White else Color.White.copy(alpha = 0.65f),
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(15.dp)
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
                             Text(
                                 text = tab.label,
-                                style = MaterialTheme.typography.labelLarge.copy(
+                                style = MaterialTheme.typography.labelMedium.copy(
                                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
                                 ),
                                 color = if (selected) Color.White else Color.White.copy(alpha = 0.72f),
-                                maxLines = 1
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -273,6 +292,24 @@ fun AiDubbingStudioSheet(
                         onAdjustSyncOffset = onAdjustSyncOffset,
                         onResetSyncOffset = onResetSyncOffset,
                         onPreserveBackgroundChange = onPreserveBackgroundChange
+                    )
+                }
+                DubbingStudioTab.TRANSCRIBE -> {
+                    WhisperTranscriptionSection(
+                        videoTitle = videoTitle,
+                        hasActiveVideo = state.config.mediaUriString.isNotBlank(),
+                        modelStatus = whisperModelStatus,
+                        transcriptionState = whisperTranscriptionState,
+                        onDownloadBaseEn = onDownloadWhisperModel,
+                        onImportLocalModel = onImportWhisperModel,
+                        onCancelModelOperation = onCancelWhisperModelOp,
+                        onLoadModel = onLoadWhisperModel,
+                        onUnloadModel = onUnloadWhisperModel,
+                        onDeleteModel = onDeleteWhisperModel,
+                        onStartTranscription = onStartTranscription,
+                        onStopTranscription = onStopTranscription,
+                        onExportTranscript = onExportTranscription,
+                        onSeekToTimestamp = onSeekToTimestamp
                     )
                 }
                 DubbingStudioTab.CHARACTERS -> {

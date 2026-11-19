@@ -37,23 +37,23 @@ class AppUpdateLogicTest {
         val manager = AppUpdateManager(context)
         val sampleJson = """
             {
-              "tag_name": "v1.2.0",
-              "name": "VOXORA v1.2.0",
+              "tag_name": "v9.9.0",
+              "name": "VOXORA v9.9.0",
               "body": "Added smooth HDR tone mapping and improved subtitle sync.",
-              "html_url": "https://github.com/stupidboytanvir-droid/Voxora/releases/tag/v1.2.0",
+              "html_url": "https://github.com/stupidboytanvir-droid/Voxora/releases/tag/v9.9.0",
               "published_at": "2026-11-20T10:00:00Z",
               "draft": false,
               "prerelease": false,
               "assets": [
                 {
                   "name": "checksums.txt",
-                  "browser_download_url": "https://github.com/stupidboytanvir-droid/Voxora/releases/download/v1.2.0/checksums.txt",
+                  "browser_download_url": "https://github.com/stupidboytanvir-droid/Voxora/releases/download/v9.9.0/checksums.txt",
                   "size": 128,
                   "content_type": "text/plain"
                 },
                 {
-                  "name": "VOXORA-v1.2.0.apk",
-                  "browser_download_url": "https://github.com/stupidboytanvir-droid/Voxora/releases/download/v1.2.0/VOXORA-v1.2.0.apk",
+                  "name": "VOXORA-v9.9.0.apk",
+                  "browser_download_url": "https://github.com/stupidboytanvir-droid/Voxora/releases/download/v9.9.0/VOXORA-v9.9.0.apk",
                   "size": 29481200,
                   "content_type": "application/vnd.android.package-archive"
                 }
@@ -63,12 +63,12 @@ class AppUpdateLogicTest {
 
         val release = manager.parseReleaseJson(sampleJson)
         assertNotNull(release)
-        assertEquals("v1.2.0", release!!.tagName)
-        assertEquals("1.2.0", release.versionName)
-        assertEquals("VOXORA-v1.2.0.apk", release.apkFileName)
+        assertEquals("v9.9.0", release!!.tagName)
+        assertEquals("9.9.0", release.versionName)
+        assertEquals("VOXORA-v9.9.0.apk", release.apkFileName)
         assertEquals(29481200L, release.apkSizeBytes)
         assertEquals(
-            "https://github.com/stupidboytanvir-droid/Voxora/releases/download/v1.2.0/VOXORA-v1.2.0.apk",
+            "https://github.com/stupidboytanvir-droid/Voxora/releases/download/v9.9.0/VOXORA-v9.9.0.apk",
             release.apkDownloadUrl
         )
         assertTrue(manager.isUpdateAvailable(release))

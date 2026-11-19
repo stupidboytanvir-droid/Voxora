@@ -70,6 +70,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.ContentFrame
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
+import com.voxora.player.dubbing.whisper.TranscriptExportFormat
 import com.voxora.player.model.AspectRatioMode
 import com.voxora.player.ui.components.AiDubbingStudioSheet
 import com.voxora.player.ui.components.AspectRatioSheet
@@ -120,18 +121,37 @@ fun PlayerScreen(
     val batterySaving by viewModel.batterySavingState.collectAsStateWithLifecycle()
     val batteryStatus by viewModel.batteryStatus.collectAsStateWithLifecycle()
     val dubbingState by viewModel.dubbingState.collectAsStateWithLifecycle()
+    val whisperModelStatus by viewModel.whisperModelStatus.collectAsStateWithLifecycle()
+    val whisperTranscriptionState by viewModel.whisperTranscriptionState.collectAsStateWithLifecycle()
     val animationsEnabled = !batterySaving.disableAnimations
 
     var controlsVisible by remember { mutableStateOf(true) }
     var lastInteractionMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var activeSheet by remember { mutableStateOf(ActiveSheet.NONE) }
     var gestureHudState by remember { mutableStateOf<GestureHudState>(GestureHudState.Hidden) }
+    var pendingExportFormat by remember { mutableStateOf(TranscriptExportFormat.SRT) }
 
     val subtitlePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             viewModel.loadExternalSubtitle(uri)
+        }
+    }
+
+    val whisperModelPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importLocalWhisperModel(uri)
+        }
+    }
+
+    val transcriptExportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("*/*")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportTranscriptionToUri(uri, pendingExportFormat)
         }
     }
 
@@ -611,7 +631,10 @@ fun PlayerScreen(
             }
             ActiveSheet.AI_DUBBING -> {
                 AiDubbingStudioSheet(
+                    videoTitle = uiState.videoTitle.ifBlank { videoTitle },
                     state = dubbingState,
+                    whisperModelStatus = whisperModelStatus,
+                    whisperTranscriptionState = whisperTranscriptionState,
                     onSetEnabled = viewModel::setDubbingEnabled,
                     onSelectSourceLanguage = viewModel::setDubbingSourceLanguage,
                     onSelectTargetLanguage = viewModel::setDubbingTargetLanguage,
@@ -627,6 +650,27 @@ fun PlayerScreen(
                     onResetDefaultCharacters = viewModel::resetDefaultDubbingCharacters,
                     onPreviewCharacterVoice = viewModel::previewCharacterVoice,
                     onStopVoicePreview = viewModel::stopVoicePreview,
+                    onDownloadWhisperModel = viewModel::downloadWhisperBaseEnModel,
+                    onImportWhisperModel = {
+                        whisperModelPickerLauncher.launch(arrayOf("application/octet-stream", "*/*"))
+                    },
+                    onCancelWhisperModelOp = viewModel::cancelWhisperModelOperation,
+                    onLoadWhisperModel = viewModel::loadInstalledWhisperModel,
+                    onUnloadWhisperModel = viewModel::unloadWhisperModel,
+                    onDeleteWhisperModel = viewModel::deleteWhisperModel,
+                    onStartTranscription = viewModel::startVideoTranscription,
+                    onStopTranscription = viewModel::stopVideoTranscription,
+                    onExportTranscription = { format ->
+                        pendingExportFormat = format
+                        val baseName = (uiState.videoTitle.ifBlank { videoTitle })
+                            .replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                            .take(40)
+                            .ifBlank { "voxora_transcript" }
+                        transcriptExportLauncher.launch("${baseName}.${format.extension}")
+                    },
+                    onSeekToTimestamp = { targetMs ->
+                        viewModel.seekTo(targetMs)
+                    },
                     onInspectAudioTrack = viewModel::inspectCurrentVideoAudio,
                     onRunStage1Extraction = viewModel::runStage1AudioExtraction,
                     onDismiss = {

@@ -268,7 +268,10 @@ interface AiDubbingPipeline {
     fun getSupportedTargetLanguages(): List<DubbingLanguage>
     fun buildStageStatuses(
         extractedAudioInfo: ExtractedAudioTrackInfo?,
-        isExtractingAudio: Boolean = false
+        isExtractingAudio: Boolean = false,
+        isWhisperModelLoaded: Boolean = false,
+        isTranscribing: Boolean = false,
+        whisperModelDetail: String? = null
     ): List<PipelineStageStatus>
 
     fun computeEffectiveOriginalVolume(
@@ -347,7 +350,10 @@ class Version1AiDubbingPipeline(
 
     override fun buildStageStatuses(
         extractedAudioInfo: ExtractedAudioTrackInfo?,
-        isExtractingAudio: Boolean
+        isExtractingAudio: Boolean,
+        isWhisperModelLoaded: Boolean,
+        isTranscribing: Boolean,
+        whisperModelDetail: String?
     ): List<PipelineStageStatus> {
         val extractionStatus = when {
             isExtractingAudio -> PipelineStageStatus(
@@ -368,17 +374,33 @@ class Version1AiDubbingPipeline(
             else -> PipelineStageStatus(
                 stage = DubbingPipelineStage.AUDIO_EXTRACTION,
                 readiness = ComponentReadiness.READY,
-                statusDetail = "Android MediaExtractor module ready for local video audio extraction"
+                statusDetail = "Android MediaExtractor + MediaCodec 16kHz PCM decoder ready on-device"
+            )
+        }
+
+        val asrStatus = when {
+            isTranscribing -> PipelineStageStatus(
+                stage = DubbingPipelineStage.ENGLISH_SPEECH_RECOGNITION,
+                readiness = ComponentReadiness.RUNNING,
+                statusDetail = "Running native whisper.cpp offline English speech recognition..."
+            )
+            isWhisperModelLoaded -> PipelineStageStatus(
+                stage = DubbingPipelineStage.ENGLISH_SPEECH_RECOGNITION,
+                readiness = ComponentReadiness.READY,
+                statusDetail = whisperModelDetail
+                    ?: "Native whisper.cpp (base.en) loaded & verified on-device — ready offline"
+            )
+            else -> PipelineStageStatus(
+                stage = DubbingPipelineStage.ENGLISH_SPEECH_RECOGNITION,
+                readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
+                statusDetail = whisperModelDetail
+                    ?: "Native whisper.cpp engine compiled · Download or import ggml-base.en.bin in Transcribe tab"
             )
         }
 
         return listOf(
             extractionStatus,
-            PipelineStageStatus(
-                stage = DubbingPipelineStage.ENGLISH_SPEECH_RECOGNITION,
-                readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
-                statusDetail = "Interface ready · Awaiting offline English ASR model (whisper.cpp / Sherpa-ONNX)"
-            ),
+            asrStatus,
             PipelineStageStatus(
                 stage = DubbingPipelineStage.SPEAKER_DIARIZATION,
                 readiness = ComponentReadiness.REQUIRES_AI_ENGINE,

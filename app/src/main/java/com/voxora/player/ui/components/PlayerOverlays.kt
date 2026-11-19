@@ -340,6 +340,7 @@ fun PlayerControlsOverlay(
     batterySavingActive: Boolean = false,
     batteryCapRefreshRate: Boolean = false,
     batteryPercent: Int = 100,
+    aiDubbingActive: Boolean = false,
     onBack: () -> Unit,
     onToggleLock: () -> Unit,
     onRotateScreen: () -> Unit,
@@ -464,17 +465,17 @@ fun PlayerControlsOverlay(
                             .padding(horizontal = 4.dp)
                     )
 
-                    // Dedicated AI Dubbing control (Version 1.0: Coming Soon)
+                    // Dedicated AI Dubbing control (Phase 1: English -> Bengali Studio)
                     Surface(
                         onClick = {
                             onUserInteraction()
                             onOpenAiDubbing()
                         },
-                        color = Color(0xCC241942),
+                        color = if (aiDubbingActive) Color(0xE6341E66) else Color(0xCC241942),
                         shape = RoundedCornerShape(20.dp),
                         border = BorderStroke(
-                            1.dp,
-                            Brush.horizontalGradient(listOf(VoxoraElectricPurple, VoxoraSubtleBlue))
+                            width = if (aiDubbingActive) 1.5.dp else 1.dp,
+                            brush = Brush.horizontalGradient(listOf(VoxoraElectricPurple, VoxoraSubtleBlue))
                         ),
                         modifier = Modifier.testTag("player_ai_dubbing_button")
                     ) {
@@ -486,11 +487,11 @@ fun PlayerControlsOverlay(
                             Icon(
                                 imageVector = Icons.Rounded.AutoAwesome,
                                 contentDescription = stringResource(R.string.cd_ai_dubbing),
-                                tint = VoxoraSubtleBlue,
+                                tint = if (aiDubbingActive) VoxoraElectricPurpleBright else VoxoraSubtleBlue,
                                 modifier = Modifier.size(16.dp)
                             )
                             Text(
-                                text = "AI Dubbing",
+                                text = if (aiDubbingActive) "EN → বাংলা" else "AI Dubbing",
                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
                                 color = Color.White
                             )

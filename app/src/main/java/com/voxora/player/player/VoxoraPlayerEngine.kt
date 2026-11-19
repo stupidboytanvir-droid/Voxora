@@ -202,6 +202,15 @@ class VoxoraPlayerEngine(context: Context) {
         _state.value = _state.value.copy(playbackSpeed = clamped)
     }
 
+    /**
+     * Adjusts original video track playback volume in real time for the AI Dubbing mixer
+     * without pausing or interrupting Media3 playback.
+     */
+    fun setOriginalAudioVolume(volume: Float) {
+        if (isReleased) return
+        exoPlayer.volume = volume.coerceIn(0f, 1f)
+    }
+
     fun selectAudioTrack(track: AudioTrackInfo) {
         if (isReleased) return
         val groups = currentTracks.groups

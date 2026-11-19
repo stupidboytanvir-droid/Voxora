@@ -14,7 +14,10 @@ import com.voxora.player.data.repository.SettingsRepository
 import com.voxora.player.data.update.AppUpdateManager
 import com.voxora.player.data.update.UpdateNotificationHelper
 import com.voxora.player.dubbing.AiDubbingPipeline
+import com.voxora.player.dubbing.AndroidVideoAudioExtractor
+import com.voxora.player.dubbing.DubbingPreferencesRepository
 import com.voxora.player.dubbing.Version1AiDubbingPipeline
+import com.voxora.player.dubbing.VideoAudioExtractor
 
 class VoxoraApplication : Application(), ImageLoaderFactory {
 
@@ -36,6 +39,10 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         private set
     lateinit var aiDubbingPipeline: AiDubbingPipeline
         private set
+    lateinit var videoAudioExtractor: VideoAudioExtractor
+        private set
+    lateinit var dubbingPreferencesRepository: DubbingPreferencesRepository
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -49,6 +56,8 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         appUpdateManager = AppUpdateManager(this)
         updateNotificationHelper = UpdateNotificationHelper(this).also { it.ensureChannel() }
         aiDubbingPipeline = Version1AiDubbingPipeline()
+        videoAudioExtractor = AndroidVideoAudioExtractor(this)
+        dubbingPreferencesRepository = DubbingPreferencesRepository(this)
     }
 
     override fun newImageLoader(): ImageLoader {

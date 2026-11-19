@@ -71,7 +71,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.ContentFrame
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
 import com.voxora.player.model.AspectRatioMode
-import com.voxora.player.ui.components.AiDubbingComingSoonSheet
+import com.voxora.player.ui.components.AiDubbingStudioSheet
 import com.voxora.player.ui.components.AspectRatioSheet
 import com.voxora.player.ui.components.AudioTrackSheet
 import com.voxora.player.ui.components.BatterySaverSheet
@@ -119,6 +119,7 @@ fun PlayerScreen(
     val preferences by viewModel.preferences.collectAsStateWithLifecycle()
     val batterySaving by viewModel.batterySavingState.collectAsStateWithLifecycle()
     val batteryStatus by viewModel.batteryStatus.collectAsStateWithLifecycle()
+    val dubbingState by viewModel.dubbingState.collectAsStateWithLifecycle()
     val animationsEnabled = !batterySaving.disableAnimations
 
     var controlsVisible by remember { mutableStateOf(true) }
@@ -461,6 +462,7 @@ fun PlayerScreen(
             batterySavingActive = batterySaving.isActive,
             batteryCapRefreshRate = batterySaving.capRefreshRate,
             batteryPercent = batteryStatus.batteryPercent,
+            aiDubbingActive = dubbingState.config.isDubbingEnabled,
             onBack = {
                 viewModel.pausePlayback()
                 onBack()
@@ -498,7 +500,12 @@ fun PlayerScreen(
             onOpenSubtitles = { activeSheet = ActiveSheet.SUBTITLES },
             onOpenAudioTracks = { activeSheet = ActiveSheet.AUDIO_TRACKS },
             onOpenAspectRatio = { activeSheet = ActiveSheet.ASPECT_RATIO },
-            onOpenAiDubbing = { activeSheet = ActiveSheet.AI_DUBBING },
+            onOpenAiDubbing = {
+                activeSheet = ActiveSheet.AI_DUBBING
+                if (dubbingState.extractedAudioInfo == null) {
+                    viewModel.inspectCurrentVideoAudio()
+                }
+            },
             onOpenBatterySaver = { activeSheet = ActiveSheet.BATTERY_SAVER },
             onStartFromBeginning = { viewModel.startFromBeginning() },
             onDismissResumeBanner = { viewModel.dismissResumeBanner() },
@@ -603,9 +610,22 @@ fun PlayerScreen(
                 )
             }
             ActiveSheet.AI_DUBBING -> {
-                AiDubbingComingSoonSheet(
-                    status = viewModel.dubbingStatus,
-                    plannedLanguages = viewModel.plannedDubbingLanguages,
+                AiDubbingStudioSheet(
+                    state = dubbingState,
+                    onSetEnabled = viewModel::setDubbingEnabled,
+                    onSelectSourceLanguage = viewModel::setDubbingSourceLanguage,
+                    onSelectTargetLanguage = viewModel::setDubbingTargetLanguage,
+                    onSelectOutputMode = viewModel::setDubbingOutputMode,
+                    onOriginalVolumeChange = viewModel::setDubbingOriginalVolume,
+                    onDubbedVolumeChange = viewModel::setDubbingVoiceVolume,
+                    onAdjustSyncOffset = viewModel::adjustDubbingSyncOffset,
+                    onResetSyncOffset = viewModel::resetDubbingSyncOffset,
+                    onPreserveBackgroundChange = viewModel::setPreserveBackgroundAudio,
+                    onAddCharacter = viewModel::addDubbingCharacter,
+                    onUpdateCharacter = viewModel::updateDubbingCharacter,
+                    onRemoveCharacter = viewModel::removeDubbingCharacter,
+                    onInspectAudioTrack = viewModel::inspectCurrentVideoAudio,
+                    onRunStage1Extraction = viewModel::runStage1AudioExtraction,
                     onDismiss = { activeSheet = ActiveSheet.NONE }
                 )
             }

@@ -9,7 +9,7 @@
 - **Playback History & Continue Watching**: Local Room database tracking recently played videos, resume positions, preferred speeds, and attached external subtitles.
 - **Player Battery Saver**: Monitors real-time battery level, charging state, and Android Battery Saver to cap display refresh rate to `60Hz`, throttle UI polling, and disable non-essential player animations.
 - **In-App GitHub Releases Updater**: Automatically checks `stupidboytanvir-droid/Voxora` releases, posts an Android update notification when a newer version arrives, and lets users download and install the new APK directly inside the app.
-- **AI Dubbing Ready Architecture**: Modular pipeline prepared for upcoming multilingual voice dubbing features.
+- **AI Dubbing Studio (Phase 1 — English → বাংলা)**: In-player studio featuring English-to-Bengali configuration, live original/dubbed volume mixer, millisecond sync controls, Male & Female multi-character Bengali voice profiles, on-device `MediaExtractor` audio track inspection/extraction, and a zero-cost 7-stage offline pipeline architecture.
 
 ## Building Locally
 ```bash

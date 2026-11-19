@@ -1,0 +1,6 @@
+{
+  "name": "VOXORA",
+  "description": "Play Beyond Language - Premium native Android video player with Media3 ExoPlayer, subtitle customization, gesture controls, playback history, and future AI dubbing architecture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

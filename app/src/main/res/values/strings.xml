@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">VOXORA</string>
+    <string name="app_tagline">Play Beyond Language</string>
+    <string name="cd_voxora_logo">VOXORA logo</string>
+    <string name="cd_search">Search videos</string>
+    <string name="cd_settings">Open settings</string>
+    <string name="cd_refresh">Refresh video library</string>
+    <string name="cd_pick_file">Open video file</string>
+    <string name="cd_back">Navigate back</string>
+    <string name="cd_play_pause">Play or pause</string>
+    <string name="cd_rewind">Rewind 10 seconds</string>
+    <string name="cd_forward">Forward 10 seconds</string>
+    <string name="cd_lock_screen">Lock player screen</string>
+    <string name="cd_unlock_screen">Unlock player screen</string>
+    <string name="cd_rotate_screen">Rotate screen orientation</string>
+    <string name="cd_fullscreen">Toggle full-screen mode</string>
+    <string name="cd_aspect_ratio">Change aspect ratio</string>
+    <string name="cd_subtitles">Subtitle settings</string>
+    <string name="cd_audio_track">Audio track selection</string>
+    <string name="cd_speed">Playback speed</string>
+    <string name="cd_ai_dubbing">AI Dubbing</string>
+    <string name="cd_clear_history">Clear playback history</string>
+    <string name="cd_battery_saver">Battery saver mode</string>
+</resources>

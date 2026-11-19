@@ -1,11 +1,12 @@
 package com.voxora.player.dubbing
 
 import kotlinx.serialization.Serializable
+import java.util.UUID
 
 /**
- * VOXORA AI Dubbing — Phase 1 Models (English -> Bengali / বাংলা).
- * Designed for zero-cost, offline-first modular expansion to additional languages
- * and on-device neural models in subsequent phases.
+ * VOXORA AI Dubbing — Phase 1 Models (English -> Bengali / বাংলা) & Character Management System.
+ * Designed for zero-cost, offline-first modular expansion to additional languages,
+ * multi-character neural voices, and speaker diarization in subsequent phases.
  */
 
 @Serializable
@@ -70,9 +71,18 @@ data class BengaliVoicePreset(
     val styleTag: String,
     val defaultPitch: Float = 1.0f,
     val defaultRate: Float = 1.0f,
-    val description: String
+    val description: String,
+    val isNeuralModelInstalled: Boolean = false
 )
 
+/**
+ * Persistent character voice profile saved locally on device.
+ *
+ * - [characterId]: Immutable unique identifier (e.g. "CHAR_001") guaranteed collision-free
+ *   across unlimited character additions and deletions.
+ * - [speakerId]: Speaker diarization cluster slot (e.g. "SPEAKER_01") used to bind detected
+ *   movie speakers consistently throughout the entire video in Phase 2.
+ */
 @Serializable
 data class CharacterVoiceProfile(
     val speakerId: String,
@@ -82,8 +92,41 @@ data class CharacterVoiceProfile(
     val pitchFactor: Float = 1.0f,
     val speakingRate: Float = 1.0f,
     val emotionStyle: VoiceEmotionStyle = VoiceEmotionStyle.NATURAL,
-    val isDetectedFromDiarization: Boolean = false
+    val isDetectedFromDiarization: Boolean = false,
+    val characterId: String = speakerId,
+    val emotionIntensity: Float = 0.5f,
+    val isVoiceLockedForMovie: Boolean = true,
+    val createdAtMs: Long = 0L
 )
+
+/**
+ * Per-movie binding that locks a detected or manually configured diarization speaker ID
+ * to a specific [CharacterVoiceProfile] so the character's voice never drifts mid-movie.
+ */
+@Serializable
+data class MovieSpeakerAssignment(
+    val diarizationSpeakerId: String,
+    val characterId: String,
+    val lockedVoiceId: String,
+    val isAutoAssigned: Boolean = false
+)
+
+/**
+ * Live status of the real on-device Android TextToSpeech engine.
+ * Preview controls remain strictly disabled unless [canPreview] is true.
+ */
+data class TtsPreviewState(
+    val isChecking: Boolean = true,
+    val isRealTtsEngineAvailable: Boolean = false,
+    val isBengaliVoiceSupported: Boolean = false,
+    val enginePackageName: String? = null,
+    val matchedLocaleTag: String? = null,
+    val statusMessage: String = "Checking device Text-to-Speech engine...",
+    val activePreviewCharacterId: String? = null
+) {
+    val canPreview: Boolean
+        get() = !isChecking && isRealTtsEngineAvailable && isBengaliVoiceSupported
+}
 
 @Serializable
 data class DubbingSessionConfig(
@@ -204,7 +247,9 @@ data class PlayerDubbingUiState(
     val isExtractingAudio: Boolean = false,
     val extractionMessage: String? = null,
     val hasSynthesizedBengaliTrack: Boolean = false,
-    val pipelineStages: List<PipelineStageStatus> = emptyList()
+    val pipelineStages: List<PipelineStageStatus> = emptyList(),
+    val movieSpeakerAssignments: List<MovieSpeakerAssignment> = emptyList(),
+    val ttsPreviewState: TtsPreviewState = TtsPreviewState()
 ) {
     val readyComponentCount: Int
         get() = pipelineStages.count { it.readiness == ComponentReadiness.READY }
@@ -253,66 +298,77 @@ object DubbingLanguageRegistry {
 }
 
 object DubbingVoiceCatalog {
+    /**
+     * Bengali voice profile slots prepared for Phase 2 offline neural voice models.
+     * [BengaliVoicePreset.isNeuralModelInstalled] is explicitly false until real voice models
+     * are bundled or downloaded on-device.
+     */
     val bengaliPresets: List<BengaliVoicePreset> = listOf(
         BengaliVoicePreset(
             id = "bn_male_aarav",
-            name = "Aarav",
-            nativeDisplayName = "আরভ · Deep Cinema",
+            name = "Male Profile A · Deep",
+            nativeDisplayName = "পুরুষ প্রোফাইল A · Deep Cinema",
             gender = VoiceGender.MALE,
-            styleTag = "Deep Lead",
+            styleTag = "Deep Lead Slot",
             defaultPitch = 0.94f,
             defaultRate = 0.98f,
-            description = "Rich, grounded baritone designed for lead male movie dialogue"
+            description = "Voice slot configured for deep lead male dialogue (awaiting Phase 2 neural Bengali voice model)",
+            isNeuralModelInstalled = false
         ),
         BengaliVoicePreset(
             id = "bn_male_rafiq",
-            name = "Rafiq",
-            nativeDisplayName = "রফিক · Conversational",
+            name = "Male Profile B · Natural",
+            nativeDisplayName = "পুরুষ প্রোফাইল B · Conversational",
             gender = VoiceGender.MALE,
-            styleTag = "Natural",
+            styleTag = "Natural Slot",
             defaultPitch = 1.0f,
             defaultRate = 1.0f,
-            description = "Warm everyday Bengali voice for natural dialogue scenes"
+            description = "Voice slot configured for everyday conversational male dialogue (awaiting Phase 2 neural model)",
+            isNeuralModelInstalled = false
         ),
         BengaliVoicePreset(
             id = "bn_male_kabir",
-            name = "Kabir",
-            nativeDisplayName = "কবীর · Narrator",
+            name = "Male Profile C · Narrator",
+            nativeDisplayName = "পুরুষ প্রোফাইল C · Calm Narrator",
             gender = VoiceGender.MALE,
-            styleTag = "Documentary",
+            styleTag = "Narrator Slot",
             defaultPitch = 0.98f,
             defaultRate = 0.95f,
-            description = "Clear articulated voice suited for narration and calm dialogue"
+            description = "Voice slot configured for clear narration and calm dialogue (awaiting Phase 2 neural model)",
+            isNeuralModelInstalled = false
         ),
         BengaliVoicePreset(
             id = "bn_female_ananya",
-            name = "Ananya",
-            nativeDisplayName = "অনন্যা · Expressive Lead",
+            name = "Female Profile A · Expressive",
+            nativeDisplayName = "নারী প্রোফাইল A · Expressive Lead",
             gender = VoiceGender.FEMALE,
-            styleTag = "Cinematic Lead",
+            styleTag = "Cinematic Lead Slot",
             defaultPitch = 1.02f,
             defaultRate = 1.0f,
-            description = "Natural, emotionally nuanced Bengali voice for lead female roles"
+            description = "Voice slot configured for expressive lead female dialogue (awaiting Phase 2 neural Bengali voice model)",
+            isNeuralModelInstalled = false
         ),
         BengaliVoicePreset(
             id = "bn_female_meera",
-            name = "Meera",
-            nativeDisplayName = "মীরা · Studio Clear",
+            name = "Female Profile B · Studio",
+            nativeDisplayName = "নারী প্রোফাইল B · Studio Clear",
             gender = VoiceGender.FEMALE,
-            styleTag = "Warm Studio",
+            styleTag = "Warm Studio Slot",
             defaultPitch = 1.0f,
             defaultRate = 0.97f,
-            description = "Balanced, gentle cadence suited for conversational and voiceover tracks"
+            description = "Voice slot configured for balanced gentle female dialogue (awaiting Phase 2 neural model)",
+            isNeuralModelInstalled = false
         ),
         BengaliVoicePreset(
             id = "bn_female_tania",
-            name = "Tania",
-            nativeDisplayName = "তানিয়া · Dynamic",
+            name = "Female Profile C · Dynamic",
+            nativeDisplayName = "নারী প্রোফাইল C · Dynamic",
             gender = VoiceGender.FEMALE,
-            styleTag = "Energetic",
+            styleTag = "Energetic Slot",
             defaultPitch = 1.06f,
             defaultRate = 1.04f,
-            description = "Bright expressive timbre ideal for younger or energetic characters"
+            description = "Voice slot configured for bright, energetic female roles (awaiting Phase 2 neural model)",
+            isNeuralModelInstalled = false
         )
     )
 
@@ -324,24 +380,99 @@ object DubbingVoiceCatalog {
         return bengaliPresets.firstOrNull { it.id == id } ?: bengaliPresets.first()
     }
 
+    fun nextVoicePresetForGender(
+        gender: VoiceGender,
+        existing: List<CharacterVoiceProfile>
+    ): BengaliVoicePreset {
+        val candidates = presetsForGender(gender)
+        val sameGenderCount = existing.count { it.gender == gender }
+        return candidates[sameGenderCount % candidates.size]
+    }
+
+    /**
+     * Generates a strictly unique character ID (CHAR_001, CHAR_002, CHAR_003...) that never
+     * collides with existing profiles even after arbitrary deletions and additions.
+     */
+    fun nextUniqueCharacterId(existing: List<CharacterVoiceProfile>): String {
+        val existingIds = existing.map { it.characterId }.toSet()
+        val maxNumeric = existing.mapNotNull { profile ->
+            Regex("""^CHAR_(\d+)$""").matchEntire(profile.characterId)?.groupValues?.get(1)?.toIntOrNull()
+        }.maxOrNull() ?: existing.size
+
+        var candidateNum = (maxNumeric + 1).coerceAtLeast(1)
+        var candidate = "CHAR_${candidateNum.toString().padStart(3, '0')}"
+        while (candidate in existingIds) {
+            candidateNum++
+            candidate = "CHAR_${candidateNum.toString().padStart(3, '0')}"
+        }
+        return candidate.ifBlank { "CHAR_${UUID.randomUUID().toString().take(8).uppercase()}" }
+    }
+
+    /**
+     * Generates the next unused diarization speaker slot ID (SPEAKER_01, SPEAKER_02, SPEAKER_03...).
+     */
+    fun nextAvailableSpeakerId(existing: List<CharacterVoiceProfile>): String {
+        val existingSlots = existing.map { it.speakerId.uppercase() }.toSet()
+        val maxNumeric = existing.mapNotNull { profile ->
+            Regex("""^SPEAKER_(\d+)$""").matchEntire(profile.speakerId.uppercase())?.groupValues?.get(1)?.toIntOrNull()
+        }.maxOrNull() ?: existing.size
+
+        var candidateNum = (maxNumeric + 1).coerceAtLeast(1)
+        var candidate = "SPEAKER_${candidateNum.toString().padStart(2, '0')}"
+        while (candidate in existingSlots) {
+            candidateNum++
+            candidate = "SPEAKER_${candidateNum.toString().padStart(2, '0')}"
+        }
+        return candidate
+    }
+
+    /**
+     * Suggests clean sequential names for additional characters: "Character 3", "Character 4", etc.
+     */
+    fun nextDefaultCharacterName(existing: List<CharacterVoiceProfile>): String {
+        val usedNames = existing.map { it.label.trim().lowercase() }.toSet()
+        val highestNumbered = existing.mapNotNull { profile ->
+            Regex("""^Character\s+(\d+)$""", RegexOption.IGNORE_CASE)
+                .matchEntire(profile.label.trim())
+                ?.groupValues?.get(1)?.toIntOrNull()
+        }.maxOrNull() ?: 2
+
+        var nextNum = maxOf(highestNumbered + 1, existing.size + 1, 3)
+        var candidate = "Character $nextNum"
+        while (candidate.lowercase() in usedNames) {
+            nextNum++
+            candidate = "Character $nextNum"
+        }
+        return candidate
+    }
+
+    /**
+     * Two default example character profiles: Male Character & Female Character.
+     */
     fun defaultCharacters(): List<CharacterVoiceProfile> = listOf(
         CharacterVoiceProfile(
+            characterId = "CHAR_001",
             speakerId = "SPEAKER_01",
-            label = "Character 1 (Lead Male)",
+            label = "Male Character",
             voiceId = "bn_male_aarav",
             gender = VoiceGender.MALE,
             pitchFactor = 0.94f,
             speakingRate = 0.98f,
-            emotionStyle = VoiceEmotionStyle.NATURAL
+            emotionStyle = VoiceEmotionStyle.NATURAL,
+            emotionIntensity = 0.5f,
+            isVoiceLockedForMovie = true
         ),
         CharacterVoiceProfile(
+            characterId = "CHAR_002",
             speakerId = "SPEAKER_02",
-            label = "Character 2 (Lead Female)",
+            label = "Female Character",
             voiceId = "bn_female_ananya",
             gender = VoiceGender.FEMALE,
             pitchFactor = 1.02f,
             speakingRate = 1.0f,
-            emotionStyle = VoiceEmotionStyle.WARM
+            emotionStyle = VoiceEmotionStyle.WARM,
+            emotionIntensity = 0.5f,
+            isVoiceLockedForMovie = true
         )
     )
 }

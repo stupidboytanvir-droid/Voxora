@@ -18,9 +18,10 @@ import com.voxora.player.dubbing.DubbingPreferencesRepository
 import com.voxora.player.dubbing.DubbingSessionConfig
 import com.voxora.player.dubbing.DubbingVoiceCatalog
 import com.voxora.player.dubbing.ExtractedAudioTrackInfo
+import com.voxora.player.dubbing.MovieSpeakerAssignment
 import com.voxora.player.dubbing.PlayerDubbingUiState
+import com.voxora.player.dubbing.TtsVoicePreviewEngine
 import com.voxora.player.dubbing.VideoAudioExtractor
-import com.voxora.player.dubbing.VoiceGender
 import com.voxora.player.model.AspectRatioMode
 import com.voxora.player.model.AudioTrackInfo
 import com.voxora.player.model.BatterySaverEvaluation
@@ -97,6 +98,9 @@ class PlayerViewModel(
     private val _uiState = MutableStateFlow(PlayerScreenUiState())
     val uiState: StateFlow<PlayerScreenUiState> = _uiState.asStateFlow()
 
+    private val ttsPreviewEngine = TtsVoicePreviewEngine(app)
+
+    private val _activeMediaUri = MutableStateFlow("")
     private val _extractedAudioInfo = MutableStateFlow<ExtractedAudioTrackInfo?>(null)
     private val _isInspectingAudio = MutableStateFlow(false)
     private val _isExtractingAudio = MutableStateFlow(false)
@@ -109,31 +113,54 @@ class PlayerViewModel(
             initialValue = DubbingSessionConfig()
         )
 
-    val dubbingState: StateFlow<PlayerDubbingUiState> = combine(
-        dubbingConfigFlow,
+    private val activeMovieAssignmentsFlow: StateFlow<List<MovieSpeakerAssignment>> = combine(
+        _activeMediaUri,
+        dubbingPreferencesRepository.allMovieAssignmentsFlow
+    ) { uri, allMap ->
+        if (uri.isBlank()) emptyList() else allMap[uri].orEmpty()
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000L),
+        initialValue = emptyList()
+    )
+
+    private val extractionSnapshotFlow = combine(
         _extractedAudioInfo,
         _isInspectingAudio,
         _isExtractingAudio,
         _extractionMessage
-    ) { config, audioInfo, inspecting, extracting, msg ->
-        val effectiveConfig = config.copy(mediaUriString = activeUriString.orEmpty())
+    ) { audioInfo, inspecting, extracting, msg ->
+        ExtractionUiSnapshot(audioInfo, inspecting, extracting, msg)
+    }
+
+    val dubbingState: StateFlow<PlayerDubbingUiState> = combine(
+        dubbingConfigFlow,
+        _activeMediaUri,
+        extractionSnapshotFlow,
+        activeMovieAssignmentsFlow,
+        ttsPreviewEngine.state
+    ) { config, uri, extraction, movieAssignments, ttsState ->
+        val effectiveConfig = config.copy(mediaUriString = uri)
         PlayerDubbingUiState(
             config = effectiveConfig,
-            extractedAudioInfo = audioInfo,
-            isInspectingAudio = inspecting,
-            isExtractingAudio = extracting,
-            extractionMessage = msg,
+            extractedAudioInfo = extraction.audioInfo,
+            isInspectingAudio = extraction.isInspecting,
+            isExtractingAudio = extraction.isExtracting,
+            extractionMessage = extraction.message,
             hasSynthesizedBengaliTrack = false,
             pipelineStages = aiDubbingPipeline.buildStageStatuses(
-                extractedAudioInfo = audioInfo,
-                isExtractingAudio = extracting
-            )
+                extractedAudioInfo = extraction.audioInfo,
+                isExtractingAudio = extraction.isExtracting
+            ),
+            movieSpeakerAssignments = movieAssignments,
+            ttsPreviewState = ttsState
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000L),
         initialValue = PlayerDubbingUiState(
-            pipelineStages = aiDubbingPipeline.buildStageStatuses(null, false)
+            pipelineStages = aiDubbingPipeline.buildStageStatuses(null, false),
+            ttsPreviewState = ttsPreviewEngine.state.value
         )
     )
 
@@ -183,6 +210,7 @@ class PlayerViewModel(
             return
         }
         activeUriString = uriString
+        _activeMediaUri.value = uriString
         lastSavedPositionMs = -1L
         _extractedAudioInfo.value = null
         _extractionMessage.value = null
@@ -451,36 +479,80 @@ class PlayerViewModel(
         viewModelScope.launch { dubbingPreferencesRepository.setPreserveBackgroundAudio(preserve) }
     }
 
-    fun addDubbingCharacter(name: String, gender: VoiceGender) {
+    fun addDubbingCharacter(profile: CharacterVoiceProfile) {
         val current = dubbingConfigFlow.value.characterVoices
-        val nextNum = current.size + 1
-        val speakerId = "SPEAKER_${nextNum.toString().padStart(2, '0')}"
-        val presets = DubbingVoiceCatalog.presetsForGender(gender)
-        val chosenPreset = presets[current.count { it.gender == gender } % presets.size]
-        val added = CharacterVoiceProfile(
-            speakerId = speakerId,
-            label = name,
-            voiceId = chosenPreset.id,
-            gender = gender,
-            pitchFactor = chosenPreset.defaultPitch,
-            speakingRate = chosenPreset.defaultRate
+        val uniqueId = if (profile.characterId.isBlank() || current.any { it.characterId == profile.characterId }) {
+            DubbingVoiceCatalog.nextUniqueCharacterId(current)
+        } else {
+            profile.characterId
+        }
+        val safeSpeakerId = profile.speakerId.trim().ifBlank {
+            DubbingVoiceCatalog.nextAvailableSpeakerId(current)
+        }
+        val safeName = profile.label.trim().ifBlank {
+            DubbingVoiceCatalog.nextDefaultCharacterName(current)
+        }
+        val added = profile.copy(
+            characterId = uniqueId,
+            speakerId = safeSpeakerId,
+            label = safeName,
+            createdAtMs = if (profile.createdAtMs > 0L) profile.createdAtMs else System.currentTimeMillis()
         )
+        val updatedList = current + added
+        val mediaUri = activeUriString.orEmpty()
         viewModelScope.launch {
-            dubbingPreferencesRepository.saveCharacters(current + added)
+            dubbingPreferencesRepository.saveCharacters(updatedList)
+            if (mediaUri.isNotBlank()) {
+                dubbingPreferencesRepository.syncMovieAssignmentsForCharacters(mediaUri, updatedList)
+            }
         }
     }
 
     fun updateDubbingCharacter(updated: CharacterVoiceProfile) {
         val current = dubbingConfigFlow.value.characterVoices
-        val next = current.map { if (it.speakerId == updated.speakerId) updated else it }
-        viewModelScope.launch { dubbingPreferencesRepository.saveCharacters(next) }
+        val next = current.map { if (it.characterId == updated.characterId) updated else it }
+        val mediaUri = activeUriString.orEmpty()
+        viewModelScope.launch {
+            dubbingPreferencesRepository.saveCharacters(next)
+            if (mediaUri.isNotBlank()) {
+                dubbingPreferencesRepository.syncMovieAssignmentsForCharacters(mediaUri, next)
+            }
+        }
     }
 
-    fun removeDubbingCharacter(speakerId: String) {
+    fun removeDubbingCharacter(characterId: String) {
+        if (ttsPreviewEngine.state.value.activePreviewCharacterId == characterId) {
+            ttsPreviewEngine.stopPreview()
+        }
         val current = dubbingConfigFlow.value.characterVoices
-        if (current.size <= 1) return
-        val next = current.filterNot { it.speakerId == speakerId }
-        viewModelScope.launch { dubbingPreferencesRepository.saveCharacters(next) }
+        val next = current.filterNot { it.characterId == characterId }
+        val mediaUri = activeUriString.orEmpty()
+        viewModelScope.launch {
+            dubbingPreferencesRepository.saveCharacters(next)
+            if (mediaUri.isNotBlank()) {
+                dubbingPreferencesRepository.syncMovieAssignmentsForCharacters(mediaUri, next)
+            }
+        }
+    }
+
+    fun resetDefaultDubbingCharacters() {
+        ttsPreviewEngine.stopPreview()
+        val defaults = DubbingVoiceCatalog.defaultCharacters()
+        val mediaUri = activeUriString.orEmpty()
+        viewModelScope.launch {
+            dubbingPreferencesRepository.resetDefaultCharacters()
+            if (mediaUri.isNotBlank()) {
+                dubbingPreferencesRepository.syncMovieAssignmentsForCharacters(mediaUri, defaults)
+            }
+        }
+    }
+
+    fun previewCharacterVoice(profile: CharacterVoiceProfile) {
+        ttsPreviewEngine.previewCharacter(profile)
+    }
+
+    fun stopVoicePreview() {
+        ttsPreviewEngine.stopPreview()
     }
 
     fun inspectCurrentVideoAudio() {
@@ -523,9 +595,17 @@ class PlayerViewModel(
     }
 
     override fun onCleared() {
+        ttsPreviewEngine.release()
         playerEngine.release()
         super.onCleared()
     }
+
+    private data class ExtractionUiSnapshot(
+        val audioInfo: ExtractedAudioTrackInfo?,
+        val isInspecting: Boolean,
+        val isExtracting: Boolean,
+        val message: String?
+    )
 
     class Factory(private val app: VoxoraApplication) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")

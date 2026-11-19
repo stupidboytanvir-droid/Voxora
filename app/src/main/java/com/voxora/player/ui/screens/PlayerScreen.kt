@@ -624,9 +624,15 @@ fun PlayerScreen(
                     onAddCharacter = viewModel::addDubbingCharacter,
                     onUpdateCharacter = viewModel::updateDubbingCharacter,
                     onRemoveCharacter = viewModel::removeDubbingCharacter,
+                    onResetDefaultCharacters = viewModel::resetDefaultDubbingCharacters,
+                    onPreviewCharacterVoice = viewModel::previewCharacterVoice,
+                    onStopVoicePreview = viewModel::stopVoicePreview,
                     onInspectAudioTrack = viewModel::inspectCurrentVideoAudio,
                     onRunStage1Extraction = viewModel::runStage1AudioExtraction,
-                    onDismiss = { activeSheet = ActiveSheet.NONE }
+                    onDismiss = {
+                        viewModel.stopVoicePreview()
+                        activeSheet = ActiveSheet.NONE
+                    }
                 )
             }
             ActiveSheet.BATTERY_SAVER -> {

@@ -1,7 +1,7 @@
 package com.voxora.player.dubbing
 
 /**
- * VOXORA AI Dubbing — Phase 1 Modular Processing Contracts.
+ * VOXORA AI Dubbing — Phase 1 Modular Processing Contracts & Speaker-Character Registry.
  *
  * ZERO-COST & HONEST ARCHITECTURE:
  * - No paid APIs, cloud subscriptions, or fake AI synthesis.
@@ -9,6 +9,8 @@ package com.voxora.player.dubbing
  *   Volume Mixer via Media3 ExoPlayer) are genuinely implemented and ready on-device.
  * - Stages 2, 3, 4, 5, and 7 define clean Kotlin interfaces ready for future free & open-source
  *   offline AI models (whisper.cpp, Sherpa-ONNX, OPUS-MT/NLLB-200, Piper VITS Bengali, Demucs).
+ * - [SpeakerDiarizationCharacterMapper] guarantees consistent speaker-to-character voice mapping
+ *   throughout an entire movie once offline speaker diarization is connected.
  */
 
 sealed interface DubbingCapabilityStatus {
@@ -16,7 +18,7 @@ sealed interface DubbingCapabilityStatus {
         val plannedVersion: String = "Phase 2",
         val plannedCapabilities: List<String> = listOf(
             "On-device English speech recognition (whisper.cpp / Sherpa-ONNX)",
-            "Multi-speaker diarization & character identification",
+            "Multi-speaker diarization & automatic character assignment",
             "Offline English-to-Bengali (বাংলা) neural translation",
             "Natural multi-character Bengali neural voice generation",
             "Original background music & sound effects stem preservation",
@@ -65,6 +67,155 @@ interface SpeakerDiarizationEngine {
     val engineName: String
     val isModelInstalled: Boolean
     suspend fun identifySpeakers(audioFilePath: String): Result<List<SpeakerTurn>>
+}
+
+/**
+ * Output of mapping diarization speaker turns to persistent VOXORA [CharacterVoiceProfile]s
+ * for a specific movie.
+ */
+data class DiarizationAssignmentResult(
+    val updatedCharacters: List<CharacterVoiceProfile>,
+    val movieAssignments: List<MovieSpeakerAssignment>,
+    val newlyCreatedCharacterIds: List<String>
+)
+
+/**
+ * Contract bridging future offline [SpeakerDiarizationEngine] output with VOXORA's local
+ * Character Management system. Guarantees that once a speaker cluster is assigned to a
+ * character for a movie, every dialogue line spoken by that speaker across the entire movie
+ * resolves to the exact same character and voice profile.
+ */
+interface SpeakerDiarizationCharacterMapper {
+    fun assignSpeakersForMovie(
+        detectedTurns: List<SpeakerTurn>,
+        savedCharacters: List<CharacterVoiceProfile>,
+        existingMovieAssignments: List<MovieSpeakerAssignment>
+    ): DiarizationAssignmentResult
+
+    fun resolveCharacterForSegment(
+        diarizationSpeakerId: String,
+        movieAssignments: List<MovieSpeakerAssignment>,
+        savedCharacters: List<CharacterVoiceProfile>
+    ): CharacterVoiceProfile?
+}
+
+/**
+ * Deterministic mapper that binds diarized speakers to saved characters and locks their
+ * voice profile consistently for the entire movie.
+ */
+class DefaultSpeakerDiarizationCharacterMapper : SpeakerDiarizationCharacterMapper {
+
+    override fun assignSpeakersForMovie(
+        detectedTurns: List<SpeakerTurn>,
+        savedCharacters: List<CharacterVoiceProfile>,
+        existingMovieAssignments: List<MovieSpeakerAssignment>
+    ): DiarizationAssignmentResult {
+        val workingCharacters = savedCharacters.toMutableList()
+        val charactersById = workingCharacters.associateBy { it.characterId }.toMutableMap()
+        val assignmentsBySpeaker = linkedMapOf<String, MovieSpeakerAssignment>()
+        val newlyCreatedIds = mutableListOf<String>()
+
+        // 1. Preserve all existing valid movie assignments to guarantee whole-movie consistency.
+        existingMovieAssignments.forEach { assignment ->
+            val matchedCharacter = charactersById[assignment.characterId]
+            if (matchedCharacter != null) {
+                assignmentsBySpeaker[assignment.diarizationSpeakerId] = assignment.copy(
+                    lockedVoiceId = if (matchedCharacter.isVoiceLockedForMovie) {
+                        assignment.lockedVoiceId
+                    } else {
+                        matchedCharacter.voiceId
+                    }
+                )
+            }
+        }
+
+        // 2. Group detected speakers in chronological order of first appearance.
+        val distinctSpeakers = linkedMapOf<String, VoiceGender?>()
+        detectedTurns.sortedBy { it.startTimeMs }.forEach { turn ->
+            if (turn.speakerId !in distinctSpeakers || distinctSpeakers[turn.speakerId] == null) {
+                distinctSpeakers[turn.speakerId] = turn.estimatedGender
+            }
+        }
+
+        val assignedCharacterIds = assignmentsBySpeaker.values.map { it.characterId }.toMutableSet()
+
+        // 3. Bind each newly detected speaker to an existing compatible profile or create a new one.
+        distinctSpeakers.forEach { (speakerId, estimatedGender) ->
+            if (speakerId in assignmentsBySpeaker) return@forEach
+
+            val directSlotMatch = workingCharacters.firstOrNull {
+                it.speakerId.equals(speakerId, ignoreCase = true) && it.characterId !in assignedCharacterIds
+            }
+            val genderMatch = directSlotMatch ?: workingCharacters.firstOrNull {
+                it.characterId !in assignedCharacterIds &&
+                    (estimatedGender == null || it.gender == estimatedGender)
+            }
+
+            val chosenCharacter = if (genderMatch != null) {
+                genderMatch
+            } else {
+                val gender = estimatedGender ?: if (workingCharacters.size % 2 == 0) {
+                    VoiceGender.MALE
+                } else {
+                    VoiceGender.FEMALE
+                }
+                val preset = DubbingVoiceCatalog.nextVoicePresetForGender(gender, workingCharacters)
+                val created = CharacterVoiceProfile(
+                    characterId = DubbingVoiceCatalog.nextUniqueCharacterId(workingCharacters),
+                    speakerId = speakerId,
+                    label = DubbingVoiceCatalog.nextDefaultCharacterName(workingCharacters),
+                    voiceId = preset.id,
+                    gender = gender,
+                    pitchFactor = preset.defaultPitch,
+                    speakingRate = preset.defaultRate,
+                    emotionStyle = VoiceEmotionStyle.NATURAL,
+                    isDetectedFromDiarization = true,
+                    isVoiceLockedForMovie = true
+                )
+                workingCharacters.add(created)
+                charactersById[created.characterId] = created
+                newlyCreatedIds.add(created.characterId)
+                created
+            }
+
+            assignedCharacterIds.add(chosenCharacter.characterId)
+            assignmentsBySpeaker[speakerId] = MovieSpeakerAssignment(
+                diarizationSpeakerId = speakerId,
+                characterId = chosenCharacter.characterId,
+                lockedVoiceId = chosenCharacter.voiceId,
+                isAutoAssigned = true
+            )
+        }
+
+        return DiarizationAssignmentResult(
+            updatedCharacters = workingCharacters,
+            movieAssignments = assignmentsBySpeaker.values.toList(),
+            newlyCreatedCharacterIds = newlyCreatedIds
+        )
+    }
+
+    override fun resolveCharacterForSegment(
+        diarizationSpeakerId: String,
+        movieAssignments: List<MovieSpeakerAssignment>,
+        savedCharacters: List<CharacterVoiceProfile>
+    ): CharacterVoiceProfile? {
+        val assignment = movieAssignments.firstOrNull {
+            it.diarizationSpeakerId.equals(diarizationSpeakerId, ignoreCase = true)
+        }
+        if (assignment != null) {
+            val matched = savedCharacters.firstOrNull { it.characterId == assignment.characterId }
+            if (matched != null) {
+                return if (matched.isVoiceLockedForMovie) {
+                    matched.copy(voiceId = assignment.lockedVoiceId)
+                } else {
+                    matched
+                }
+            }
+        }
+        return savedCharacters.firstOrNull {
+            it.speakerId.equals(diarizationSpeakerId, ignoreCase = true)
+        }
+    }
 }
 
 /** Stage 4: Context-aware translation (Phase 1: English -> Bengali / বাংলা). */
@@ -231,7 +382,7 @@ class Version1AiDubbingPipeline(
             PipelineStageStatus(
                 stage = DubbingPipelineStage.SPEAKER_DIARIZATION,
                 readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
-                statusDetail = "Character profile UI ready · Awaiting offline speaker clustering engine"
+                statusDetail = "Character registry & whole-movie speaker lock ready · Awaiting offline speaker clustering engine"
             ),
             PipelineStageStatus(
                 stage = DubbingPipelineStage.ENGLISH_TO_BENGALI_TRANSLATION,
@@ -241,7 +392,7 @@ class Version1AiDubbingPipeline(
             PipelineStageStatus(
                 stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
                 readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
-                statusDetail = "Male & Female Bengali voice profiles ready · Awaiting offline neural TTS engine (Piper VITS)"
+                statusDetail = "Unlimited Male/Female character voice slots saved locally · Awaiting offline neural TTS models (Piper VITS)"
             ),
             PipelineStageStatus(
                 stage = DubbingPipelineStage.AUDIO_SYNCHRONIZATION,

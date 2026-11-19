@@ -24,10 +24,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
-import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Layers
@@ -38,7 +36,6 @@ import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -47,11 +44,9 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -78,10 +73,7 @@ import com.voxora.player.dubbing.ComponentReadiness
 import com.voxora.player.dubbing.DubbingAudioOutputMode
 import com.voxora.player.dubbing.DubbingLanguage
 import com.voxora.player.dubbing.DubbingLanguageRegistry
-import com.voxora.player.dubbing.DubbingVoiceCatalog
 import com.voxora.player.dubbing.PlayerDubbingUiState
-import com.voxora.player.dubbing.VoiceEmotionStyle
-import com.voxora.player.dubbing.VoiceGender
 import com.voxora.player.ui.theme.TabularTimeStyle
 import com.voxora.player.ui.theme.VoxoraCharcoal
 import com.voxora.player.ui.theme.VoxoraElectricPurple
@@ -93,12 +85,6 @@ private enum class DubbingStudioTab(val label: String) {
     CONTROLS("Controls"),
     CHARACTERS("Characters"),
     PIPELINE("Pipeline")
-}
-
-private enum class CharacterGenderFilter(val label: String) {
-    ALL("All"),
-    MALE("Male"),
-    FEMALE("Female")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -114,27 +100,18 @@ fun AiDubbingStudioSheet(
     onAdjustSyncOffset: (Long) -> Unit,
     onResetSyncOffset: () -> Unit,
     onPreserveBackgroundChange: (Boolean) -> Unit,
-    onAddCharacter: (name: String, gender: VoiceGender) -> Unit,
+    onAddCharacter: (CharacterVoiceProfile) -> Unit,
     onUpdateCharacter: (CharacterVoiceProfile) -> Unit,
     onRemoveCharacter: (String) -> Unit,
+    onResetDefaultCharacters: () -> Unit,
+    onPreviewCharacterVoice: (CharacterVoiceProfile) -> Unit,
+    onStopVoicePreview: () -> Unit,
     onInspectAudioTrack: () -> Unit,
     onRunStage1Extraction: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var selectedTab by remember { mutableStateOf(DubbingStudioTab.CONTROLS) }
-    var showAddCharacterDialog by remember { mutableStateOf(false) }
-
-    if (showAddCharacterDialog) {
-        AddCharacterDialog(
-            nextIndex = state.config.characterVoices.size + 1,
-            onConfirm = { name, gender ->
-                onAddCharacter(name, gender)
-                showAddCharacterDialog = false
-            },
-            onDismiss = { showAddCharacterDialog = false }
-        )
-    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -299,11 +276,17 @@ fun AiDubbingStudioSheet(
                     )
                 }
                 DubbingStudioTab.CHARACTERS -> {
-                    CharacterVoiceManagerTab(
+                    CharacterManagementSection(
                         characters = state.config.characterVoices,
-                        onOpenAddDialog = { showAddCharacterDialog = true },
+                        movieAssignments = state.movieSpeakerAssignments,
+                        ttsPreviewState = state.ttsPreviewState,
+                        hasActiveMovie = state.config.mediaUriString.isNotBlank(),
+                        onAddCharacter = onAddCharacter,
                         onUpdateCharacter = onUpdateCharacter,
-                        onRemoveCharacter = onRemoveCharacter
+                        onDeleteCharacter = onRemoveCharacter,
+                        onResetDefaultCharacters = onResetDefaultCharacters,
+                        onPreviewCharacterVoice = onPreviewCharacterVoice,
+                        onStopVoicePreview = onStopVoicePreview
                     )
                 }
                 DubbingStudioTab.PIPELINE -> {
@@ -768,296 +751,6 @@ private fun LanguagePairChip(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun CharacterVoiceManagerTab(
-    characters: List<CharacterVoiceProfile>,
-    onOpenAddDialog: () -> Unit,
-    onUpdateCharacter: (CharacterVoiceProfile) -> Unit,
-    onRemoveCharacter: (String) -> Unit
-) {
-    var filter by remember { mutableStateOf(CharacterGenderFilter.ALL) }
-    val filteredCharacters = remember(characters, filter) {
-        when (filter) {
-            CharacterGenderFilter.ALL -> characters
-            CharacterGenderFilter.MALE -> characters.filter { it.gender == VoiceGender.MALE }
-            CharacterGenderFilter.FEMALE -> characters.filter { it.gender == VoiceGender.FEMALE }
-        }
-    }
-
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                CharacterGenderFilter.entries.forEach { option ->
-                    FilterChip(
-                        selected = filter == option,
-                        onClick = { filter = option },
-                        label = { Text(option.label) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = VoxoraElectricPurple,
-                            selectedLabelColor = Color.White,
-                            labelColor = Color.White.copy(alpha = 0.8f)
-                        )
-                    )
-                }
-            }
-
-            OutlinedButton(
-                onClick = onOpenAddDialog,
-                border = BorderStroke(1.dp, VoxoraElectricPurple),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                modifier = Modifier.testTag("dubbing_add_character_button")
-            ) {
-                Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Add")
-            }
-        }
-
-        Text(
-            text = "Assign distinct natural Bengali voice profiles per character. Automatic speaker diarization binds detected speakers here in Phase 2.",
-            style = MaterialTheme.typography.bodySmall,
-            color = Color.White.copy(alpha = 0.7f)
-        )
-
-        filteredCharacters.forEach { character ->
-            CharacterVoiceCard(
-                character = character,
-                canDelete = characters.size > 1,
-                onUpdate = onUpdateCharacter,
-                onRemove = { onRemoveCharacter(character.speakerId) }
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun CharacterVoiceCard(
-    character: CharacterVoiceProfile,
-    canDelete: Boolean,
-    onUpdate: (CharacterVoiceProfile) -> Unit,
-    onRemove: () -> Unit
-) {
-    val presetsForGender = remember(character.gender) {
-        DubbingVoiceCatalog.presetsForGender(character.gender)
-    }
-    val activePreset = remember(character.voiceId) {
-        DubbingVoiceCatalog.findById(character.voiceId)
-    }
-
-    Surface(
-        color = Color(0xFF181924),
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f))
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Surface(
-                            color = VoxoraElectricPurple.copy(alpha = 0.25f),
-                            shape = RoundedCornerShape(6.dp)
-                        ) {
-                            Text(
-                                text = character.speakerId,
-                                style = TabularTimeStyle,
-                                color = VoxoraElectricPurpleBright,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                        Text(
-                            text = character.label,
-                            style = MaterialTheme.typography.titleSmall,
-                            color = Color.White,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Text(
-                        text = "${activePreset.nativeDisplayName} · ${activePreset.description}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White.copy(alpha = 0.65f),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                if (canDelete) {
-                    IconButton(
-                        onClick = onRemove,
-                        modifier = Modifier.size(40.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.DeleteOutline,
-                            contentDescription = "Remove character",
-                            tint = Color.White.copy(alpha = 0.65f)
-                        )
-                    }
-                }
-            }
-
-            // Male / Female Category Switch
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                VoiceGender.entries.forEach { gender ->
-                    val selected = character.gender == gender
-                    FilterChip(
-                        selected = selected,
-                        onClick = {
-                            val defaultPreset = DubbingVoiceCatalog.presetsForGender(gender).first()
-                            onUpdate(
-                                character.copy(
-                                    gender = gender,
-                                    voiceId = defaultPreset.id,
-                                    pitchFactor = defaultPreset.defaultPitch,
-                                    speakingRate = defaultPreset.defaultRate
-                                )
-                            )
-                        },
-                        label = { Text("${gender.label} Voice") },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = VoxoraSubtleBlue.copy(alpha = 0.25f),
-                            selectedLabelColor = VoxoraSubtleBlue,
-                            labelColor = Color.White.copy(alpha = 0.78f)
-                        )
-                    )
-                }
-            }
-
-            // Individual Bengali Voice Profile Selection
-            Text(
-                text = "Assigned Bengali Voice Profile",
-                style = MaterialTheme.typography.labelMedium,
-                color = Color.White.copy(alpha = 0.75f)
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                presetsForGender.forEach { preset ->
-                    FilterChip(
-                        selected = character.voiceId == preset.id,
-                        onClick = {
-                            onUpdate(
-                                character.copy(
-                                    voiceId = preset.id,
-                                    pitchFactor = preset.defaultPitch,
-                                    speakingRate = preset.defaultRate
-                                )
-                            )
-                        },
-                        label = { Text("${preset.name} · ${preset.styleTag}") },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = VoxoraElectricPurple,
-                            selectedLabelColor = Color.White,
-                            labelColor = Color.White.copy(alpha = 0.82f)
-                        )
-                    )
-                }
-            }
-
-            // Per-character Pitch & Speaking Rate
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Pitch", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.75f))
-                        Text(
-                            text = String.format("%.2fx", character.pitchFactor),
-                            style = TabularTimeStyle,
-                            color = VoxoraSubtleBlue
-                        )
-                    }
-                    Slider(
-                        value = character.pitchFactor,
-                        onValueChange = { onUpdate(character.copy(pitchFactor = it)) },
-                        valueRange = 0.75f..1.25f,
-                        colors = SliderDefaults.colors(
-                            thumbColor = VoxoraElectricPurpleBright,
-                            activeTrackColor = VoxoraElectricPurple
-                        )
-                    )
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Rate", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.75f))
-                        Text(
-                            text = String.format("%.2fx", character.speakingRate),
-                            style = TabularTimeStyle,
-                            color = VoxoraSubtleBlue
-                        )
-                    }
-                    Slider(
-                        value = character.speakingRate,
-                        onValueChange = { onUpdate(character.copy(speakingRate = it)) },
-                        valueRange = 0.8f..1.25f,
-                        colors = SliderDefaults.colors(
-                            thumbColor = VoxoraSubtleBlue,
-                            activeTrackColor = VoxoraSubtleBlue
-                        )
-                    )
-                }
-            }
-
-            // Future Emotional Voice Controls (Phase 2 Neural Prosody)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Emotional Expression",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color.White.copy(alpha = 0.75f)
-                )
-                Text(
-                    text = "Phase 2 Neural Prosody",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = VoxoraSubtleBlue
-                )
-            }
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                VoiceEmotionStyle.entries.forEach { emotion ->
-                    FilterChip(
-                        selected = character.emotionStyle == emotion,
-                        onClick = { onUpdate(character.copy(emotionStyle = emotion)) },
-                        label = { Text(emotion.label) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color(0xFF28224A),
-                            selectedLabelColor = VoxoraElectricPurpleBright,
-                            labelColor = Color.White.copy(alpha = 0.75f)
-                        )
-                    )
-                }
-            }
-        }
-    }
-}
-
 @Composable
 private fun DubbingPipelineTab(
     state: PlayerDubbingUiState,
@@ -1283,52 +976,3 @@ private fun DubbingPipelineTab(
     }
 }
 
-@Composable
-private fun AddCharacterDialog(
-    nextIndex: Int,
-    onConfirm: (name: String, gender: VoiceGender) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var name by remember { mutableStateOf("Character $nextIndex") }
-    var gender by remember { mutableStateOf(VoiceGender.MALE) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Add Character Profile") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Character Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    VoiceGender.entries.forEach { option ->
-                        FilterChip(
-                            selected = gender == option,
-                            onClick = { gender = option },
-                            label = { Text(option.label) }
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val trimmed = name.trim().ifBlank { "Character $nextIndex" }
-                    onConfirm(trimmed, gender)
-                }
-            ) {
-                Text("Add Character")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
-}

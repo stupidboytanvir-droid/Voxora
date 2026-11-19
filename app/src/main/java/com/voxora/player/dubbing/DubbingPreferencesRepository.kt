@@ -12,12 +12,15 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 
 private val Context.voxoraDubbingStore: DataStore<Preferences> by preferencesDataStore(name = "voxora_dubbing_prefs")
 
 /**
- * Local DataStore persistence for VOXORA AI Dubbing Phase 1 settings and character voice profiles.
+ * Local DataStore persistence for VOXORA AI Dubbing settings, unlimited character voice profiles,
+ * and per-movie speaker-to-character voice lock assignments.
  */
 class DubbingPreferencesRepository(private val context: Context) {
 
@@ -25,6 +28,11 @@ class DubbingPreferencesRepository(private val context: Context) {
         ignoreUnknownKeys = true
         encodeDefaults = true
     }
+
+    private val movieAssignmentsMapSerializer = MapSerializer(
+        String.serializer(),
+        ListSerializer(MovieSpeakerAssignment.serializer())
+    )
 
     private object Keys {
         val ENABLED = booleanPreferencesKey("dubbing_enabled")
@@ -36,6 +44,8 @@ class DubbingPreferencesRepository(private val context: Context) {
         val SYNC_OFFSET_MS = longPreferencesKey("dubbing_sync_offset_ms")
         val PRESERVE_BACKGROUND = booleanPreferencesKey("dubbing_preserve_background")
         val CHARACTER_PROFILES_JSON = stringPreferencesKey("dubbing_character_profiles_json")
+        val CHARACTER_PROFILES_INITIALIZED = booleanPreferencesKey("dubbing_characters_initialized")
+        val MOVIE_SPEAKER_ASSIGNMENTS_JSON = stringPreferencesKey("dubbing_movie_speaker_assignments_json")
     }
 
     val configFlow: Flow<DubbingSessionConfig> = context.voxoraDubbingStore.data.map { prefs ->
@@ -50,11 +60,21 @@ class DubbingPreferencesRepository(private val context: Context) {
             DubbingAudioOutputMode.entries.firstOrNull { it.name == name }
         } ?: DubbingAudioOutputMode.ORIGINAL_AUDIO
 
-        val characters = prefs[Keys.CHARACTER_PROFILES_JSON]?.let { raw ->
+        val isInitialized = prefs[Keys.CHARACTER_PROFILES_INITIALIZED] ?: false
+        val rawCharacters = prefs[Keys.CHARACTER_PROFILES_JSON]
+        val characters = if (rawCharacters != null) {
             runCatching {
-                json.decodeFromString(ListSerializer(CharacterVoiceProfile.serializer()), raw)
-            }.getOrNull()?.takeIf { it.isNotEmpty() }
-        } ?: DubbingVoiceCatalog.defaultCharacters()
+                json.decodeFromString(ListSerializer(CharacterVoiceProfile.serializer()), rawCharacters)
+            }.getOrNull()?.let { decoded ->
+                if (decoded.isEmpty() && !isInitialized) {
+                    DubbingVoiceCatalog.defaultCharacters()
+                } else {
+                    normalizeLegacyProfiles(decoded)
+                }
+            } ?: DubbingVoiceCatalog.defaultCharacters()
+        } else {
+            DubbingVoiceCatalog.defaultCharacters()
+        }
 
         DubbingSessionConfig(
             isDubbingEnabled = prefs[Keys.ENABLED] ?: false,
@@ -67,6 +87,32 @@ class DubbingPreferencesRepository(private val context: Context) {
             preserveOriginalBackgroundAudio = prefs[Keys.PRESERVE_BACKGROUND] ?: true,
             characterVoices = characters
         )
+    }
+
+    val allMovieAssignmentsFlow: Flow<Map<String, List<MovieSpeakerAssignment>>> =
+        context.voxoraDubbingStore.data.map { prefs ->
+            prefs[Keys.MOVIE_SPEAKER_ASSIGNMENTS_JSON]?.let { raw ->
+                runCatching {
+                    json.decodeFromString(movieAssignmentsMapSerializer, raw)
+                }.getOrNull()
+            } ?: emptyMap()
+        }
+
+    /**
+     * Ensures previously saved v1.1.0 profiles without a distinct `CHAR_NNN` ID receive
+     * stable unique character IDs without losing any user edits.
+     */
+    private fun normalizeLegacyProfiles(profiles: List<CharacterVoiceProfile>): List<CharacterVoiceProfile> {
+        val seenIds = mutableSetOf<String>()
+        return profiles.mapIndexed { index, profile ->
+            val resolvedId = if (profile.characterId.isBlank() || profile.characterId in seenIds) {
+                "CHAR_${(index + 1).toString().padStart(3, '0')}"
+            } else {
+                profile.characterId
+            }
+            seenIds.add(resolvedId)
+            profile.copy(characterId = resolvedId)
+        }
     }
 
     suspend fun setDubbingEnabled(enabled: Boolean) {
@@ -108,6 +154,47 @@ class DubbingPreferencesRepository(private val context: Context) {
 
     suspend fun saveCharacters(characters: List<CharacterVoiceProfile>) {
         val encoded = json.encodeToString(ListSerializer(CharacterVoiceProfile.serializer()), characters)
-        context.voxoraDubbingStore.edit { it[Keys.CHARACTER_PROFILES_JSON] = encoded }
+        context.voxoraDubbingStore.edit { prefs ->
+            prefs[Keys.CHARACTER_PROFILES_INITIALIZED] = true
+            prefs[Keys.CHARACTER_PROFILES_JSON] = encoded
+        }
+    }
+
+    suspend fun resetDefaultCharacters() {
+        saveCharacters(DubbingVoiceCatalog.defaultCharacters())
+    }
+
+    suspend fun saveMovieAssignments(
+        mediaUriString: String,
+        assignments: List<MovieSpeakerAssignment>
+    ) {
+        if (mediaUriString.isBlank()) return
+        context.voxoraDubbingStore.edit { prefs ->
+            val existing = prefs[Keys.MOVIE_SPEAKER_ASSIGNMENTS_JSON]?.let { raw ->
+                runCatching { json.decodeFromString(movieAssignmentsMapSerializer, raw) }.getOrNull()
+            }?.toMutableMap() ?: mutableMapOf()
+            existing[mediaUriString] = assignments
+            prefs[Keys.MOVIE_SPEAKER_ASSIGNMENTS_JSON] = json.encodeToString(movieAssignmentsMapSerializer, existing)
+        }
+    }
+
+    /**
+     * Keeps a movie's speaker-to-character voice lock synchronized when characters are added,
+     * edited, or removed while a video is loaded.
+     */
+    suspend fun syncMovieAssignmentsForCharacters(
+        mediaUriString: String,
+        characters: List<CharacterVoiceProfile>
+    ) {
+        if (mediaUriString.isBlank()) return
+        val synced = characters.map { character ->
+            MovieSpeakerAssignment(
+                diarizationSpeakerId = character.speakerId,
+                characterId = character.characterId,
+                lockedVoiceId = character.voiceId,
+                isAutoAssigned = character.isDetectedFromDiarization
+            )
+        }
+        saveMovieAssignments(mediaUriString, synced)
     }
 }

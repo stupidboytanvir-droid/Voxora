@@ -112,7 +112,8 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
             offlineBengaliTtsEngine = offlineBengaliTtsEngine,
             dubbingPreferencesRepository = dubbingPreferencesRepository,
             trackAssembler = dubbedTrackAssembler,
-            videoPcmAudioDecoder = VideoPcmAudioDecoder(this)
+            videoPcmAudioDecoder = VideoPcmAudioDecoder(this),
+            appContext = this
         )
         dubbedVideoExporter = DubbedVideoExporter(this, dubbedTrackAssembler)
     }

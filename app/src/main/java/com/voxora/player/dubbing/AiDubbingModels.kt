@@ -142,6 +142,7 @@ data class DubbingSessionConfig(
     val bgmDuckingStrength: Float = 0.80f,
     val vocalAttenuationEnabled: Boolean = false,
     val fastMovieModeEnabled: Boolean = true,
+    val useSherpaVitsExperimental: Boolean = false,
     val autoDetectSourceLanguage: Boolean = false,
     val characterVoices: List<CharacterVoiceProfile> = DubbingVoiceCatalog.defaultCharacters()
 )

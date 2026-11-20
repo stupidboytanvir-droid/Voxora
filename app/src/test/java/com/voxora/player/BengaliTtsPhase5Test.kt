@@ -167,33 +167,38 @@ class BengaliTtsPhase5Test {
 
         val notInstalled = pipeline.buildStageStatuses(
             extractedAudioInfo = null,
-            bengaliTtsModelState = BengaliTtsModelState.NotInstalled
+            bengaliTtsModelState = BengaliTtsModelState.NotInstalled,
+            useSherpaVitsExperimental = true
         ).first { it.stage == DubbingPipelineStage.BENGALI_SPEECH_GENERATION }
         assertEquals(ComponentReadiness.REQUIRES_AI_ENGINE, notInstalled.readiness)
         assertTrue(notInstalled.statusDetail.contains("Model Required", ignoreCase = true))
 
         val downloading = pipeline.buildStageStatuses(
             extractedAudioInfo = null,
-            bengaliTtsModelState = BengaliTtsModelState.Downloading(60, "Downloading VITS...")
+            bengaliTtsModelState = BengaliTtsModelState.Downloading(60, "Downloading VITS..."),
+            useSherpaVitsExperimental = true
         ).first { it.stage == DubbingPipelineStage.BENGALI_SPEECH_GENERATION }
         assertEquals(ComponentReadiness.RUNNING, downloading.readiness)
 
         val ready = pipeline.buildStageStatuses(
             extractedAudioInfo = null,
-            bengaliTtsModelState = BengaliTtsModelState.Ready
+            bengaliTtsModelState = BengaliTtsModelState.Ready,
+            useSherpaVitsExperimental = true
         ).first { it.stage == DubbingPipelineStage.BENGALI_SPEECH_GENERATION }
         assertEquals(ComponentReadiness.READY, ready.readiness)
 
         val synthesizing = pipeline.buildStageStatuses(
             extractedAudioInfo = null,
             bengaliTtsModelState = BengaliTtsModelState.Ready,
-            isSynthesizingBengaliVoice = true
+            isSynthesizingBengaliVoice = true,
+            useSherpaVitsExperimental = true
         ).first { it.stage == DubbingPipelineStage.BENGALI_SPEECH_GENERATION }
         assertEquals(ComponentReadiness.RUNNING, synthesizing.readiness)
 
         val error = pipeline.buildStageStatuses(
             extractedAudioInfo = null,
-            bengaliTtsModelState = BengaliTtsModelState.Error("Storage full")
+            bengaliTtsModelState = BengaliTtsModelState.Error("Storage full"),
+            useSherpaVitsExperimental = true
         ).first { it.stage == DubbingPipelineStage.BENGALI_SPEECH_GENERATION }
         assertEquals(ComponentReadiness.ERROR, error.readiness)
         assertEquals("Storage full", error.statusDetail)

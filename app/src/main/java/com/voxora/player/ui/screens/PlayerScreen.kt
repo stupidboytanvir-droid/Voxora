@@ -734,6 +734,7 @@ fun PlayerScreen(
                     onBgmDuckingStrengthChange = viewModel::setBgmDuckingStrength,
                     onVocalAttenuationChange = viewModel::setVocalAttenuationEnabled,
                     onFastMovieModeChange = viewModel::setFastMovieModeEnabled,
+                    onUseSherpaVitsExperimentalChange = viewModel::setUseSherpaVitsExperimental,
                     onAddCharacter = viewModel::addDubbingCharacter,
                     onUpdateCharacter = viewModel::updateDubbingCharacter,
                     onRemoveCharacter = viewModel::removeDubbingCharacter,

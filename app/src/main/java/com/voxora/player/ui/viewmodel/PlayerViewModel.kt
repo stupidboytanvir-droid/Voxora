@@ -218,13 +218,20 @@ class PlayerViewModel(
 
     private val _oneClickProgressState = MutableStateFlow(OneClickProgressSnapshot())
 
+    private val effectiveBengaliTtsReadyFlow = combine(
+        dubbingConfigFlow,
+        bengaliTtsModelState
+    ) { config, ttsState ->
+        if (!config.useSherpaVitsExperimental) true else ttsState is BengaliTtsModelState.Ready
+    }
+
     val oneClickAiSetupState: StateFlow<OneClickAiSetupState> = combine(
         whisperModelStatus,
         diarizationModelState,
         translationModelState,
-        bengaliTtsModelState,
+        effectiveBengaliTtsReadyFlow,
         _oneClickProgressState
-    ) { whisperStatus, diarizationState, translationState, ttsState, progress ->
+    ) { whisperStatus, diarizationState, translationState, isBengaliTtsReady, progress ->
         val isWhisperInstalledOnDisk = whisperStatus is WhisperModelStatus.LoadedReady ||
             whisperStatus is WhisperModelStatus.InstalledUnloaded ||
             whisperStatus is WhisperModelStatus.Loading ||
@@ -235,7 +242,7 @@ class PlayerViewModel(
             isWhisperReady = isWhisperInstalledOnDisk,
             isDiarizationReady = diarizationState is DiarizationModelState.Ready,
             isTranslationReady = translationState is TranslationModelState.Ready,
-            isBengaliTtsReady = ttsState is BengaliTtsModelState.Ready,
+            isBengaliTtsReady = isBengaliTtsReady,
             isRunning = progress.isRunning,
             currentStepIndex = progress.currentStepIndex,
             totalSteps = progress.totalSteps,
@@ -331,15 +338,16 @@ class PlayerViewModel(
     private val effectiveTtsPreviewStateFlow = combine(
         ttsPreviewEngine.state,
         bengaliTtsModelState,
+        dubbingConfigFlow,
         _activeNeuralPreviewCharacterId
-    ) { systemTtsState, neuralTtsState, activeNeuralCharId ->
-        if (neuralTtsState is BengaliTtsModelState.Ready) {
+    ) { systemTtsState, neuralTtsState, config, activeNeuralCharId ->
+        if (config.useSherpaVitsExperimental && neuralTtsState is BengaliTtsModelState.Ready) {
             systemTtsState.copy(
                 isChecking = false,
                 isRealTtsEngineAvailable = true,
                 isBengaliVoiceSupported = true,
-                matchedLocaleTag = "bn-VITS-Offline",
-                statusMessage = "Offline Sherpa-ONNX VITS Bengali voice Ready. Preview plays real offline Bengali speech with each character's pitch & speed.",
+                matchedLocaleTag = "bn-VITS-Experimental",
+                statusMessage = "Experimental Sherpa-ONNX VITS Bengali voice Ready. Preview plays offline VITS Bengali speech.",
                 activePreviewCharacterId = activeNeuralCharId
             )
         } else {
@@ -373,6 +381,7 @@ class PlayerViewModel(
                 translationModelState = extraction.whisper.translationModelState,
                 isTranslating = extraction.whisper.isTranslating,
                 bengaliTtsModelState = extraction.whisper.bengaliTtsModelState,
+                useSherpaVitsExperimental = effectiveConfig.useSherpaVitsExperimental,
                 isSynthesizingBengaliVoice = extraction.whisper.isSynthesizingBengaliVoice,
                 isLiveDubbingActive = extraction.whisper.isLiveDubbingActive,
                 preserveBackgroundAudio = effectiveConfig.preserveOriginalBackgroundAudio,
@@ -756,6 +765,10 @@ class PlayerViewModel(
         viewModelScope.launch { dubbingPreferencesRepository.setFastMovieModeEnabled(enabled) }
     }
 
+    fun setUseSherpaVitsExperimental(enabled: Boolean) {
+        viewModelScope.launch { dubbingPreferencesRepository.setUseSherpaVitsExperimental(enabled) }
+    }
+
     fun addDubbingCharacter(profile: CharacterVoiceProfile) {
         val current = dubbingConfigFlow.value.characterVoices
         val uniqueId = if (profile.characterId.isBlank() || current.any { it.characterId == profile.characterId }) {
@@ -825,7 +838,7 @@ class PlayerViewModel(
     }
 
     fun previewCharacterVoice(profile: CharacterVoiceProfile) {
-        if (bengaliTtsModelState.value is BengaliTtsModelState.Ready) {
+        if (dubbingConfigFlow.value.useSherpaVitsExperimental && bengaliTtsModelState.value is BengaliTtsModelState.Ready) {
             if (_activeNeuralPreviewCharacterId.value == profile.characterId) {
                 stopVoicePreview()
                 return
@@ -836,7 +849,8 @@ class PlayerViewModel(
             activeCharacterNeuralPreviewJob = viewModelScope.launch {
                 val synthResult = offlineBengaliTtsEngine.synthesizeCharacterPreview(
                     profile = profile,
-                    sampleText = OfflineBengaliTtsEngine.DEFAULT_BENGALI_PREVIEW_PHRASE
+                    sampleText = OfflineBengaliTtsEngine.DEFAULT_BENGALI_PREVIEW_PHRASE,
+                    useSherpaVitsExperimental = true
                 )
                 synthResult.fold(
                     onSuccess = { wavFile ->
@@ -1579,9 +1593,10 @@ class PlayerViewModel(
             )
             return
         }
-        if (bengaliTtsModelState.value !is BengaliTtsModelState.Ready) {
+        val useSherpaVits = dubbingConfigFlow.value.useSherpaVitsExperimental
+        if (useSherpaVits && bengaliTtsModelState.value !is BengaliTtsModelState.Ready) {
             _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
-                errorMessage = "Bengali TTS Model Required / Not Installed: Download or import the offline Sherpa-ONNX VITS Bengali model pack first."
+                errorMessage = "Sherpa-ONNX VITS (Experimental) Model Required / Not Installed: Download the VITS model pack or turn OFF Experimental VITS to use Android built-in Bengali TTS."
             )
             return
         }
@@ -1601,7 +1616,11 @@ class PlayerViewModel(
             isSynthesizing = true,
             synthesizedCount = 0,
             totalCount = translatedSegments.size,
-            statusMessage = "Initializing offline Sherpa-ONNX VITS Bengali voice...",
+            statusMessage = if (useSherpaVits) {
+                "Initializing experimental Sherpa-ONNX VITS Bengali voice..."
+            } else {
+                "Initializing Android built-in offline Bengali TTS (bn-BD / bn-IN)..."
+            },
             errorMessage = null,
             activeVideoUri = uri,
             segments = emptyList(),
@@ -1610,12 +1629,17 @@ class PlayerViewModel(
 
         activeBengaliVoiceGenJob = viewModelScope.launch {
             try {
+                // Prevent native heap overlap: release Whisper C++ context before starting TTS synthesis
+                runCatching { whisperSpeechEngine.unloadNativeContextSuspending() }
+                runCatching { offlineDiarizationEngine.release() }
+
                 val accumulated = mutableListOf<DubbedAudioSegment>()
                 val result = offlineBengaliTtsEngine.synthesizeSegments(
                     videoUri = uri,
                     translatedSegments = translatedSegments,
                     characters = characters,
                     segmentCharacterOverrides = overrides,
+                    useSherpaVitsExperimental = useSherpaVits,
                     onSegmentSynthesized = { completed, total, dubbedSeg ->
                         accumulated.add(dubbedSeg)
                         _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
@@ -1663,6 +1687,12 @@ class PlayerViewModel(
                     errorMessage = null
                 )
                 throw ce
+            } catch (t: Throwable) {
+                _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                    isSynthesizing = false,
+                    statusMessage = "Bengali voice generation failed",
+                    errorMessage = t.message ?: "Unexpected error during Bengali TTS synthesis."
+                )
             }
         }
     }
@@ -1780,6 +1810,7 @@ class PlayerViewModel(
         val title = _uiState.value.videoTitle
         val durationHint = playerEngine.state.value.durationMs
         val initialFastMode = dubbingConfigFlow.value.fastMovieModeEnabled
+        val initialUseSherpaVits = dubbingConfigFlow.value.useSherpaVitsExperimental
 
         _autoDubPipelineState.value = AutoDubPipelineState(
             isRunning = true,
@@ -1807,7 +1838,10 @@ class PlayerViewModel(
             var firstChunkActivated = false
 
             try {
-                val missing = autoDubPipelineOrchestrator.findMissingModels(fastMovieMode = initialFastMode)
+                val missing = autoDubPipelineOrchestrator.findMissingModels(
+                    fastMovieMode = initialFastMode,
+                    useSherpaVitsExperimental = initialUseSherpaVits
+                )
                 if (missing.isNotEmpty()) {
                     _autoDubPipelineState.value = AutoDubPipelineState(
                         isRunning = false,
@@ -1879,6 +1913,7 @@ class PlayerViewModel(
                     }
 
                     val liveFastMode = dubbingConfigFlow.value.fastMovieModeEnabled
+                    val liveUseSherpaVits = dubbingConfigFlow.value.useSherpaVitsExperimental
                     val windowStartMs = AutoDubPipelineOrchestrator.chunkWindowStartMs(nextChunk)
                     val remainingMs = if (detectedDurMs > 0L) {
                         (detectedDurMs - windowStartMs).coerceIn(1_000L, AutoDubPipelineOrchestrator.ROLLING_CHUNK_DURATION_MS)
@@ -1894,6 +1929,7 @@ class PlayerViewModel(
                             windowStartMs = windowStartMs,
                             windowDurationMs = remainingMs,
                             fastMovieMode = liveFastMode,
+                            useSherpaVitsExperimental = liveUseSherpaVits,
                             savedCharacters = dubbingConfigFlow.value.characterVoices,
                             existingMovieAssignments = activeMovieAssignmentsFlow.value,
                             existingManualOverrides = manualSegmentCharacterOverrides.toMap(),
@@ -2041,6 +2077,16 @@ class PlayerViewModel(
                     errorMessage = null
                 )
                 throw ce
+            } catch (t: Throwable) {
+                _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(isSynthesizing = false)
+                _autoDubPipelineState.value = AutoDubPipelineState(
+                    isRunning = false,
+                    currentStage = AutoDubStage.ERROR,
+                    stageLabel = "Live Bengali dubbing error",
+                    isLiveChunkStreaming = false,
+                    completedChunkCount = completedLiveChunkIndices.size,
+                    errorMessage = t.message ?: "Unexpected error during live Bengali dubbing."
+                )
             } finally {
                 activeChunkWorkJob = null
                 activeProcessingChunkIndex = -1
@@ -2177,7 +2223,9 @@ class PlayerViewModel(
         if (!whisperSpeechEngine.isModelInstalledOnDisk()) missingSteps.add("Whisper ASR")
         if (diarizationModelState.value !is DiarizationModelState.Ready) missingSteps.add("Speaker Diarization")
         if (translationModelState.value !is TranslationModelState.Ready) missingSteps.add("ML Kit EN→বাংলা")
-        if (bengaliTtsModelState.value !is BengaliTtsModelState.Ready) missingSteps.add("Bengali TTS")
+        if (dubbingConfigFlow.value.useSherpaVitsExperimental && bengaliTtsModelState.value !is BengaliTtsModelState.Ready) {
+            missingSteps.add("Bengali TTS")
+        }
 
         if (missingSteps.isEmpty()) return
 

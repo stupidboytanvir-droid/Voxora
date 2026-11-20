@@ -39,6 +39,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -80,6 +81,8 @@ import java.util.Locale
 fun BengaliVoiceTtsSection(
     videoTitle: String,
     translatedSegmentCount: Int,
+    useSherpaVitsExperimental: Boolean = false,
+    onUseSherpaVitsExperimentalChange: (Boolean) -> Unit = {},
     modelState: BengaliTtsModelState,
     slotAvailability: BengaliTtsSlotAvailability,
     installedFiles: BengaliTtsModelFiles?,
@@ -98,22 +101,126 @@ fun BengaliVoiceTtsSection(
     onSeekToTimestamp: (Long) -> Unit,
     onOverrideSegmentCharacter: (segmentIndex: Int, characterId: String) -> Unit
 ) {
-    val isModelReady = modelState is BengaliTtsModelState.Ready
+    val isModelReady = !useSherpaVitsExperimental || modelState is BengaliTtsModelState.Ready
     var overrideDialogSegmentIndex by remember { mutableStateOf<Int?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        // 1. Offline Sherpa-ONNX VITS Bengali Model Status Card
-        BengaliTtsModelStatusCard(
-            modelState = modelState,
-            slotAvailability = slotAvailability,
-            installedFiles = installedFiles,
-            isSynthesizing = voiceState.isSynthesizing,
-            onCheckModelStatus = onCheckModelStatus,
-            onDownloadModels = onDownloadModels,
-            onCancelModelDownload = onCancelModelDownload,
-            onImportLocalFile = onImportLocalFile,
-            onDeleteModels = onDeleteModels
-        )
+        // 0. Default Android Offline Bengali TTS Card + Experimental Sherpa-ONNX VITS Switch
+        Surface(
+            color = Color(0xFF151826),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(
+                1.dp,
+                if (useSherpaVitsExperimental) {
+                    Color(0xFFFBBF24).copy(alpha = 0.50f)
+                } else {
+                    Color(0xFF4ADE80).copy(alpha = 0.50f)
+                }
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.CheckCircle,
+                            contentDescription = null,
+                            tint = if (useSherpaVitsExperimental) Color(0xFFFBBF24) else Color(0xFF4ADE80),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Column {
+                            Text(
+                                text = if (useSherpaVitsExperimental) {
+                                    "Sherpa-ONNX VITS (Experimental)"
+                                } else {
+                                    "Android Built-in Bengali TTS"
+                                },
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = Color.White
+                            )
+                            Text(
+                                text = if (useSherpaVitsExperimental) {
+                                    "Optional native ONNX neural model (~109 MB)"
+                                } else {
+                                    "Default · 100% Offline · bn-BD / bn-IN · Near-Zero RAM"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.White.copy(alpha = 0.72f)
+                            )
+                        }
+                    }
+                    Surface(
+                        color = if (useSherpaVitsExperimental) {
+                            Color(0xFFFBBF24).copy(alpha = 0.16f)
+                        } else {
+                            Color(0xFF4ADE80).copy(alpha = 0.16f)
+                        },
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = if (useSherpaVitsExperimental) "EXPERIMENTAL" else "READY · DEFAULT",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = if (useSherpaVitsExperimental) Color(0xFFFBBF24) else Color(0xFF4ADE80),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                        Text(
+                            text = "Use Sherpa-ONNX VITS (Experimental)",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Keep OFF for crash-free offline Bengali dubbing via Android TextToSpeech with male/female pitch variation.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.68f)
+                        )
+                    }
+                    Switch(
+                        checked = useSherpaVitsExperimental,
+                        onCheckedChange = onUseSherpaVitsExperimentalChange,
+                        enabled = !voiceState.isSynthesizing,
+                        modifier = Modifier.testTag("tts_tab_sherpa_vits_experimental_switch")
+                    )
+                }
+            }
+        }
+
+        // 1. Optional Offline Sherpa-ONNX VITS Bengali Model Status Card (shown when Experimental VITS is enabled)
+        if (useSherpaVitsExperimental) {
+            BengaliTtsModelStatusCard(
+                modelState = modelState,
+                slotAvailability = slotAvailability,
+                installedFiles = installedFiles,
+                isSynthesizing = voiceState.isSynthesizing,
+                onCheckModelStatus = onCheckModelStatus,
+                onDownloadModels = onDownloadModels,
+                onCancelModelDownload = onCancelModelDownload,
+                onImportLocalFile = onImportLocalFile,
+                onDeleteModels = onDeleteModels
+            )
+        }
 
         // 2. Bengali Voice Generation Controls & Progress Card
         Surface(
@@ -166,7 +273,7 @@ fun BengaliVoiceTtsSection(
                         shape = RoundedCornerShape(8.dp)
                     ) {
                         Text(
-                            text = "VITS · বাংলা",
+                            text = if (useSherpaVitsExperimental) "VITS (Exp) · বাংলা" else "Android TTS · বাংলা",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                             color = VoxoraSubtleBlue,
                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
@@ -360,7 +467,11 @@ fun BengaliVoiceTtsSection(
                 if (voiceState.segments.isEmpty()) {
                     Text(
                         text = if (voiceState.isSynthesizing) {
-                            "Generating natural Bengali character audio (.wav) offline via Sherpa-ONNX VITS..."
+                            if (useSherpaVitsExperimental) {
+                                "Generating Bengali character audio (.wav) offline via Sherpa-ONNX VITS (Experimental)..."
+                            } else {
+                                "Generating Bengali character audio (.wav) offline via Android built-in TextToSpeech..."
+                            }
                         } else {
                             "No synthesized Bengali voice lines yet. Tap Generate Bengali Voice above to render each character's Bengali dialogue offline and preview every line here."
                         },

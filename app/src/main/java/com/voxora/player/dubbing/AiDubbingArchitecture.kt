@@ -281,6 +281,7 @@ interface AiDubbingPipeline {
         translationModelState: TranslationModelState = TranslationModelState.NotDownloaded,
         isTranslating: Boolean = false,
         bengaliTtsModelState: BengaliTtsModelState = BengaliTtsModelState.NotInstalled,
+        useSherpaVitsExperimental: Boolean = false,
         isSynthesizingBengaliVoice: Boolean = false,
         isLiveDubbingActive: Boolean = false,
         preserveBackgroundAudio: Boolean = true,
@@ -373,6 +374,7 @@ class Version1AiDubbingPipeline(
         translationModelState: TranslationModelState,
         isTranslating: Boolean,
         bengaliTtsModelState: BengaliTtsModelState,
+        useSherpaVitsExperimental: Boolean,
         isSynthesizingBengaliVoice: Boolean,
         isLiveDubbingActive: Boolean,
         preserveBackgroundAudio: Boolean,
@@ -487,12 +489,21 @@ class Version1AiDubbingPipeline(
             isSynthesizingBengaliVoice -> PipelineStageStatus(
                 stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
                 readiness = ComponentReadiness.RUNNING,
-                statusDetail = "Synthesizing natural Bengali character voices offline via Sherpa-ONNX VITS..."
+                statusDetail = if (useSherpaVitsExperimental) {
+                    "Synthesizing Bengali character voices offline via Sherpa-ONNX VITS (Experimental)..."
+                } else {
+                    "Synthesizing Bengali character voices offline via Android built-in TextToSpeech..."
+                }
+            )
+            !useSherpaVitsExperimental -> PipelineStageStatus(
+                stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
+                readiness = ComponentReadiness.READY,
+                statusDetail = "Android built-in offline Bengali TTS (bn-BD / bn-IN) active by default · Near-zero RAM & zero native crash"
             )
             bengaliTtsModelState is BengaliTtsModelState.Ready -> PipelineStageStatus(
                 stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
                 readiness = ComponentReadiness.READY,
-                statusDetail = "Sherpa-ONNX VITS Bengali neural voice model verified & ready on-device"
+                statusDetail = "Sherpa-ONNX VITS (Experimental) Bengali model verified & ready on-device"
             )
             bengaliTtsModelState is BengaliTtsModelState.Downloading -> PipelineStageStatus(
                 stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
@@ -507,7 +518,7 @@ class Version1AiDubbingPipeline(
             else -> PipelineStageStatus(
                 stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
                 readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
-                statusDetail = "Sherpa-ONNX VITS integrated · Bengali TTS Model Required / Not Installed (~109 MB offline)"
+                statusDetail = "Sherpa-ONNX VITS (Experimental) enabled · Download VITS pack (~109 MB) or turn OFF to use built-in Android Bengali TTS"
             )
         }
 

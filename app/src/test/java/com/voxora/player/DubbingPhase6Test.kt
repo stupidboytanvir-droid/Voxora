@@ -8,13 +8,17 @@ import com.voxora.player.ai.dubbing.BackgroundAudioPreserver
 import com.voxora.player.ai.dubbing.DialogueDuckingWindow
 import com.voxora.player.ai.dubbing.DubbedTrackAssembler
 import com.voxora.player.ai.translation.TranslationModelState
+import com.voxora.player.ai.tts.AndroidSystemBengaliTtsEngine
 import com.voxora.player.ai.tts.BengaliTtsModelState
 import com.voxora.player.ai.tts.DubbedAudioSegment
+import com.voxora.player.dubbing.CharacterVoiceProfile
 import com.voxora.player.dubbing.ComponentReadiness
 import com.voxora.player.dubbing.DubbingSessionConfig
 import com.voxora.player.dubbing.Version1AiDubbingPipeline
+import com.voxora.player.dubbing.VoiceGender
 import com.voxora.player.dubbing.whisper.WhisperModelCatalog
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -181,5 +185,37 @@ class DubbingPhase6Test {
         val c1s0 = AutoDubPipelineOrchestrator.globalSegmentIndex(1, 0)
         assertEquals(0, c0s0)
         assertEquals(1000, c1s0)
+    }
+
+    @Test
+    fun v212_systemBengaliTtsDefaultsOn_andDistinctMaleFemalePitch() {
+        val defaultConfig = DubbingSessionConfig()
+        assertFalse(
+            "Experimental Sherpa-ONNX VITS must default to OFF in v2.1.2",
+            defaultConfig.useSherpaVitsExperimental
+        )
+
+        val maleProfile = CharacterVoiceProfile(
+            speakerId = "SPEAKER_01",
+            label = "Male Lead",
+            voiceId = "bn_male_01",
+            gender = VoiceGender.MALE,
+            pitchFactor = 1.0f,
+            speakingRate = 1.0f,
+            characterId = "CHAR_001"
+        )
+        val femaleProfile = CharacterVoiceProfile(
+            speakerId = "SPEAKER_02",
+            label = "Female Lead",
+            voiceId = "bn_female_01",
+            gender = VoiceGender.FEMALE,
+            pitchFactor = 1.0f,
+            speakingRate = 1.0f,
+            characterId = "CHAR_002"
+        )
+        val malePitch = AndroidSystemBengaliTtsEngine.computeSystemPitch(maleProfile)
+        val femalePitch = AndroidSystemBengaliTtsEngine.computeSystemPitch(femaleProfile)
+        assertTrue("Expected distinct pitch (male=$malePitch < female=$femalePitch)", malePitch < femalePitch)
+        assertEquals(10_000L, AndroidSystemBengaliTtsEngine.LINE_SYNTHESIS_TIMEOUT_MS)
     }
 }

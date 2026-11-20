@@ -1,5 +1,7 @@
 package com.voxora.player.ai.dubbing
 
+import android.app.ActivityManager
+import android.content.Context
 import com.voxora.player.ai.diarization.DiarizationModelManager
 import com.voxora.player.ai.diarization.DiarizationModelState
 import com.voxora.player.ai.diarization.OfflineDiarizationEngine
@@ -85,16 +87,22 @@ class AutoDubPipelineOrchestrator(
     private val offlineBengaliTtsEngine: OfflineBengaliTtsEngine,
     private val dubbingPreferencesRepository: DubbingPreferencesRepository,
     private val trackAssembler: DubbedTrackAssembler,
-    private val videoPcmAudioDecoder: VideoPcmAudioDecoder
+    private val videoPcmAudioDecoder: VideoPcmAudioDecoder,
+    private val appContext: Context? = null
 ) {
     /**
      * Checks which required offline AI models are currently missing on disk.
      *
      * Note: Checks `whisperSpeechEngine.isModelInstalledOnDisk()` (disk presence & GGML header),
      * NEVER whether the native Whisper context is currently loaded in RAM.
-     * In Fast Movie Mode, Speaker Diarization is skipped so it is not required.
+     * - In Fast Movie Mode, Speaker Diarization is skipped so it is not required.
+     * - By default (`useSherpaVitsExperimental = false`), Android's built-in offline Bengali TTS
+     *   is used, so the 109 MB Sherpa-ONNX VITS pack is NOT required.
      */
-    suspend fun findMissingModels(fastMovieMode: Boolean = true): List<String> = withContext(Dispatchers.IO) {
+    suspend fun findMissingModels(
+        fastMovieMode: Boolean = true,
+        useSherpaVitsExperimental: Boolean = false
+    ): List<String> = withContext(Dispatchers.IO) {
         val missing = mutableListOf<String>()
         if (!whisperSpeechEngine.isModelInstalledOnDisk()) {
             missing.add("Whisper ASR (tiny.en-q5_1)")
@@ -105,10 +113,32 @@ class AutoDubPipelineOrchestrator(
         if (offlineTranslationManager.checkModelStatus() !is TranslationModelState.Ready) {
             missing.add("ML Kit EN→বাংলা Translation")
         }
-        if (bengaliTtsModelManager.checkModelStatus() !is BengaliTtsModelState.Ready) {
-            missing.add("Sherpa-ONNX VITS Bengali TTS")
+        if (useSherpaVitsExperimental && bengaliTtsModelManager.checkModelStatus() !is BengaliTtsModelState.Ready) {
+            missing.add("Sherpa-ONNX VITS Bengali TTS (Experimental)")
         }
         missing
+    }
+
+    /**
+     * Returns true when device RAM is constrained (or when experimental native Sherpa-ONNX VITS is active),
+     * indicating we should explicitly unload the native Whisper C++ context before starting TTS synthesis
+     * so native heaps never overlap.
+     */
+    private fun shouldReleaseWhisperBeforeTts(useSherpaVitsExperimental: Boolean): Boolean {
+        if (useSherpaVitsExperimental) return true
+        val ctx = appContext
+        if (ctx != null) {
+            val isLowSystemRam = runCatching {
+                val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                val memInfo = ActivityManager.MemoryInfo()
+                am?.getMemoryInfo(memInfo)
+                memInfo.lowMemory || memInfo.availMem < LOW_AVAILABLE_RAM_THRESHOLD_BYTES
+            }.getOrDefault(true)
+            if (isLowSystemRam) return true
+        }
+        val runtime = Runtime.getRuntime()
+        val approxFreeJvmBytes = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory())
+        return approxFreeJvmBytes < LOW_JVM_HEADROOM_THRESHOLD_BYTES
     }
 
     /**
@@ -147,6 +177,7 @@ class AutoDubPipelineOrchestrator(
         windowStartMs: Long,
         windowDurationMs: Long = ROLLING_CHUNK_DURATION_MS,
         fastMovieMode: Boolean = true,
+        useSherpaVitsExperimental: Boolean = false,
         savedCharacters: List<CharacterVoiceProfile>,
         existingMovieAssignments: List<MovieSpeakerAssignment>,
         existingManualOverrides: Map<Int, String>,
@@ -173,12 +204,21 @@ class AutoDubPipelineOrchestrator(
                 "$chunkLabel · Decoding 30s audio window (${formatWindowRange(windowStartMs, windowDurationMs)})..."
             )
 
-            val pcmChunk = videoPcmAudioDecoder.decodeWindowTo16kPcm(
-                mediaUriString = videoUri,
-                startMs = windowStartMs,
-                windowDurationMs = windowDurationMs,
-                chunkIndex = chunkIndex
-            ).getOrThrow()
+            val pcmChunk = try {
+                videoPcmAudioDecoder.decodeWindowTo16kPcm(
+                    mediaUriString = videoUri,
+                    startMs = windowStartMs,
+                    windowDurationMs = windowDurationMs,
+                    chunkIndex = chunkIndex
+                ).getOrThrow()
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                throw IllegalStateException(
+                    "$chunkLabel audio decode failed: ${t.message ?: "Unable to decode audio window."}",
+                    t
+                )
+            }
 
             coroutineContext.ensureActive()
 
@@ -191,19 +231,29 @@ class AutoDubPipelineOrchestrator(
                 "$chunkLabel · Transcribing English (Whisper tiny · 4 threads)..."
             )
 
-            val transcriptSegments = whisperSpeechEngine.transcribePcmChunkSuspending(
-                chunk = pcmChunk,
-                onProgressPercent = { pct ->
-                    val frac = 0.25f + (pct.coerceIn(0, 100) / 100f) * 0.72f
-                    onStageProgress(
-                        AutoDubStage.TRANSCRIBING,
-                        1,
-                        totalStages,
-                        frac.coerceIn(0.25f, 0.98f),
-                        "$chunkLabel · Transcribing English ($pct%)..."
-                    )
-                }
-            ).getOrThrow()
+            val transcriptSegments = try {
+                whisperSpeechEngine.transcribePcmChunkSuspending(
+                    chunk = pcmChunk,
+                    onProgressPercent = { pct ->
+                        val frac = 0.25f + (pct.coerceIn(0, 100) / 100f) * 0.72f
+                        onStageProgress(
+                            AutoDubStage.TRANSCRIBING,
+                            1,
+                            totalStages,
+                            frac.coerceIn(0.25f, 0.98f),
+                            "$chunkLabel · Transcribing English ($pct%)..."
+                        )
+                    }
+                ).getOrThrow()
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                runCatching { whisperSpeechEngine.unloadNativeContextSuspending() }
+                throw IllegalStateException(
+                    "$chunkLabel English transcription failed: ${t.message ?: "Whisper inference error."}",
+                    t
+                )
+            }
 
             coroutineContext.ensureActive()
 
@@ -244,7 +294,7 @@ class AutoDubPipelineOrchestrator(
 
             if (!fastMovieMode) {
                 // Unload Whisper RAM before loading Pyannote Diarization to keep peak RAM strictly low
-                whisperSpeechEngine.unloadNativeContextSuspending()
+                runCatching { whisperSpeechEngine.unloadNativeContextSuspending() }
                 coroutineContext.ensureActive()
 
                 onStageProgress(
@@ -271,8 +321,15 @@ class AutoDubPipelineOrchestrator(
                             )
                         }
                     ).getOrThrow()
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    throw IllegalStateException(
+                        "$chunkLabel speaker diarization failed: ${t.message ?: "Enable Fast Movie Mode to skip diarization."}",
+                        t
+                    )
                 } finally {
-                    offlineDiarizationEngine.release()
+                    runCatching { offlineDiarizationEngine.release() }
                 }
 
                 val localOverrides = mutableMapOf<Int, String>()
@@ -321,19 +378,28 @@ class AutoDubPipelineOrchestrator(
                 "$chunkLabel · Translating ${transcriptSegments.size} line(s) to বাংলা..."
             )
 
-            val translatedLocal = offlineTranslationEngine.translateSegments(
-                segments = transcriptSegments,
-                onProgress = { completed, total ->
-                    val frac = if (total > 0) completed.toFloat() / total.toFloat() else 0.5f
-                    onStageProgress(
-                        AutoDubStage.TRANSLATING,
-                        translateStageIndex,
-                        totalStages,
-                        frac.coerceIn(0.15f, 0.98f),
-                        "$chunkLabel · Translating to বাংলা ($completed/$total)..."
-                    )
-                }
-            ).getOrThrow()
+            val translatedLocal = try {
+                offlineTranslationEngine.translateSegments(
+                    segments = transcriptSegments,
+                    onProgress = { completed, total ->
+                        val frac = if (total > 0) completed.toFloat() / total.toFloat() else 0.5f
+                        onStageProgress(
+                            AutoDubStage.TRANSLATING,
+                            translateStageIndex,
+                            totalStages,
+                            frac.coerceIn(0.15f, 0.98f),
+                            "$chunkLabel · Translating to বাংলা ($completed/$total)..."
+                        )
+                    }
+                ).getOrThrow()
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                throw IllegalStateException(
+                    "$chunkLabel English→Bengali translation failed: ${t.message ?: "ML Kit translation error."}",
+                    t
+                )
+            }
 
             // Assign globally unique chunk-scoped indices so WAV cache files never collide across chunks
             val translatedScoped = translatedLocal.mapIndexed { localIdx, seg ->
@@ -344,33 +410,56 @@ class AutoDubPipelineOrchestrator(
                 )
             }
 
-            // 5. Offline Bengali Voice Synthesis (Sherpa-ONNX VITS)
+            // Prevent native memory overlap: release Whisper native C++ context before TTS synthesis
+            // whenever RAM is low or experimental Sherpa-ONNX VITS is enabled.
+            if (shouldReleaseWhisperBeforeTts(useSherpaVitsExperimental)) {
+                runCatching { whisperSpeechEngine.unloadNativeContextSuspending() }
+            }
+            runCatching { offlineDiarizationEngine.release() }
+
+            // 5. Offline Bengali Voice Synthesis (Default: Android Built-in Offline TTS; Optional: Sherpa-ONNX VITS)
             val ttsStageIndex = totalStages
+            val ttsEngineLabel = if (useSherpaVitsExperimental) "Sherpa VITS (Exp)" else "Android Bengali TTS"
             coroutineContext.ensureActive()
             onStageProgress(
                 AutoDubStage.SYNTHESIZING_BENGALI,
                 ttsStageIndex,
                 totalStages,
                 0.10f,
-                "$chunkLabel · Synthesizing Bengali voice (${translatedScoped.size} line(s))..."
+                "$chunkLabel · Synthesizing Bengali voice via $ttsEngineLabel (${translatedScoped.size} line(s))..."
             )
 
-            val dubbedSegments = offlineBengaliTtsEngine.synthesizeSegments(
-                videoUri = videoUri,
-                translatedSegments = translatedScoped,
-                characters = updatedCharacters,
-                segmentCharacterOverrides = chunkSegmentCharMap,
-                onSegmentSynthesized = { completed, total, _ ->
-                    val frac = if (total > 0) (completed.toFloat() / total.toFloat()) * 0.85f else 0.5f
-                    onStageProgress(
-                        AutoDubStage.SYNTHESIZING_BENGALI,
-                        ttsStageIndex,
-                        totalStages,
-                        frac.coerceIn(0.10f, 0.88f),
-                        "$chunkLabel · Generating Bengali voice ($completed/$total)..."
-                    )
+            val dubbedSegments = try {
+                offlineBengaliTtsEngine.synthesizeSegments(
+                    videoUri = videoUri,
+                    translatedSegments = translatedScoped,
+                    characters = updatedCharacters,
+                    segmentCharacterOverrides = chunkSegmentCharMap,
+                    useSherpaVitsExperimental = useSherpaVitsExperimental,
+                    onSegmentSynthesized = { completed, total, _ ->
+                        val frac = if (total > 0) (completed.toFloat() / total.toFloat()) * 0.85f else 0.5f
+                        onStageProgress(
+                            AutoDubStage.SYNTHESIZING_BENGALI,
+                            ttsStageIndex,
+                            totalStages,
+                            frac.coerceIn(0.10f, 0.88f),
+                            "$chunkLabel · Generating Bengali voice ($completed/$total)..."
+                        )
+                    }
+                ).getOrThrow()
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                throw IllegalStateException(
+                    "$chunkLabel Bengali voice synthesis failed: ${t.message ?: "TTS engine error."}",
+                    t
+                )
+            } finally {
+                if (useSherpaVitsExperimental) {
+                    // Always release experimental native Sherpa-ONNX memory before next chunk's Whisper run
+                    runCatching { offlineBengaliTtsEngine.release() }
                 }
-            ).getOrThrow()
+            }
 
             // 6. Assemble lightweight 30-second chunk WAV (~1.32 MB, < 25ms)
             coroutineContext.ensureActive()
@@ -382,14 +471,23 @@ class AutoDubPipelineOrchestrator(
                 "$chunkLabel · Preparing synchronized Bengali playback..."
             )
 
-            val assembledChunkTrack = trackAssembler.assembleChunkWindowWav(
-                videoUri = videoUri,
-                chunkIndex = chunkIndex,
-                windowStartMs = windowStartMs,
-                windowDurationMs = windowDurationMs,
-                segments = dubbedSegments,
-                targetSampleRate = DubbedTrackAssembler.DEFAULT_LIVE_SAMPLE_RATE
-            ).getOrThrow()
+            val assembledChunkTrack = try {
+                trackAssembler.assembleChunkWindowWav(
+                    videoUri = videoUri,
+                    chunkIndex = chunkIndex,
+                    windowStartMs = windowStartMs,
+                    windowDurationMs = windowDurationMs,
+                    segments = dubbedSegments,
+                    targetSampleRate = DubbedTrackAssembler.DEFAULT_LIVE_SAMPLE_RATE
+                ).getOrThrow()
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                throw IllegalStateException(
+                    "$chunkLabel audio mixing failed: ${t.message ?: "Unable to assemble chunk WAV."}",
+                    t
+                )
+            }
 
             Result.success(
                 ChunkDubCompletionResult(
@@ -409,6 +507,16 @@ class AutoDubPipelineOrchestrator(
         } catch (ce: CancellationException) {
             requestCancelActiveStage()
             throw ce
+        } catch (oom: OutOfMemoryError) {
+            runCatching { whisperSpeechEngine.unloadNativeContextSuspending() }
+            runCatching { offlineDiarizationEngine.release() }
+            runCatching { offlineBengaliTtsEngine.release() }
+            Result.failure(
+                IllegalStateException(
+                    "$chunkLabel ran out of memory. Close background apps or keep Fast Movie Mode ON and retry.",
+                    oom
+                )
+            )
         } catch (t: Throwable) {
             Result.failure(t)
         }
@@ -427,6 +535,7 @@ class AutoDubPipelineOrchestrator(
         diarizationNumClusters: Int = -1,
         diarizationThreshold: Float = 0.50f,
         fastMovieMode: Boolean = true,
+        useSherpaVitsExperimental: Boolean = false,
         onStateUpdate: (AutoDubPipelineState) -> Unit,
         onTranslatedSegmentsReady: (List<TranslatedSegment>) -> Unit = {},
         onDubbedSegmentSynthesized: (List<DubbedAudioSegment>) -> Unit = {}
@@ -435,7 +544,10 @@ class AutoDubPipelineOrchestrator(
             return@withContext Result.failure(IllegalStateException("No local video is currently loaded."))
         }
 
-        val missing = findMissingModels(fastMovieMode = fastMovieMode)
+        val missing = findMissingModels(
+            fastMovieMode = fastMovieMode,
+            useSherpaVitsExperimental = useSherpaVitsExperimental
+        )
         if (missing.isNotEmpty()) {
             return@withContext Result.failure(
                 IllegalStateException(
@@ -620,7 +732,11 @@ class AutoDubPipelineOrchestrator(
                     currentStage = AutoDubStage.SYNTHESIZING_BENGALI,
                     stageIndex = 4,
                     totalStages = 4,
-                    stageLabel = "Stage 4/4: Synthesizing Bengali character voices (VITS)...",
+                    stageLabel = if (useSherpaVitsExperimental) {
+                        "Stage 4/4: Synthesizing Bengali voices (Sherpa VITS Experimental)..."
+                    } else {
+                        "Stage 4/4: Synthesizing Bengali voices (Android Offline TTS)..."
+                    },
                     stageProgressFraction = 0.05f
                 )
             )
@@ -632,6 +748,7 @@ class AutoDubPipelineOrchestrator(
                     translatedSegments = translatedWithCharacters,
                     characters = updatedCharacters,
                     segmentCharacterOverrides = segmentCharacterMap,
+                    useSherpaVitsExperimental = useSherpaVitsExperimental,
                     onSegmentSynthesized = { completed, total, dubbed ->
                         accumulatedDubbed.add(dubbed)
                         onDubbedSegmentSynthesized(accumulatedDubbed.toList())
@@ -719,6 +836,8 @@ class AutoDubPipelineOrchestrator(
     companion object {
         const val ROLLING_CHUNK_DURATION_MS = 30_000L
         const val SEGMENT_STRIDE_PER_CHUNK = 1_000
+        private const val LOW_AVAILABLE_RAM_THRESHOLD_BYTES = 700L * 1024L * 1024L
+        private const val LOW_JVM_HEADROOM_THRESHOLD_BYTES = 96L * 1024L * 1024L
 
         fun chunkIndexForPositionMs(positionMs: Long): Int =
             (positionMs.coerceAtLeast(0L) / ROLLING_CHUNK_DURATION_MS).toInt()

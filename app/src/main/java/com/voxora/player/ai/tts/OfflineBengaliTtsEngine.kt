@@ -35,6 +35,7 @@ class OfflineBengaliTtsEngine(
     private val context: Context,
     private val modelManager: BengaliTtsModelManager
 ) {
+    private val systemBengaliTtsEngine = AndroidSystemBengaliTtsEngine(context)
     private val nativeMutex = Mutex()
     private val cancelRequested = AtomicBoolean(false)
 
@@ -46,102 +47,129 @@ class OfflineBengaliTtsEngine(
 
     fun requestCancel() {
         cancelRequested.set(true)
+        systemBengaliTtsEngine.requestCancel()
     }
 
     /**
-     * Synthesizes all [translatedSegments] into per-line 16-bit mono WAV files inside
+     * Verifies Android built-in offline Bengali TTS (`bn-BD` / `bn-IN`) availability.
+     */
+    suspend fun checkSystemBengaliTtsAvailability(): SystemBengaliTtsAvailability {
+        return systemBengaliTtsEngine.checkAvailability()
+    }
+
+    /**
+     * Synthesizes all [translatedSegments] into per-line WAV files inside
      * `cacheDir/voxora_dub/<videoHash>/seg_<index>.wav`.
+     *
+     * - Default (`useSherpaVitsExperimental = false`): uses Android's built-in offline
+     *   [android.speech.tts.TextToSpeech] (`bn-BD` / `bn-IN`) via `synthesizeToFile` — zero native
+     *   SIGSEGV crash risk and near-zero RAM usage.
+     * - Experimental (`useSherpaVitsExperimental = true`): uses Sherpa-ONNX VITS `OfflineTts`.
      */
     suspend fun synthesizeSegments(
         videoUri: String,
         translatedSegments: List<TranslatedSegment>,
         characters: List<CharacterVoiceProfile>,
         segmentCharacterOverrides: Map<Int, String> = emptyMap(),
+        useSherpaVitsExperimental: Boolean = false,
         onSegmentSynthesized: (completedCount: Int, totalCount: Int, segment: DubbedAudioSegment) -> Unit = { _, _, _ -> },
         onStatusUpdate: (String) -> Unit = {}
-    ): Result<List<DubbedAudioSegment>> = withContext(Dispatchers.IO) {
-        if (videoUri.isBlank()) {
-            return@withContext Result.failure(IllegalStateException("No local video is currently loaded."))
-        }
-        if (translatedSegments.isEmpty()) {
-            return@withContext Result.failure(
-                IllegalStateException("No Bengali translated segments available. Translate the video first.")
+    ): Result<List<DubbedAudioSegment>> {
+        if (!useSherpaVitsExperimental) {
+            return systemBengaliTtsEngine.synthesizeSegments(
+                videoUri = videoUri,
+                translatedSegments = translatedSegments,
+                characters = characters,
+                segmentCharacterOverrides = segmentCharacterOverrides,
+                onSegmentSynthesized = onSegmentSynthesized,
+                onStatusUpdate = onStatusUpdate
             )
         }
 
-        val modelFiles = modelManager.getInstalledModelFiles()
-            ?: return@withContext Result.failure(BengaliTtsModelNotInstalledException())
-
-        cancelRequested.set(false)
-        val charactersById = characters.associateBy { it.characterId }
-        val fallbackCharacter = characters.firstOrNull()
-        val videoOutputDir = getVideoDubCacheDir(videoUri).apply { mkdirs() }
-
-        try {
-            coroutineContext.ensureActive()
-            onStatusUpdate("Loading offline VITS Bengali neural voice...")
-            ensureNativeTtsInitialized(modelFiles)
-
-            val results = mutableListOf<DubbedAudioSegment>()
-            val total = translatedSegments.size
-
-            translatedSegments.forEachIndexed { idx, segment ->
-                coroutineContext.ensureActive()
-                if (cancelRequested.get()) {
-                    throw CancellationException("Bengali voice generation stopped by user.")
-                }
-
-                val resolvedCharId = segmentCharacterOverrides[segment.index]
-                    ?: segment.characterId
-                    ?: fallbackCharacter?.characterId
-                    ?: "DEFAULT_CHARACTER"
-                val profile = charactersById[resolvedCharId] ?: fallbackCharacter
-
-                val bengaliText = sanitizeBengaliText(segment.translatedText)
-                if (bengaliText.isBlank()) {
-                    return@forEachIndexed
-                }
-
-                val targetWav = File(videoOutputDir, "seg_${segment.index}.wav")
-                val targetWindowMs = (segment.endMs - segment.startMs).coerceAtLeast(0L)
-
-                onStatusUpdate("Synthesizing line ${idx + 1}/$total (${profile?.label ?: "Default Voice"})...")
-
-                val (durationMs, appliedSpeed, appliedPitch) = synthesizeSingleLineToWav(
-                    modelFiles = modelFiles,
-                    text = bengaliText,
-                    profile = profile,
-                    targetWindowMs = targetWindowMs,
-                    outputWavFile = targetWav
+        return withContext(Dispatchers.IO) {
+            if (videoUri.isBlank()) {
+                return@withContext Result.failure(IllegalStateException("No local video is currently loaded."))
+            }
+            if (translatedSegments.isEmpty()) {
+                return@withContext Result.failure(
+                    IllegalStateException("No Bengali translated segments available. Translate the video first.")
                 )
-
-                val dubbed = DubbedAudioSegment(
-                    segmentIndex = segment.index,
-                    startMs = segment.startMs,
-                    endMs = segment.endMs,
-                    characterId = resolvedCharId,
-                    audioFilePath = targetWav.absolutePath,
-                    durationMs = durationMs,
-                    text = segment.translatedText,
-                    appliedSpeed = appliedSpeed,
-                    appliedPitch = appliedPitch
-                )
-                results.add(dubbed)
-                onSegmentSynthesized(results.size, total, dubbed)
             }
 
-            Result.success(results)
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (t: UnsatisfiedLinkError) {
-            Result.failure(
-                IllegalStateException(
-                    "Native Sherpa-ONNX TTS library failed to load on this device ABI: ${t.message}",
-                    t
+            val modelFiles = modelManager.getInstalledModelFiles()
+                ?: return@withContext Result.failure(BengaliTtsModelNotInstalledException())
+
+            cancelRequested.set(false)
+            val charactersById = characters.associateBy { it.characterId }
+            val fallbackCharacter = characters.firstOrNull()
+            val videoOutputDir = getVideoDubCacheDir(videoUri).apply { mkdirs() }
+
+            try {
+                coroutineContext.ensureActive()
+                onStatusUpdate("Loading experimental offline Sherpa-ONNX VITS Bengali voice...")
+                ensureNativeTtsInitialized(modelFiles)
+
+                val results = mutableListOf<DubbedAudioSegment>()
+                val total = translatedSegments.size
+
+                translatedSegments.forEachIndexed { idx, segment ->
+                    coroutineContext.ensureActive()
+                    if (cancelRequested.get()) {
+                        throw CancellationException("Bengali voice generation stopped by user.")
+                    }
+
+                    val resolvedCharId = segmentCharacterOverrides[segment.index]
+                        ?: segment.characterId
+                        ?: fallbackCharacter?.characterId
+                        ?: "DEFAULT_CHARACTER"
+                    val profile = charactersById[resolvedCharId] ?: fallbackCharacter
+
+                    val bengaliText = sanitizeBengaliText(segment.translatedText)
+                    if (bengaliText.isBlank()) {
+                        return@forEachIndexed
+                    }
+
+                    val targetWav = File(videoOutputDir, "seg_${segment.index}.wav")
+                    val targetWindowMs = (segment.endMs - segment.startMs).coerceAtLeast(0L)
+
+                    onStatusUpdate("Synthesizing line ${idx + 1}/$total (${profile?.label ?: "Default Voice"})...")
+
+                    val (durationMs, appliedSpeed, appliedPitch) = synthesizeSingleLineToWav(
+                        modelFiles = modelFiles,
+                        text = bengaliText,
+                        profile = profile,
+                        targetWindowMs = targetWindowMs,
+                        outputWavFile = targetWav
+                    )
+
+                    val dubbed = DubbedAudioSegment(
+                        segmentIndex = segment.index,
+                        startMs = segment.startMs,
+                        endMs = segment.endMs,
+                        characterId = resolvedCharId,
+                        audioFilePath = targetWav.absolutePath,
+                        durationMs = durationMs,
+                        text = segment.translatedText,
+                        appliedSpeed = appliedSpeed,
+                        appliedPitch = appliedPitch
+                    )
+                    results.add(dubbed)
+                    onSegmentSynthesized(results.size, total, dubbed)
+                }
+
+                Result.success(results)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: UnsatisfiedLinkError) {
+                Result.failure(
+                    IllegalStateException(
+                        "Native Sherpa-ONNX TTS library failed to load on this device ABI: ${t.message}",
+                        t
+                    )
                 )
-            )
-        } catch (t: Throwable) {
-            Result.failure(t)
+            } catch (t: Throwable) {
+                Result.failure(t)
+            }
         }
     }
 
@@ -150,30 +178,40 @@ class OfflineBengaliTtsEngine(
      */
     suspend fun synthesizeCharacterPreview(
         profile: CharacterVoiceProfile,
-        sampleText: String = DEFAULT_BENGALI_PREVIEW_PHRASE
-    ): Result<File> = withContext(Dispatchers.IO) {
-        val modelFiles = modelManager.getInstalledModelFiles()
-            ?: return@withContext Result.failure(BengaliTtsModelNotInstalledException())
-
-        cancelRequested.set(false)
-        try {
-            coroutineContext.ensureActive()
-            val previewDir = File(context.cacheDir, "voxora_dub/previews").apply { mkdirs() }
-            val safeId = profile.characterId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-            val outputFile = File(previewDir, "preview_${safeId}.wav")
-
-            synthesizeSingleLineToWav(
-                modelFiles = modelFiles,
-                text = sanitizeBengaliText(sampleText).ifBlank { DEFAULT_BENGALI_PREVIEW_PHRASE },
+        sampleText: String = DEFAULT_BENGALI_PREVIEW_PHRASE,
+        useSherpaVitsExperimental: Boolean = false
+    ): Result<File> {
+        if (!useSherpaVitsExperimental) {
+            return systemBengaliTtsEngine.synthesizeCharacterPreview(
                 profile = profile,
-                targetWindowMs = 0L,
-                outputWavFile = outputFile
+                sampleText = sampleText
             )
-            Result.success(outputFile)
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (t: Throwable) {
-            Result.failure(t)
+        }
+
+        return withContext(Dispatchers.IO) {
+            val modelFiles = modelManager.getInstalledModelFiles()
+                ?: return@withContext Result.failure(BengaliTtsModelNotInstalledException())
+
+            cancelRequested.set(false)
+            try {
+                coroutineContext.ensureActive()
+                val previewDir = File(context.cacheDir, "voxora_dub/previews").apply { mkdirs() }
+                val safeId = profile.characterId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+                val outputFile = File(previewDir, "preview_${safeId}.wav")
+
+                synthesizeSingleLineToWav(
+                    modelFiles = modelFiles,
+                    text = sanitizeBengaliText(sampleText).ifBlank { DEFAULT_BENGALI_PREVIEW_PHRASE },
+                    profile = profile,
+                    targetWindowMs = 0L,
+                    outputWavFile = outputFile
+                )
+                Result.success(outputFile)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                Result.failure(t)
+            }
         }
     }
 
@@ -189,10 +227,11 @@ class OfflineBengaliTtsEngine(
     }
 
     /**
-     * Releases native Sherpa-ONNX [OfflineTts] memory cleanly.
+     * Releases both Android built-in TTS and any native Sherpa-ONNX [OfflineTts] memory cleanly.
      */
     fun release() {
         cancelRequested.set(true)
+        systemBengaliTtsEngine.release()
         val instance = activeTts
         activeTts = null
         activeModelSignature = null

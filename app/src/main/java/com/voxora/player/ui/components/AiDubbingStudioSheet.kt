@@ -157,6 +157,7 @@ fun AiDubbingStudioSheet(
     onBgmDuckingStrengthChange: (Float) -> Unit,
     onVocalAttenuationChange: (Boolean) -> Unit,
     onFastMovieModeChange: (Boolean) -> Unit,
+    onUseSherpaVitsExperimentalChange: (Boolean) -> Unit,
     onAddCharacter: (CharacterVoiceProfile) -> Unit,
     onUpdateCharacter: (CharacterVoiceProfile) -> Unit,
     onRemoveCharacter: (String) -> Unit,
@@ -259,7 +260,7 @@ fun AiDubbingStudioSheet(
                             border = BorderStroke(1.dp, VoxoraElectricPurple)
                         ) {
                             Text(
-                                text = "v2.1",
+                                text = "v2.1.2",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = VoxoraElectricPurpleBright,
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
@@ -367,12 +368,16 @@ fun AiDubbingStudioSheet(
 
             when (selectedTab) {
                 DubbingStudioTab.CONTROLS -> {
+                    val ttsRequiredReady = !state.config.useSherpaVitsExperimental || oneClickAiSetupState.isBengaliTtsReady
                     val requiredModelsReady = if (state.config.fastMovieModeEnabled) {
                         oneClickAiSetupState.isWhisperReady &&
                             oneClickAiSetupState.isTranslationReady &&
-                            oneClickAiSetupState.isBengaliTtsReady
+                            ttsRequiredReady
                     } else {
-                        oneClickAiSetupState.allModelsReady
+                        oneClickAiSetupState.isWhisperReady &&
+                            oneClickAiSetupState.isDiarizationReady &&
+                            oneClickAiSetupState.isTranslationReady &&
+                            ttsRequiredReady
                     }
                     DubbingControlsTab(
                         state = state,
@@ -397,7 +402,8 @@ fun AiDubbingStudioSheet(
                         onPreserveBackgroundChange = onPreserveBackgroundChange,
                         onBgmDuckingStrengthChange = onBgmDuckingStrengthChange,
                         onVocalAttenuationChange = onVocalAttenuationChange,
-                        onFastMovieModeChange = onFastMovieModeChange
+                        onFastMovieModeChange = onFastMovieModeChange,
+                        onUseSherpaVitsExperimentalChange = onUseSherpaVitsExperimentalChange
                     )
                 }
                 DubbingStudioTab.TRANSCRIBE -> {
@@ -466,6 +472,8 @@ fun AiDubbingStudioSheet(
                     BengaliVoiceTtsSection(
                         videoTitle = videoTitle,
                         translatedSegmentCount = translationUiState.segments.size,
+                        useSherpaVitsExperimental = state.config.useSherpaVitsExperimental,
+                        onUseSherpaVitsExperimentalChange = onUseSherpaVitsExperimentalChange,
                         modelState = bengaliTtsModelState,
                         slotAvailability = bengaliTtsSlotAvailability,
                         installedFiles = bengaliTtsInstalledFiles,
@@ -546,7 +554,8 @@ private fun DubbingControlsTab(
     onPreserveBackgroundChange: (Boolean) -> Unit,
     onBgmDuckingStrengthChange: (Float) -> Unit,
     onVocalAttenuationChange: (Boolean) -> Unit,
-    onFastMovieModeChange: (Boolean) -> Unit
+    onFastMovieModeChange: (Boolean) -> Unit,
+    onUseSherpaVitsExperimentalChange: (Boolean) -> Unit
 ) {
     val config = state.config
     var showAllLanguages by remember { mutableStateOf(false) }
@@ -629,6 +638,80 @@ private fun DubbingControlsTab(
                     checked = config.fastMovieModeEnabled,
                     onCheckedChange = onFastMovieModeChange,
                     modifier = Modifier.testTag("fast_movie_mode_switch")
+                )
+            }
+        }
+
+        // 0.75. Bengali TTS Engine Selector (Default: Android Built-in Offline TTS; Optional: Sherpa-ONNX VITS Experimental)
+        Surface(
+            color = Color(0xFF181924),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(
+                1.dp,
+                if (config.useSherpaVitsExperimental) {
+                    Color(0xFFFBBF24).copy(alpha = 0.55f)
+                } else {
+                    Color(0xFF4ADE80).copy(alpha = 0.40f)
+                }
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Memory,
+                    contentDescription = null,
+                    tint = if (config.useSherpaVitsExperimental) Color(0xFFFBBF24) else Color(0xFF4ADE80),
+                    modifier = Modifier.size(22.dp)
+                )
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "Use Sherpa-ONNX VITS (Experimental)",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = Color.White
+                        )
+                    }
+                    Surface(
+                        color = if (config.useSherpaVitsExperimental) {
+                            Color(0xFFFBBF24).copy(alpha = 0.16f)
+                        } else {
+                            Color(0xFF4ADE80).copy(alpha = 0.16f)
+                        },
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(
+                            text = if (config.useSherpaVitsExperimental) {
+                                "EXPERIMENTAL · NATIVE ONNX"
+                            } else {
+                                "DEFAULT · ANDROID OFFLINE TTS (ZERO CRASH)"
+                            },
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = if (config.useSherpaVitsExperimental) Color(0xFFFBBF24) else Color(0xFF4ADE80),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                    Text(
+                        text = if (config.useSherpaVitsExperimental) {
+                            "Uses Sherpa-ONNX VITS neural model (~109 MB). May use high native RAM on some devices."
+                        } else {
+                            "Uses Android's built-in offline Bengali Text-to-Speech (bn-BD / bn-IN) with male/female pitch variation and near-zero RAM."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.72f)
+                    )
+                }
+                Switch(
+                    checked = config.useSherpaVitsExperimental,
+                    onCheckedChange = onUseSherpaVitsExperimentalChange,
+                    modifier = Modifier.testTag("use_sherpa_vits_experimental_switch")
                 )
             }
         }

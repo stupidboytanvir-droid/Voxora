@@ -77,6 +77,13 @@ import com.voxora.player.ai.diarization.SpeakerDiarizationUiState
 import com.voxora.player.ai.translation.BengaliTranslationUiState
 import com.voxora.player.ai.translation.TranslationExportFormat
 import com.voxora.player.ai.translation.TranslationModelState
+import com.voxora.player.ai.tts.BengaliTtsModelFiles
+import com.voxora.player.ai.tts.BengaliTtsModelSlot
+import com.voxora.player.ai.tts.BengaliTtsModelState
+import com.voxora.player.ai.tts.BengaliTtsSlotAvailability
+import com.voxora.player.ai.tts.BengaliVoiceGenerationUiState
+import com.voxora.player.ai.tts.DubbedAudioSegment
+import com.voxora.player.ai.tts.OneClickAiSetupState
 import com.voxora.player.dubbing.CharacterVoiceProfile
 import com.voxora.player.dubbing.ComponentReadiness
 import com.voxora.player.dubbing.DubbingAudioOutputMode
@@ -98,6 +105,7 @@ private enum class DubbingStudioTab(val label: String) {
     TRANSCRIBE("Transcribe"),
     SPEAKERS("Speakers"),
     TRANSLATE("Translate"),
+    VOICE_TTS("Voice / TTS"),
     CHARACTERS("Characters"),
     PIPELINE("Pipeline")
 }
@@ -115,6 +123,13 @@ fun AiDubbingStudioSheet(
     diarizationSlotAvailability: DiarizationSlotAvailability,
     diarizationInstalledFiles: DiarizationModelFiles?,
     diarizationUiState: SpeakerDiarizationUiState,
+    bengaliTtsModelState: BengaliTtsModelState,
+    bengaliTtsSlotAvailability: BengaliTtsSlotAvailability,
+    bengaliTtsInstalledFiles: BengaliTtsModelFiles?,
+    bengaliVoiceUiState: BengaliVoiceGenerationUiState,
+    oneClickAiSetupState: OneClickAiSetupState,
+    onStartOneClickAiSetup: () -> Unit,
+    onCancelOneClickAiSetup: () -> Unit,
     onSetEnabled: (Boolean) -> Unit,
     onSelectSourceLanguage: (DubbingLanguage) -> Unit,
     onSelectTargetLanguage: (DubbingLanguage) -> Unit,
@@ -157,6 +172,15 @@ fun AiDubbingStudioSheet(
     onStopDiarization: () -> Unit,
     onReassignSpeakerToCharacter: (speakerIndex: Int, characterId: String) -> Unit,
     onOverrideSegmentCharacter: (segmentIndex: Int, characterId: String) -> Unit,
+    onCheckBengaliTtsModelStatus: () -> Unit,
+    onDownloadBengaliTtsModels: () -> Unit,
+    onCancelBengaliTtsDownload: () -> Unit,
+    onImportLocalBengaliTtsFile: (BengaliTtsModelSlot) -> Unit,
+    onDeleteBengaliTtsModels: () -> Unit,
+    onStartBengaliVoiceGeneration: () -> Unit,
+    onStopBengaliVoiceGeneration: () -> Unit,
+    onTogglePlayDubbedSegment: (DubbedAudioSegment) -> Unit,
+    onClearSynthesizedBengaliAudio: () -> Unit,
     onSeekToTimestamp: (Long) -> Unit,
     onInspectAudioTrack: () -> Unit,
     onRunStage1Extraction: () -> Unit,
@@ -217,7 +241,7 @@ fun AiDubbingStudioSheet(
                             border = BorderStroke(1.dp, VoxoraElectricPurple)
                         ) {
                             Text(
-                                text = "PHASE 4",
+                                text = "PHASE 5",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = VoxoraElectricPurpleBright,
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
@@ -225,7 +249,7 @@ fun AiDubbingStudioSheet(
                         }
                     }
                     Text(
-                        text = "${state.config.sourceLanguage.displayName} → ${state.config.targetLanguage.displayName} (${state.config.targetLanguage.nativeName}) · whisper.cpp + Sherpa-ONNX + ML Kit",
+                        text = "${state.config.sourceLanguage.displayName} → ${state.config.targetLanguage.displayName} (${state.config.targetLanguage.nativeName}) · whisper.cpp + Sherpa-ONNX + ML Kit + VITS",
                         style = MaterialTheme.typography.bodySmall,
                         color = VoxoraSubtleBlue
                     )
@@ -237,7 +261,14 @@ fun AiDubbingStudioSheet(
                 )
             }
 
-            // Honest Readiness Banner
+            // Unified One-Click AI Setup Card (or compact green All Ready badge once 4/4 models installed)
+            OneClickAiSetupCard(
+                state = oneClickAiSetupState,
+                onStartOneClickSetup = onStartOneClickAiSetup,
+                onCancelOneClickSetup = onCancelOneClickAiSetup
+            )
+
+            // Honest Pipeline Readiness Summary
             Surface(
                 color = Color(0xFF171A26),
                 shape = RoundedCornerShape(14.dp),
@@ -257,7 +288,7 @@ fun AiDubbingStudioSheet(
                         modifier = Modifier.size(18.dp)
                     )
                     Text(
-                        text = "${state.readyComponentCount}/${state.totalComponentCount} stages ready on-device. Offline ASR (whisper.cpp), Speaker Diarization (Sherpa-ONNX), and EN → বাংলা Translation (ML Kit) run 100% offline with zero paid APIs.",
+                        text = "${state.readyComponentCount}/${state.totalComponentCount} stages ready on-device. Offline ASR (whisper.cpp), Diarization & VITS Bengali Voice (Sherpa-ONNX), and EN → বাংলা Translation (ML Kit) run 100% offline with zero paid APIs.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.White.copy(alpha = 0.85f)
                     )
@@ -292,6 +323,7 @@ fun AiDubbingStudioSheet(
                                 DubbingStudioTab.TRANSCRIBE -> Icons.Rounded.GraphicEq
                                 DubbingStudioTab.SPEAKERS -> Icons.Rounded.RecordVoiceOver
                                 DubbingStudioTab.TRANSLATE -> Icons.Rounded.Translate
+                                DubbingStudioTab.VOICE_TTS -> Icons.AutoMirrored.Rounded.VolumeUp
                                 DubbingStudioTab.CHARACTERS -> Icons.Rounded.People
                                 DubbingStudioTab.PIPELINE -> Icons.Rounded.Layers
                             }
@@ -388,6 +420,29 @@ fun AiDubbingStudioSheet(
                         onSeekToTimestamp = onSeekToTimestamp,
                         characters = state.config.characterVoices,
                         segmentCharacterMap = diarizationUiState.segmentCharacterMap,
+                        onOverrideSegmentCharacter = onOverrideSegmentCharacter
+                    )
+                }
+                DubbingStudioTab.VOICE_TTS -> {
+                    BengaliVoiceTtsSection(
+                        videoTitle = videoTitle,
+                        translatedSegmentCount = translationUiState.segments.size,
+                        modelState = bengaliTtsModelState,
+                        slotAvailability = bengaliTtsSlotAvailability,
+                        installedFiles = bengaliTtsInstalledFiles,
+                        voiceState = bengaliVoiceUiState,
+                        characters = state.config.characterVoices,
+                        onCheckModelStatus = onCheckBengaliTtsModelStatus,
+                        onDownloadModels = onDownloadBengaliTtsModels,
+                        onCancelModelDownload = onCancelBengaliTtsDownload,
+                        onImportLocalFile = onImportLocalBengaliTtsFile,
+                        onDeleteModels = onDeleteBengaliTtsModels,
+                        onStartVoiceGeneration = onStartBengaliVoiceGeneration,
+                        onStopVoiceGeneration = onStopBengaliVoiceGeneration,
+                        onTogglePlaySegment = onTogglePlayDubbedSegment,
+                        onClearSynthesizedAudio = onClearSynthesizedBengaliAudio,
+                        onSwitchToTranslateTab = { selectedTab = DubbingStudioTab.TRANSLATE },
+                        onSeekToTimestamp = onSeekToTimestamp,
                         onOverrideSegmentCharacter = onOverrideSegmentCharacter
                     )
                 }

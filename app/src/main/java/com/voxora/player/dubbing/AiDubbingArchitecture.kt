@@ -2,6 +2,7 @@ package com.voxora.player.dubbing
 
 import com.voxora.player.ai.diarization.DiarizationModelState
 import com.voxora.player.ai.translation.TranslationModelState
+import com.voxora.player.ai.tts.BengaliTtsModelState
 
 /**
  * VOXORA AI Dubbing — Phase 1 Modular Processing Contracts & Speaker-Character Registry.
@@ -278,7 +279,9 @@ interface AiDubbingPipeline {
         diarizationModelState: DiarizationModelState = DiarizationModelState.NotInstalled,
         isDiarizing: Boolean = false,
         translationModelState: TranslationModelState = TranslationModelState.NotDownloaded,
-        isTranslating: Boolean = false
+        isTranslating: Boolean = false,
+        bengaliTtsModelState: BengaliTtsModelState = BengaliTtsModelState.NotInstalled,
+        isSynthesizingBengaliVoice: Boolean = false
     ): List<PipelineStageStatus>
 
     fun computeEffectiveOriginalVolume(
@@ -364,7 +367,9 @@ class Version1AiDubbingPipeline(
         diarizationModelState: DiarizationModelState,
         isDiarizing: Boolean,
         translationModelState: TranslationModelState,
-        isTranslating: Boolean
+        isTranslating: Boolean,
+        bengaliTtsModelState: BengaliTtsModelState,
+        isSynthesizingBengaliVoice: Boolean
     ): List<PipelineStageStatus> {
         val extractionStatus = when {
             isExtractingAudio -> PipelineStageStatus(
@@ -470,16 +475,40 @@ class Version1AiDubbingPipeline(
             )
         }
 
+        val bengaliTtsStatus = when {
+            isSynthesizingBengaliVoice -> PipelineStageStatus(
+                stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
+                readiness = ComponentReadiness.RUNNING,
+                statusDetail = "Synthesizing natural Bengali character voices offline via Sherpa-ONNX VITS..."
+            )
+            bengaliTtsModelState is BengaliTtsModelState.Ready -> PipelineStageStatus(
+                stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
+                readiness = ComponentReadiness.READY,
+                statusDetail = "Sherpa-ONNX VITS Bengali neural voice model verified & ready on-device"
+            )
+            bengaliTtsModelState is BengaliTtsModelState.Downloading -> PipelineStageStatus(
+                stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
+                readiness = ComponentReadiness.RUNNING,
+                statusDetail = "${bengaliTtsModelState.stageLabel} (${bengaliTtsModelState.progress}%)"
+            )
+            bengaliTtsModelState is BengaliTtsModelState.Error -> PipelineStageStatus(
+                stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
+                readiness = ComponentReadiness.ERROR,
+                statusDetail = bengaliTtsModelState.message
+            )
+            else -> PipelineStageStatus(
+                stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
+                readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
+                statusDetail = "Sherpa-ONNX VITS integrated · Bengali TTS Model Required / Not Installed (~109 MB offline)"
+            )
+        }
+
         return listOf(
             extractionStatus,
             asrStatus,
             diarizationStatus,
             translationStatus,
-            PipelineStageStatus(
-                stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
-                readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
-                statusDetail = "Unlimited Male/Female character voice slots saved locally · Awaiting offline neural TTS models (Piper VITS)"
-            ),
+            bengaliTtsStatus,
             PipelineStageStatus(
                 stage = DubbingPipelineStage.AUDIO_SYNCHRONIZATION,
                 readiness = ComponentReadiness.READY,

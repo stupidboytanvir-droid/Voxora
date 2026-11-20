@@ -23,6 +23,8 @@ import com.voxora.player.ai.diarization.DiarizationModelManager
 import com.voxora.player.ai.diarization.OfflineDiarizationEngine
 import com.voxora.player.ai.translation.OfflineTranslationEngine
 import com.voxora.player.ai.translation.OfflineTranslationManager
+import com.voxora.player.ai.tts.BengaliTtsModelManager
+import com.voxora.player.ai.tts.OfflineBengaliTtsEngine
 import com.voxora.player.dubbing.whisper.WhisperCppSpeechRecognitionEngine
 
 class VoxoraApplication : Application(), ImageLoaderFactory {
@@ -61,6 +63,10 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         private set
     lateinit var offlineDiarizationEngine: OfflineDiarizationEngine
         private set
+    lateinit var bengaliTtsModelManager: BengaliTtsModelManager
+        private set
+    lateinit var offlineBengaliTtsEngine: OfflineBengaliTtsEngine
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -82,6 +88,8 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         translationCacheRepository = TranslationCacheRepository(database.translationDao())
         diarizationModelManager = DiarizationModelManager(this)
         offlineDiarizationEngine = OfflineDiarizationEngine(this, diarizationModelManager)
+        bengaliTtsModelManager = BengaliTtsModelManager(this)
+        offlineBengaliTtsEngine = OfflineBengaliTtsEngine(this, bengaliTtsModelManager)
     }
 
     override fun newImageLoader(): ImageLoader {

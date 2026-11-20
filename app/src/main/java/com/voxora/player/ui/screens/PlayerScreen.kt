@@ -72,6 +72,7 @@ import androidx.media3.ui.compose.ContentFrame
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
 import com.voxora.player.ai.diarization.DiarizationModelSlot
 import com.voxora.player.ai.translation.TranslationExportFormat
+import com.voxora.player.ai.tts.BengaliTtsModelSlot
 import com.voxora.player.dubbing.whisper.TranscriptExportFormat
 import com.voxora.player.model.AspectRatioMode
 import com.voxora.player.ui.components.AiDubbingStudioSheet
@@ -131,6 +132,11 @@ fun PlayerScreen(
     val diarizationSlotAvailability by viewModel.diarizationSlotAvailability.collectAsStateWithLifecycle()
     val diarizationInstalledFiles by viewModel.diarizationInstalledFiles.collectAsStateWithLifecycle()
     val diarizationUiState by viewModel.diarizationUiState.collectAsStateWithLifecycle()
+    val bengaliTtsModelState by viewModel.bengaliTtsModelState.collectAsStateWithLifecycle()
+    val bengaliTtsSlotAvailability by viewModel.bengaliTtsSlotAvailability.collectAsStateWithLifecycle()
+    val bengaliTtsInstalledFiles by viewModel.bengaliTtsInstalledFiles.collectAsStateWithLifecycle()
+    val bengaliVoiceUiState by viewModel.bengaliVoiceUiState.collectAsStateWithLifecycle()
+    val oneClickAiSetupState by viewModel.oneClickAiSetupState.collectAsStateWithLifecycle()
     val animationsEnabled = !batterySaving.disableAnimations
 
     var controlsVisible by remember { mutableStateOf(true) }
@@ -140,6 +146,7 @@ fun PlayerScreen(
     var pendingExportFormat by remember { mutableStateOf(TranscriptExportFormat.SRT) }
     var pendingTranslationExportFormat by remember { mutableStateOf(TranslationExportFormat.BENGALI_SRT) }
     var pendingDiarizationImportSlot by remember { mutableStateOf(DiarizationModelSlot.SEGMENTATION) }
+    var pendingBengaliTtsImportSlot by remember { mutableStateOf(BengaliTtsModelSlot.MODEL_ONNX) }
 
     val subtitlePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -162,6 +169,14 @@ fun PlayerScreen(
     ) { uri ->
         if (uri != null) {
             viewModel.importLocalDiarizationModel(pendingDiarizationImportSlot, uri)
+        }
+    }
+
+    val bengaliTtsFilePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importLocalBengaliTtsFile(pendingBengaliTtsImportSlot, uri)
         }
     }
 
@@ -667,6 +682,13 @@ fun PlayerScreen(
                     diarizationSlotAvailability = diarizationSlotAvailability,
                     diarizationInstalledFiles = diarizationInstalledFiles,
                     diarizationUiState = diarizationUiState,
+                    bengaliTtsModelState = bengaliTtsModelState,
+                    bengaliTtsSlotAvailability = bengaliTtsSlotAvailability,
+                    bengaliTtsInstalledFiles = bengaliTtsInstalledFiles,
+                    bengaliVoiceUiState = bengaliVoiceUiState,
+                    oneClickAiSetupState = oneClickAiSetupState,
+                    onStartOneClickAiSetup = viewModel::startOneClickAiSetup,
+                    onCancelOneClickAiSetup = viewModel::cancelOneClickAiSetup,
                     onSetEnabled = viewModel::setDubbingEnabled,
                     onSelectSourceLanguage = viewModel::setDubbingSourceLanguage,
                     onSelectTargetLanguage = viewModel::setDubbingTargetLanguage,
@@ -728,6 +750,22 @@ fun PlayerScreen(
                     onStopDiarization = viewModel::stopSpeakerDiarization,
                     onReassignSpeakerToCharacter = viewModel::reassignSpeakerToCharacter,
                     onOverrideSegmentCharacter = viewModel::overrideSegmentCharacter,
+                    onCheckBengaliTtsModelStatus = viewModel::checkBengaliTtsModelStatus,
+                    onDownloadBengaliTtsModels = viewModel::downloadBengaliTtsModels,
+                    onCancelBengaliTtsDownload = viewModel::cancelBengaliTtsModelDownload,
+                    onImportLocalBengaliTtsFile = { slot ->
+                        pendingBengaliTtsImportSlot = slot
+                        val mimeTypes = when (slot) {
+                            BengaliTtsModelSlot.MODEL_ONNX -> arrayOf("application/octet-stream", "*/*")
+                            BengaliTtsModelSlot.TOKENS_TXT -> arrayOf("text/plain", "*/*")
+                        }
+                        bengaliTtsFilePickerLauncher.launch(mimeTypes)
+                    },
+                    onDeleteBengaliTtsModels = viewModel::deleteBengaliTtsModels,
+                    onStartBengaliVoiceGeneration = viewModel::startBengaliVoiceGeneration,
+                    onStopBengaliVoiceGeneration = viewModel::stopBengaliVoiceGeneration,
+                    onTogglePlayDubbedSegment = viewModel::togglePlayDubbedSegment,
+                    onClearSynthesizedBengaliAudio = viewModel::clearSynthesizedBengaliAudio,
                     onSeekToTimestamp = { targetMs ->
                         viewModel.seekTo(targetMs)
                     },
@@ -735,6 +773,7 @@ fun PlayerScreen(
                     onRunStage1Extraction = viewModel::runStage1AudioExtraction,
                     onDismiss = {
                         viewModel.stopVoicePreview()
+                        viewModel.stopDubbedAudioPlayback()
                         activeSheet = ActiveSheet.NONE
                     }
                 )

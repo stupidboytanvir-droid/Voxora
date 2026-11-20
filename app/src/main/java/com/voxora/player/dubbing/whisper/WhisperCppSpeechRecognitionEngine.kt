@@ -114,40 +114,86 @@ class WhisperCppSpeechRecognitionEngine(
     fun startDownloadBaseEnModel() {
         if (activeModelJob?.isActive == true) return
         activeModelJob = engineScope.launch {
-            val spec = WhisperModelCatalog.BASE_EN
-            _modelStatus.value = WhisperModelStatus.Downloading(
-                progressFraction = 0f,
-                downloadedBytes = 0L,
-                totalBytes = spec.expectedSizeBytes
-            )
-            modelManager.downloadModel(
-                spec = spec,
-                onProgress = { downloaded, total ->
-                    val frac = if (total > 0L) (downloaded.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
-                    _modelStatus.value = WhisperModelStatus.Downloading(
-                        progressFraction = frac,
-                        downloadedBytes = downloaded,
-                        totalBytes = total
-                    )
-                },
-                onVerifying = {
-                    _modelStatus.value = WhisperModelStatus.Verifying("Verifying GGML header & SHA-256 checksum...")
-                }
-            ).fold(
-                onSuccess = { installed ->
-                    loadInstalledModelInternal(installed)
-                },
-                onFailure = { err ->
-                    if (err is CancellationException) {
-                        refreshInstalledModelStatus()
-                    } else {
-                        _modelStatus.value = WhisperModelStatus.Error(
-                            message = err.message ?: "Failed to download Whisper base.en model."
-                        )
-                    }
-                }
-            )
+            ensureBaseEnModelReady()
         }
+    }
+
+    /**
+     * Downloads (if missing) and loads the Whisper `base.en` model sequentially on [Dispatchers.IO].
+     * Used both by the Transcribe tab button and the unified Phase 5 One-Click AI Setup flow.
+     */
+    suspend fun ensureBaseEnModelReady(
+        onProgressPercent: (Int) -> Unit = {}
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        if (isModelLoadedAndReady) {
+            onProgressPercent(100)
+            return@withContext Result.success(Unit)
+        }
+
+        val alreadyInstalled = modelManager.findInstalledModel()
+        if (alreadyInstalled != null) {
+            onProgressPercent(85)
+            loadInstalledModelInternal(alreadyInstalled)
+            return@withContext if (isModelLoadedAndReady) {
+                onProgressPercent(100)
+                Result.success(Unit)
+            } else {
+                val errMsg = (_modelStatus.value as? WhisperModelStatus.Error)?.message
+                    ?: "Failed to load installed Whisper model."
+                Result.failure(IllegalStateException(errMsg))
+            }
+        }
+
+        val spec = WhisperModelCatalog.BASE_EN
+        _modelStatus.value = WhisperModelStatus.Downloading(
+            progressFraction = 0f,
+            downloadedBytes = 0L,
+            totalBytes = spec.expectedSizeBytes
+        )
+        onProgressPercent(0)
+
+        val downloadResult = modelManager.downloadModel(
+            spec = spec,
+            onProgress = { downloaded, total ->
+                val frac = if (total > 0L) (downloaded.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0f
+                _modelStatus.value = WhisperModelStatus.Downloading(
+                    progressFraction = frac,
+                    downloadedBytes = downloaded,
+                    totalBytes = total
+                )
+                onProgressPercent((frac * 90f).toInt().coerceIn(0, 90))
+            },
+            onVerifying = {
+                _modelStatus.value = WhisperModelStatus.Verifying("Verifying GGML header & SHA-256 checksum...")
+                onProgressPercent(92)
+            }
+        )
+
+        downloadResult.fold(
+            onSuccess = { installed ->
+                onProgressPercent(95)
+                loadInstalledModelInternal(installed)
+                if (isModelLoadedAndReady) {
+                    onProgressPercent(100)
+                    Result.success(Unit)
+                } else {
+                    val errMsg = (_modelStatus.value as? WhisperModelStatus.Error)?.message
+                        ?: "Whisper model downloaded, but native initialization failed."
+                    Result.failure(IllegalStateException(errMsg))
+                }
+            },
+            onFailure = { err ->
+                if (err is CancellationException) {
+                    refreshInstalledModelStatus()
+                    throw err
+                } else {
+                    _modelStatus.value = WhisperModelStatus.Error(
+                        message = err.message ?: "Failed to download Whisper base.en model."
+                    )
+                    Result.failure(err)
+                }
+            }
+        )
     }
 
     fun cancelModelOperation() {

@@ -19,6 +19,16 @@ import com.voxora.player.ai.translation.OfflineTranslationManager
 import com.voxora.player.ai.translation.TranslationExportFormat
 import com.voxora.player.ai.translation.TranslationExporter
 import com.voxora.player.ai.translation.TranslationModelState
+import com.voxora.player.ai.tts.BengaliTtsModelFiles
+import com.voxora.player.ai.tts.BengaliTtsModelManager
+import com.voxora.player.ai.tts.BengaliTtsModelSlot
+import com.voxora.player.ai.tts.BengaliTtsModelState
+import com.voxora.player.ai.tts.BengaliTtsSlotAvailability
+import com.voxora.player.ai.tts.BengaliVoiceGenerationUiState
+import com.voxora.player.ai.tts.DubAudioPreviewPlayer
+import com.voxora.player.ai.tts.DubbedAudioSegment
+import com.voxora.player.ai.tts.OfflineBengaliTtsEngine
+import com.voxora.player.ai.tts.OneClickAiSetupState
 import com.voxora.player.data.local.power.BatteryMonitor
 import com.voxora.player.data.repository.MediaRepository
 import com.voxora.player.data.repository.PlaybackHistoryRepository
@@ -95,7 +105,9 @@ class PlayerViewModel(
     private val offlineTranslationEngine: OfflineTranslationEngine,
     private val translationCacheRepository: TranslationCacheRepository,
     private val diarizationModelManager: DiarizationModelManager,
-    private val offlineDiarizationEngine: OfflineDiarizationEngine
+    private val offlineDiarizationEngine: OfflineDiarizationEngine,
+    private val bengaliTtsModelManager: BengaliTtsModelManager,
+    private val offlineBengaliTtsEngine: OfflineBengaliTtsEngine
 ) : ViewModel() {
 
     val playerEngine = VoxoraPlayerEngine(app)
@@ -161,6 +173,12 @@ class PlayerViewModel(
     val diarizationModelState: StateFlow<DiarizationModelState> = diarizationModelManager.modelState
     val diarizationSlotAvailability: StateFlow<DiarizationSlotAvailability> = diarizationModelManager.slotAvailability
     val diarizationInstalledFiles: StateFlow<DiarizationModelFiles?> = diarizationModelManager.installedFiles
+    val bengaliTtsModelState: StateFlow<BengaliTtsModelState> = bengaliTtsModelManager.modelState
+    val bengaliTtsSlotAvailability: StateFlow<BengaliTtsSlotAvailability> = bengaliTtsModelManager.slotAvailability
+    val bengaliTtsInstalledFiles: StateFlow<BengaliTtsModelFiles?> = bengaliTtsModelManager.installedFiles
+
+    private val dubAudioPreviewPlayer = DubAudioPreviewPlayer()
+    private val _activeNeuralPreviewCharacterId = MutableStateFlow<String?>(null)
 
     private val _translationUiState = MutableStateFlow(BengaliTranslationUiState())
     val translationUiState: StateFlow<BengaliTranslationUiState> = _translationUiState.asStateFlow()
@@ -168,18 +186,57 @@ class PlayerViewModel(
     private val _diarizationUiState = MutableStateFlow(SpeakerDiarizationUiState())
     val diarizationUiState: StateFlow<SpeakerDiarizationUiState> = _diarizationUiState.asStateFlow()
 
+    private val _bengaliVoiceUiState = MutableStateFlow(BengaliVoiceGenerationUiState())
+    val bengaliVoiceUiState: StateFlow<BengaliVoiceGenerationUiState> = _bengaliVoiceUiState.asStateFlow()
+
+    private val _oneClickProgressState = MutableStateFlow(OneClickProgressSnapshot())
+
+    val oneClickAiSetupState: StateFlow<OneClickAiSetupState> = combine(
+        whisperModelStatus,
+        diarizationModelState,
+        translationModelState,
+        bengaliTtsModelState,
+        _oneClickProgressState
+    ) { whisperStatus, diarizationState, translationState, ttsState, progress ->
+        OneClickAiSetupState(
+            isWhisperReady = whisperStatus is WhisperModelStatus.LoadedReady,
+            isDiarizationReady = diarizationState is DiarizationModelState.Ready,
+            isTranslationReady = translationState is TranslationModelState.Ready,
+            isBengaliTtsReady = ttsState is BengaliTtsModelState.Ready,
+            isRunning = progress.isRunning,
+            currentStepIndex = progress.currentStepIndex,
+            totalSteps = progress.totalSteps,
+            currentStepLabel = progress.currentStepLabel,
+            currentStepProgressPercent = progress.currentStepProgressPercent,
+            errorMessage = progress.errorMessage
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000L),
+        initialValue = OneClickAiSetupState()
+    )
+
     private var activeTranslationJob: Job? = null
     private var activeDiarizationModelJob: Job? = null
     private var activeDiarizationJob: Job? = null
+    private var activeBengaliTtsModelJob: Job? = null
+    private var activeBengaliVoiceGenJob: Job? = null
+    private var activeCharacterNeuralPreviewJob: Job? = null
+    private var activeOneClickSetupJob: Job? = null
     private val manualSegmentCharacterOverrides = mutableMapOf<Int, String>()
 
-    private val diarizationSnapshotFlow = combine(
+    private val diarizationAndTtsSnapshotFlow = combine(
         diarizationModelState,
-        _diarizationUiState
-    ) { modelState, uiState ->
-        DiarizationPipelineSnapshot(
-            modelState = modelState,
-            isDiarizing = uiState.isRunning
+        _diarizationUiState,
+        bengaliTtsModelState,
+        _bengaliVoiceUiState
+    ) { diarizationModel, diarizationUi, ttsModel, ttsUi ->
+        DiarizationAndTtsPipelineSnapshot(
+            diarizationModelState = diarizationModel,
+            isDiarizing = diarizationUi.isRunning,
+            bengaliTtsModelState = ttsModel,
+            isSynthesizingBengaliVoice = ttsUi.isSynthesizing,
+            hasSynthesizedBengaliTrack = ttsUi.segments.isNotEmpty()
         )
     }
 
@@ -188,8 +245,8 @@ class PlayerViewModel(
         whisperTranscriptionState,
         translationModelState,
         _translationUiState,
-        diarizationSnapshotFlow
-    ) { modelStatus, transState, translationState, translationUi, diarizationSnap ->
+        diarizationAndTtsSnapshotFlow
+    ) { modelStatus, transState, translationState, translationUi, diarizationTtsSnap ->
         WhisperPipelineSnapshot(
             isModelLoaded = modelStatus is WhisperModelStatus.LoadedReady,
             isTranscribing = transState.isRunning,
@@ -201,10 +258,13 @@ class PlayerViewModel(
                 is WhisperModelStatus.Error -> modelStatus.message
                 else -> "Native whisper.cpp compiled · Download or import ggml-base.en.bin in Transcribe tab"
             },
-            diarizationModelState = diarizationSnap.modelState,
-            isDiarizing = diarizationSnap.isDiarizing,
+            diarizationModelState = diarizationTtsSnap.diarizationModelState,
+            isDiarizing = diarizationTtsSnap.isDiarizing,
             translationModelState = translationState,
-            isTranslating = translationUi.isTranslating
+            isTranslating = translationUi.isTranslating,
+            bengaliTtsModelState = diarizationTtsSnap.bengaliTtsModelState,
+            isSynthesizingBengaliVoice = diarizationTtsSnap.isSynthesizingBengaliVoice,
+            hasSynthesizedBengaliTrack = diarizationTtsSnap.hasSynthesizedBengaliTrack
         )
     }
 
@@ -218,12 +278,31 @@ class PlayerViewModel(
         ExtractionUiSnapshot(audioInfo, inspecting, extracting, msg, whisperSnap)
     }
 
+    private val effectiveTtsPreviewStateFlow = combine(
+        ttsPreviewEngine.state,
+        bengaliTtsModelState,
+        _activeNeuralPreviewCharacterId
+    ) { systemTtsState, neuralTtsState, activeNeuralCharId ->
+        if (neuralTtsState is BengaliTtsModelState.Ready) {
+            systemTtsState.copy(
+                isChecking = false,
+                isRealTtsEngineAvailable = true,
+                isBengaliVoiceSupported = true,
+                matchedLocaleTag = "bn-VITS-Offline",
+                statusMessage = "Offline Sherpa-ONNX VITS Bengali voice Ready. Preview plays real offline Bengali speech with each character's pitch & speed.",
+                activePreviewCharacterId = activeNeuralCharId
+            )
+        } else {
+            systemTtsState
+        }
+    }
+
     val dubbingState: StateFlow<PlayerDubbingUiState> = combine(
         dubbingConfigFlow,
         _activeMediaUri,
         extractionSnapshotFlow,
         activeMovieAssignmentsFlow,
-        ttsPreviewEngine.state
+        effectiveTtsPreviewStateFlow
     ) { config, uri, extraction, movieAssignments, ttsState ->
         val effectiveConfig = config.copy(mediaUriString = uri)
         PlayerDubbingUiState(
@@ -232,7 +311,7 @@ class PlayerViewModel(
             isInspectingAudio = extraction.isInspecting,
             isExtractingAudio = extraction.isExtracting,
             extractionMessage = extraction.message,
-            hasSynthesizedBengaliTrack = false,
+            hasSynthesizedBengaliTrack = extraction.whisper.hasSynthesizedBengaliTrack,
             pipelineStages = aiDubbingPipeline.buildStageStatuses(
                 extractedAudioInfo = extraction.audioInfo,
                 isExtractingAudio = extraction.isExtracting,
@@ -242,7 +321,9 @@ class PlayerViewModel(
                 diarizationModelState = extraction.whisper.diarizationModelState,
                 isDiarizing = extraction.whisper.isDiarizing,
                 translationModelState = extraction.whisper.translationModelState,
-                isTranslating = extraction.whisper.isTranslating
+                isTranslating = extraction.whisper.isTranslating,
+                bengaliTtsModelState = extraction.whisper.bengaliTtsModelState,
+                isSynthesizingBengaliVoice = extraction.whisper.isSynthesizingBengaliVoice
             ),
             movieSpeakerAssignments = movieAssignments,
             ttsPreviewState = ttsState
@@ -255,7 +336,8 @@ class PlayerViewModel(
                 extractedAudioInfo = null,
                 isExtractingAudio = false,
                 diarizationModelState = diarizationModelManager.modelState.value,
-                translationModelState = offlineTranslationManager.modelState.value
+                translationModelState = offlineTranslationManager.modelState.value,
+                bengaliTtsModelState = bengaliTtsModelManager.modelState.value
             ),
             ttsPreviewState = ttsPreviewEngine.state.value
         )
@@ -271,6 +353,7 @@ class PlayerViewModel(
         viewModelScope.launch {
             offlineTranslationManager.checkModelStatus()
             diarizationModelManager.checkModelStatus()
+            bengaliTtsModelManager.checkModelStatus()
         }
 
         viewModelScope.launch {
@@ -317,11 +400,16 @@ class PlayerViewModel(
         _extractedAudioInfo.value = null
         _extractionMessage.value = null
         stopSpeakerDiarization()
+        stopBengaliVoiceGeneration()
+        stopDubbedAudioPlayback()
         manualSegmentCharacterOverrides.clear()
         _diarizationUiState.value = SpeakerDiarizationUiState(
             activeVideoUri = uriString,
             numClustersConfig = _diarizationUiState.value.numClustersConfig,
             thresholdConfig = _diarizationUiState.value.thresholdConfig
+        )
+        _bengaliVoiceUiState.value = BengaliVoiceGenerationUiState(
+            activeVideoUri = uriString
         )
         loadCachedTranslationForVideo(uriString, fallbackTitle)
 
@@ -658,10 +746,57 @@ class PlayerViewModel(
     }
 
     fun previewCharacterVoice(profile: CharacterVoiceProfile) {
-        ttsPreviewEngine.previewCharacter(profile)
+        if (bengaliTtsModelState.value is BengaliTtsModelState.Ready) {
+            if (_activeNeuralPreviewCharacterId.value == profile.characterId) {
+                stopVoicePreview()
+                return
+            }
+            stopVoicePreview()
+            stopDubbedAudioPlayback()
+            _activeNeuralPreviewCharacterId.value = profile.characterId
+            activeCharacterNeuralPreviewJob = viewModelScope.launch {
+                val synthResult = offlineBengaliTtsEngine.synthesizeCharacterPreview(
+                    profile = profile,
+                    sampleText = OfflineBengaliTtsEngine.DEFAULT_BENGALI_PREVIEW_PHRASE
+                )
+                synthResult.fold(
+                    onSuccess = { wavFile ->
+                        val started = dubAudioPreviewPlayer.playWavFile(
+                            filePath = wavFile.absolutePath,
+                            onCompleted = {
+                                if (_activeNeuralPreviewCharacterId.value == profile.characterId) {
+                                    _activeNeuralPreviewCharacterId.value = null
+                                }
+                            },
+                            onError = {
+                                if (_activeNeuralPreviewCharacterId.value == profile.characterId) {
+                                    _activeNeuralPreviewCharacterId.value = null
+                                }
+                            }
+                        )
+                        if (!started && _activeNeuralPreviewCharacterId.value == profile.characterId) {
+                            _activeNeuralPreviewCharacterId.value = null
+                        }
+                    },
+                    onFailure = {
+                        if (_activeNeuralPreviewCharacterId.value == profile.characterId) {
+                            _activeNeuralPreviewCharacterId.value = null
+                        }
+                    }
+                )
+            }
+        } else {
+            ttsPreviewEngine.previewCharacter(profile)
+        }
     }
 
     fun stopVoicePreview() {
+        activeCharacterNeuralPreviewJob?.cancel()
+        activeCharacterNeuralPreviewJob = null
+        if (_activeNeuralPreviewCharacterId.value != null) {
+            _activeNeuralPreviewCharacterId.value = null
+            dubAudioPreviewPlayer.stop()
+        }
         ttsPreviewEngine.stopPreview()
     }
 
@@ -1288,6 +1423,14 @@ class PlayerViewModel(
             _translationUiState.value = _translationUiState.value.copy(segments = updatedTranslated)
         }
 
+        val currentDubbed = _bengaliVoiceUiState.value.segments
+        if (currentDubbed.isNotEmpty()) {
+            val updatedDubbed = currentDubbed.map { seg ->
+                if (seg.segmentIndex == segmentIndex) seg.copy(characterId = characterId) else seg
+            }
+            _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(segments = updatedDubbed)
+        }
+
         if (uri.isNotBlank()) {
             viewModelScope.launch(Dispatchers.IO) {
                 runCatching {
@@ -1301,6 +1444,322 @@ class PlayerViewModel(
         }
     }
 
+    // --- Phase 5 Real Offline Bengali Voice Generation (Sherpa-ONNX VITS TTS) & One-Click AI Setup ---
+
+    fun checkBengaliTtsModelStatus() {
+        viewModelScope.launch {
+            bengaliTtsModelManager.checkModelStatus()
+        }
+    }
+
+    fun downloadBengaliTtsModels() {
+        if (activeBengaliTtsModelJob?.isActive == true) return
+        activeBengaliTtsModelJob = viewModelScope.launch {
+            bengaliTtsModelManager.downloadModels()
+        }
+    }
+
+    fun cancelBengaliTtsModelDownload() {
+        activeBengaliTtsModelJob?.cancel()
+        activeBengaliTtsModelJob = null
+        viewModelScope.launch {
+            bengaliTtsModelManager.checkModelStatus()
+        }
+    }
+
+    fun importLocalBengaliTtsFile(slot: BengaliTtsModelSlot, uri: Uri) {
+        if (activeBengaliTtsModelJob?.isActive == true) return
+        val displayName = resolveDocumentDisplayName(uri)
+        activeBengaliTtsModelJob = viewModelScope.launch {
+            bengaliTtsModelManager.importLocalFile(
+                slot = slot,
+                sourceUri = uri,
+                displayName = displayName
+            )
+        }
+    }
+
+    fun deleteBengaliTtsModels() {
+        stopBengaliVoiceGeneration()
+        stopVoicePreview()
+        stopDubbedAudioPlayback()
+        activeBengaliTtsModelJob?.cancel()
+        activeBengaliTtsModelJob = null
+        viewModelScope.launch {
+            offlineBengaliTtsEngine.release()
+            bengaliTtsModelManager.deleteModels()
+        }
+    }
+
+    fun startBengaliVoiceGeneration() {
+        if (activeBengaliVoiceGenJob?.isActive == true) return
+        val uri = activeUriString.orEmpty()
+        if (uri.isBlank()) {
+            _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                errorMessage = "No local video is currently loaded."
+            )
+            return
+        }
+        if (bengaliTtsModelState.value !is BengaliTtsModelState.Ready) {
+            _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                errorMessage = "Bengali TTS Model Required / Not Installed: Download or import the offline Sherpa-ONNX VITS Bengali model pack first."
+            )
+            return
+        }
+        val translatedSegments = _translationUiState.value.segments
+        if (translatedSegments.isEmpty()) {
+            _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                errorMessage = "No Bengali translated dialogue found. Run Transcribe and Translate to বাংলা first."
+            )
+            return
+        }
+
+        stopDubbedAudioPlayback()
+        val characters = dubbingConfigFlow.value.characterVoices
+        val overrides = _diarizationUiState.value.segmentCharacterMap
+
+        _bengaliVoiceUiState.value = BengaliVoiceGenerationUiState(
+            isSynthesizing = true,
+            synthesizedCount = 0,
+            totalCount = translatedSegments.size,
+            statusMessage = "Initializing offline Sherpa-ONNX VITS Bengali voice...",
+            errorMessage = null,
+            activeVideoUri = uri,
+            segments = emptyList(),
+            currentlyPlayingSegmentIndex = null
+        )
+
+        activeBengaliVoiceGenJob = viewModelScope.launch {
+            try {
+                val accumulated = mutableListOf<DubbedAudioSegment>()
+                val result = offlineBengaliTtsEngine.synthesizeSegments(
+                    videoUri = uri,
+                    translatedSegments = translatedSegments,
+                    characters = characters,
+                    segmentCharacterOverrides = overrides,
+                    onSegmentSynthesized = { completed, total, dubbedSeg ->
+                        accumulated.add(dubbedSeg)
+                        _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                            synthesizedCount = completed,
+                            totalCount = total,
+                            statusMessage = "Synthesized $completed / $total Bengali dialogue lines...",
+                            segments = accumulated.toList()
+                        )
+                    },
+                    onStatusUpdate = { status ->
+                        _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                            statusMessage = status
+                        )
+                    }
+                )
+
+                result.fold(
+                    onSuccess = { allSegments ->
+                        _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                            isSynthesizing = false,
+                            synthesizedCount = allSegments.size,
+                            totalCount = translatedSegments.size,
+                            statusMessage = "Generated ${allSegments.size} Bengali voice line(s) offline",
+                            errorMessage = null,
+                            segments = allSegments
+                        )
+                    },
+                    onFailure = { err ->
+                        _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                            isSynthesizing = false,
+                            statusMessage = "Bengali voice generation failed",
+                            errorMessage = err.message ?: "Offline Bengali TTS synthesis failed."
+                        )
+                    }
+                )
+            } catch (ce: CancellationException) {
+                _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                    isSynthesizing = false,
+                    statusMessage = "Stopped by user",
+                    errorMessage = null
+                )
+                throw ce
+            }
+        }
+    }
+
+    fun stopBengaliVoiceGeneration() {
+        offlineBengaliTtsEngine.requestCancel()
+        val job = activeBengaliVoiceGenJob
+        activeBengaliVoiceGenJob = null
+        job?.cancel()
+        if (_bengaliVoiceUiState.value.isSynthesizing) {
+            _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                isSynthesizing = false,
+                statusMessage = "Stopped by user",
+                errorMessage = null
+            )
+        }
+    }
+
+    fun togglePlayDubbedSegment(segment: DubbedAudioSegment) {
+        if (_bengaliVoiceUiState.value.currentlyPlayingSegmentIndex == segment.segmentIndex) {
+            stopDubbedAudioPlayback()
+            return
+        }
+        stopVoicePreview()
+        stopDubbedAudioPlayback()
+
+        val started = dubAudioPreviewPlayer.playWavFile(
+            filePath = segment.audioFilePath,
+            onCompleted = {
+                if (_bengaliVoiceUiState.value.currentlyPlayingSegmentIndex == segment.segmentIndex) {
+                    _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                        currentlyPlayingSegmentIndex = null
+                    )
+                }
+            },
+            onError = { errMsg ->
+                _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                    currentlyPlayingSegmentIndex = null,
+                    errorMessage = errMsg
+                )
+            }
+        )
+        if (started) {
+            _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                currentlyPlayingSegmentIndex = segment.segmentIndex,
+                errorMessage = null
+            )
+        }
+    }
+
+    fun stopDubbedAudioPlayback() {
+        dubAudioPreviewPlayer.stop()
+        if (_bengaliVoiceUiState.value.currentlyPlayingSegmentIndex != null) {
+            _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                currentlyPlayingSegmentIndex = null
+            )
+        }
+    }
+
+    fun clearSynthesizedBengaliAudio() {
+        stopBengaliVoiceGeneration()
+        stopDubbedAudioPlayback()
+        val uri = activeUriString.orEmpty()
+        _bengaliVoiceUiState.value = BengaliVoiceGenerationUiState(activeVideoUri = uri)
+        if (uri.isNotBlank()) {
+            viewModelScope.launch {
+                offlineBengaliTtsEngine.clearCacheForVideo(uri)
+            }
+        }
+    }
+
+    /**
+     * Unified One-Click AI Setup: sequentially downloads all missing offline models across
+     * Whisper ASR, Sherpa-ONNX Diarization, ML Kit EN→বাংলা Translation, and Sherpa-ONNX VITS Bengali TTS
+     * with live combined step & percentage progress.
+     */
+    fun startOneClickAiSetup() {
+        if (activeOneClickSetupJob?.isActive == true) return
+
+        val missingSteps = mutableListOf<String>()
+        if (whisperModelStatus.value !is WhisperModelStatus.LoadedReady) missingSteps.add("Whisper ASR")
+        if (diarizationModelState.value !is DiarizationModelState.Ready) missingSteps.add("Speaker Diarization")
+        if (translationModelState.value !is TranslationModelState.Ready) missingSteps.add("ML Kit EN→বাংলা")
+        if (bengaliTtsModelState.value !is BengaliTtsModelState.Ready) missingSteps.add("Bengali TTS")
+
+        if (missingSteps.isEmpty()) return
+
+        activeOneClickSetupJob = viewModelScope.launch {
+            val total = missingSteps.size
+            var completedIdx = 0
+            try {
+                for (stepName in missingSteps) {
+                    completedIdx += 1
+                    val currentStep = completedIdx
+                    _oneClickProgressState.value = OneClickProgressSnapshot(
+                        isRunning = true,
+                        currentStepIndex = currentStep,
+                        totalSteps = total,
+                        currentStepLabel = stepName,
+                        currentStepProgressPercent = 0,
+                        errorMessage = null
+                    )
+
+                    when (stepName) {
+                        "Whisper ASR" -> {
+                            val res = whisperSpeechEngine.ensureBaseEnModelReady { pct ->
+                                _oneClickProgressState.value = _oneClickProgressState.value.copy(
+                                    currentStepProgressPercent = pct
+                                )
+                            }
+                            res.getOrThrow()
+                        }
+                        "Speaker Diarization" -> {
+                            val progressCollector = launch {
+                                diarizationModelState.collect { st ->
+                                    if (st is DiarizationModelState.Downloading) {
+                                        _oneClickProgressState.value = _oneClickProgressState.value.copy(
+                                            currentStepProgressPercent = st.progress
+                                        )
+                                    }
+                                }
+                            }
+                            try {
+                                diarizationModelManager.downloadModels().getOrThrow()
+                            } finally {
+                                progressCollector.cancel()
+                            }
+                        }
+                        "ML Kit EN→বাংলা" -> {
+                            _oneClickProgressState.value = _oneClickProgressState.value.copy(
+                                currentStepProgressPercent = 25
+                            )
+                            offlineTranslationManager.downloadModel(requireWifi = false).getOrThrow()
+                            _oneClickProgressState.value = _oneClickProgressState.value.copy(
+                                currentStepProgressPercent = 100
+                            )
+                        }
+                        "Bengali TTS" -> {
+                            val progressCollector = launch {
+                                bengaliTtsModelState.collect { st ->
+                                    if (st is BengaliTtsModelState.Downloading) {
+                                        _oneClickProgressState.value = _oneClickProgressState.value.copy(
+                                            currentStepProgressPercent = st.progress
+                                        )
+                                    }
+                                }
+                            }
+                            try {
+                                bengaliTtsModelManager.downloadModels().getOrThrow()
+                            } finally {
+                                progressCollector.cancel()
+                            }
+                        }
+                    }
+                }
+
+                _oneClickProgressState.value = OneClickProgressSnapshot(isRunning = false)
+            } catch (ce: CancellationException) {
+                _oneClickProgressState.value = OneClickProgressSnapshot(isRunning = false)
+                throw ce
+            } catch (t: Throwable) {
+                _oneClickProgressState.value = OneClickProgressSnapshot(
+                    isRunning = false,
+                    errorMessage = t.message ?: "One-Click AI Setup encountered a download error."
+                )
+            }
+        }
+    }
+
+    fun cancelOneClickAiSetup() {
+        activeOneClickSetupJob?.cancel()
+        activeOneClickSetupJob = null
+        whisperSpeechEngine.cancelModelOperation()
+        _oneClickProgressState.value = OneClickProgressSnapshot(isRunning = false)
+        viewModelScope.launch {
+            diarizationModelManager.checkModelStatus()
+            offlineTranslationManager.checkModelStatus()
+            bengaliTtsModelManager.checkModelStatus()
+        }
+    }
+
     private fun resolveDocumentDisplayName(uri: Uri): String? {
         return runCatching {
             app.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
@@ -1311,9 +1770,15 @@ class PlayerViewModel(
     }
 
     override fun onCleared() {
+        activeOneClickSetupJob?.cancel()
         activeTranslationJob?.cancel()
         activeDiarizationModelJob?.cancel()
         activeDiarizationJob?.cancel()
+        activeBengaliTtsModelJob?.cancel()
+        activeBengaliVoiceGenJob?.cancel()
+        activeCharacterNeuralPreviewJob?.cancel()
+        dubAudioPreviewPlayer.release()
+        offlineBengaliTtsEngine.release()
         offlineDiarizationEngine.release()
         offlineTranslationEngine.close()
         whisperSpeechEngine.stopTranscription()
@@ -1322,9 +1787,21 @@ class PlayerViewModel(
         super.onCleared()
     }
 
-    private data class DiarizationPipelineSnapshot(
-        val modelState: DiarizationModelState = DiarizationModelState.NotInstalled,
-        val isDiarizing: Boolean = false
+    private data class OneClickProgressSnapshot(
+        val isRunning: Boolean = false,
+        val currentStepIndex: Int = 0,
+        val totalSteps: Int = 0,
+        val currentStepLabel: String = "",
+        val currentStepProgressPercent: Int = 0,
+        val errorMessage: String? = null
+    )
+
+    private data class DiarizationAndTtsPipelineSnapshot(
+        val diarizationModelState: DiarizationModelState = DiarizationModelState.NotInstalled,
+        val isDiarizing: Boolean = false,
+        val bengaliTtsModelState: BengaliTtsModelState = BengaliTtsModelState.NotInstalled,
+        val isSynthesizingBengaliVoice: Boolean = false,
+        val hasSynthesizedBengaliTrack: Boolean = false
     )
 
     private data class WhisperPipelineSnapshot(
@@ -1334,7 +1811,10 @@ class PlayerViewModel(
         val diarizationModelState: DiarizationModelState = DiarizationModelState.NotInstalled,
         val isDiarizing: Boolean = false,
         val translationModelState: TranslationModelState = TranslationModelState.NotDownloaded,
-        val isTranslating: Boolean = false
+        val isTranslating: Boolean = false,
+        val bengaliTtsModelState: BengaliTtsModelState = BengaliTtsModelState.NotInstalled,
+        val isSynthesizingBengaliVoice: Boolean = false,
+        val hasSynthesizedBengaliTrack: Boolean = false
     )
 
     private data class ExtractionUiSnapshot(
@@ -1362,7 +1842,9 @@ class PlayerViewModel(
                 offlineTranslationEngine = app.offlineTranslationEngine,
                 translationCacheRepository = app.translationCacheRepository,
                 diarizationModelManager = app.diarizationModelManager,
-                offlineDiarizationEngine = app.offlineDiarizationEngine
+                offlineDiarizationEngine = app.offlineDiarizationEngine,
+                bengaliTtsModelManager = app.bengaliTtsModelManager,
+                offlineBengaliTtsEngine = app.offlineBengaliTtsEngine
             ) as T
         }
     }

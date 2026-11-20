@@ -251,7 +251,7 @@ class AutoDubPipelineOrchestrator(
 
             val translatedRaw = offlineTranslationEngine.translateSegments(
                 segments = transcriptSegments,
-                onProgress = { completed, total, _ ->
+                onProgress = { completed, total ->
                     val frac = if (total > 0) completed.toFloat() / total.toFloat() else 0.5f
                     onStateUpdate(
                         AutoDubPipelineState(
@@ -276,9 +276,8 @@ class AutoDubPipelineOrchestrator(
             }
 
             runCatching {
-                translationCacheRepository.saveTranslationForVideo(
+                translationCacheRepository.saveTranslation(
                     videoUri = videoUri,
-                    videoTitle = videoTitle,
                     segments = translatedWithCharacters
                 )
             }

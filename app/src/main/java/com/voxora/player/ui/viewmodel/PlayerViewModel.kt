@@ -1758,8 +1758,8 @@ class PlayerViewModel(
                     onTranslatedSegmentsReady = { translated ->
                         _translationUiState.value = BengaliTranslationUiState(
                             isTranslating = false,
-                            translatedCount = translated.size,
-                            totalCount = translated.size,
+                            completedSegments = translated.size,
+                            totalSegments = translated.size,
                             statusMessage = "Translated ${translated.size} lines offline to বাংলা",
                             activeVideoUri = uri,
                             activeVideoTitle = title,

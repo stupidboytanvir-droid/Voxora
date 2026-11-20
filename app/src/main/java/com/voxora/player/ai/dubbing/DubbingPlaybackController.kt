@@ -65,6 +65,8 @@ class DubbingPlaybackController(
     private var currentDuckingWindows: List<DialogueDuckingWindow> = emptyList()
     private var assembledTrackDurationMs: Long = 0L
     private var assembledTrackFilePath: String? = null
+    private val chunkTracks = linkedMapOf<Int, AssembledChunkTrack>()
+    private var loadedChunkIndex: Int = -1
     private var lastLoadedVideoUri: String = ""
     private var isReleased = false
     private var syncJob: Job? = null
@@ -136,6 +138,8 @@ class DubbingPlaybackController(
         }
 
         lastLoadedVideoUri = videoUri
+        chunkTracks.clear()
+        loadedChunkIndex = -1
         currentSegments = segments
         currentDuckingWindows = BackgroundAudioPreserver.buildDuckingWindows(
             segments = segments,
@@ -192,11 +196,59 @@ class DubbingPlaybackController(
         _state.value = _state.value.copy(
             isTrackReady = true,
             isAssemblingTrack = false,
+            isChunkStreamingMode = false,
+            readyChunkCount = 0,
             assembledTrackPath = track.wavFile.absolutePath,
             assembledSegmentCount = segmentCount,
             statusDetail = "Synchronized Bengali track ready ($segmentCount lines)"
         )
         syncImmediately(forceSeek = true)
+    }
+
+    /**
+     * Attaches or updates a single 30-second rolling chunk WAV track without interrupting
+     * active playback of the currently playing chunk. As soon as Chunk 1 arrives, live
+     * synchronized Bengali playback begins immediately; subsequent pre-dubbed chunks seamlessly
+     * queue up for zero-gap transitions as the video advances or when the user seeks.
+     */
+    fun attachOrUpdateRollingChunk(
+        videoUri: String,
+        chunkTrack: AssembledChunkTrack,
+        allAccumulatedSegments: List<DubbedAudioSegment>
+    ) {
+        if (isReleased) return
+        assembleJob?.cancel()
+        assembleJob = null
+
+        if (lastLoadedVideoUri.isNotBlank() && lastLoadedVideoUri != videoUri) {
+            chunkTracks.clear()
+            loadedChunkIndex = -1
+            dubExoPlayer.stop()
+            dubExoPlayer.clearMediaItems()
+        }
+
+        lastLoadedVideoUri = videoUri
+        assembledTrackFilePath = null
+        assembledTrackDurationMs = 0L
+        chunkTracks[chunkTrack.chunkIndex] = chunkTrack
+        currentSegments = allAccumulatedSegments
+        currentDuckingWindows = BackgroundAudioPreserver.buildDuckingWindows(
+            segments = allAccumulatedSegments,
+            syncOffsetMs = currentConfig.syncOffsetMs
+        )
+
+        _state.value = _state.value.copy(
+            isTrackReady = true,
+            isAssemblingTrack = false,
+            isChunkStreamingMode = true,
+            readyChunkCount = chunkTracks.size,
+            assembledTrackPath = chunkTrack.wavFile.absolutePath,
+            assembledSegmentCount = allAccumulatedSegments.size,
+            statusDetail = "Live Bengali streaming · ${chunkTracks.size} chunk(s) ready (${allAccumulatedSegments.size} lines)"
+        )
+
+        // Only triggers media item load if the player's current position is inside a newly ready chunk
+        syncImmediately(forceSeek = false)
     }
 
     /**
@@ -210,6 +262,8 @@ class DubbingPlaybackController(
         currentDuckingWindows = emptyList()
         assembledTrackDurationMs = 0L
         assembledTrackFilePath = null
+        chunkTracks.clear()
+        loadedChunkIndex = -1
         if (!isReleased) {
             dubExoPlayer.stop()
             dubExoPlayer.clearMediaItems()
@@ -224,7 +278,8 @@ class DubbingPlaybackController(
     fun syncImmediately(forceSeek: Boolean = false) {
         if (isReleased) return
         val config = currentConfig
-        val trackReady = assembledTrackFilePath != null && currentSegments.isNotEmpty()
+        val isChunkMode = chunkTracks.isNotEmpty()
+        val trackReady = isChunkMode || (assembledTrackFilePath != null && currentSegments.isNotEmpty())
         val dubPlaybackWanted = config.isDubbingEnabled &&
             trackReady &&
             config.audioOutputMode != DubbingAudioOutputMode.ORIGINAL_AUDIO
@@ -257,32 +312,73 @@ class DubbingPlaybackController(
         // Expected dub track position accounts for user's live Sync Offset (ms):
         // Positive syncOffsetMs delays Bengali audio (plays later), so dubPos = videoPos - syncOffsetMs.
         val rawExpectedDubPosMs = videoPosMs - config.syncOffsetMs
-        val inDubTrackRange = rawExpectedDubPosMs in 0L..assembledTrackDurationMs
 
         if (abs(dubExoPlayer.playbackParameters.speed - mainSpeed) > 0.01f) {
             dubExoPlayer.setPlaybackSpeed(mainSpeed)
         }
 
-        if (inDubTrackRange) {
-            val dubPosMs = dubExoPlayer.currentPosition.coerceAtLeast(0L)
-            val driftMs = abs(dubPosMs - rawExpectedDubPosMs)
-            if (forceSeek || driftMs > DRIFT_TOLERANCE_MS) {
-                dubExoPlayer.seekTo(rawExpectedDubPosMs)
-            }
-            if (mainPlaying && !dubExoPlayer.playWhenReady) {
-                dubExoPlayer.playWhenReady = true
-                dubExoPlayer.play()
-            } else if (!mainPlaying && (dubExoPlayer.isPlaying || dubExoPlayer.playWhenReady)) {
-                dubExoPlayer.pause()
+        val inDubTrackRange: Boolean
+        if (isChunkMode) {
+            val targetChunk = findChunkForTimelinePosition(rawExpectedDubPosMs)
+            inDubTrackRange = targetChunk != null && targetChunk.wavFile.exists()
+            if (targetChunk != null && targetChunk.wavFile.exists()) {
+                val localExpectedPosMs = (rawExpectedDubPosMs - targetChunk.startMs)
+                    .coerceIn(0L, targetChunk.durationMs)
+                if (loadedChunkIndex != targetChunk.chunkIndex) {
+                    loadedChunkIndex = targetChunk.chunkIndex
+                    dubExoPlayer.stop()
+                    dubExoPlayer.clearMediaItems()
+                    dubExoPlayer.setMediaItem(MediaItem.fromUri(Uri.fromFile(targetChunk.wavFile)))
+                    dubExoPlayer.setPlaybackSpeed(mainSpeed)
+                    dubExoPlayer.prepare()
+                    dubExoPlayer.seekTo(localExpectedPosMs)
+                    if (mainPlaying) {
+                        dubExoPlayer.playWhenReady = true
+                        dubExoPlayer.play()
+                    } else {
+                        dubExoPlayer.playWhenReady = false
+                    }
+                } else {
+                    val dubPosMs = dubExoPlayer.currentPosition.coerceAtLeast(0L)
+                    val driftMs = abs(dubPosMs - localExpectedPosMs)
+                    if (forceSeek || driftMs > DRIFT_TOLERANCE_MS) {
+                        dubExoPlayer.seekTo(localExpectedPosMs)
+                    }
+                    if (mainPlaying && !dubExoPlayer.playWhenReady) {
+                        dubExoPlayer.playWhenReady = true
+                        dubExoPlayer.play()
+                    } else if (!mainPlaying && (dubExoPlayer.isPlaying || dubExoPlayer.playWhenReady)) {
+                        dubExoPlayer.pause()
+                    }
+                }
+            } else {
+                if (dubExoPlayer.isPlaying || dubExoPlayer.playWhenReady) {
+                    dubExoPlayer.pause()
+                }
             }
         } else {
-            if (dubExoPlayer.isPlaying || dubExoPlayer.playWhenReady) {
-                dubExoPlayer.pause()
+            inDubTrackRange = rawExpectedDubPosMs in 0L..assembledTrackDurationMs
+            if (inDubTrackRange) {
+                val dubPosMs = dubExoPlayer.currentPosition.coerceAtLeast(0L)
+                val driftMs = abs(dubPosMs - rawExpectedDubPosMs)
+                if (forceSeek || driftMs > DRIFT_TOLERANCE_MS) {
+                    dubExoPlayer.seekTo(rawExpectedDubPosMs)
+                }
+                if (mainPlaying && !dubExoPlayer.playWhenReady) {
+                    dubExoPlayer.playWhenReady = true
+                    dubExoPlayer.play()
+                } else if (!mainPlaying && (dubExoPlayer.isPlaying || dubExoPlayer.playWhenReady)) {
+                    dubExoPlayer.pause()
+                }
+            } else {
+                if (dubExoPlayer.isPlaying || dubExoPlayer.playWhenReady) {
+                    dubExoPlayer.pause()
+                }
             }
         }
 
-        // Smart Audio Ducking calculation at current video position
-        val duckGain = if (config.preserveOriginalBackgroundAudio) {
+        // Smart Audio Ducking calculation at current video position (only duck when dubbed chunk is available)
+        val duckGain = if (inDubTrackRange && config.preserveOriginalBackgroundAudio) {
             BackgroundAudioPreserver.computeDuckingGain(
                 positionMs = videoPosMs,
                 windows = currentDuckingWindows,
@@ -356,11 +452,23 @@ class DubbingPlaybackController(
         return null
     }
 
+    private fun findChunkForTimelinePosition(timelinePosMs: Long): AssembledChunkTrack? {
+        if (timelinePosMs < 0L) return null
+        val estimatedIdx = (timelinePosMs / ROLLING_CHUNK_DURATION_MS).toInt()
+        val direct = chunkTracks[estimatedIdx]
+        if (direct != null && timelinePosMs >= direct.startMs && timelinePosMs < direct.startMs + direct.durationMs) {
+            return direct
+        }
+        return chunkTracks.values.firstOrNull {
+            timelinePosMs >= it.startMs && timelinePosMs < (it.startMs + it.durationMs)
+        }
+    }
+
     private fun startSyncLoop() {
         syncJob?.cancel()
         syncJob = controllerScope.launch {
             while (isActive && !isReleased) {
-                val trackReady = assembledTrackFilePath != null && currentSegments.isNotEmpty()
+                val trackReady = chunkTracks.isNotEmpty() || (assembledTrackFilePath != null && currentSegments.isNotEmpty())
                 val activeMode = currentConfig.isDubbingEnabled &&
                     trackReady &&
                     currentConfig.audioOutputMode != DubbingAudioOutputMode.ORIGINAL_AUDIO
@@ -390,5 +498,6 @@ class DubbingPlaybackController(
         private const val ACTIVE_SYNC_INTERVAL_MS = 40L
         private const val IDLE_SYNC_INTERVAL_MS = 250L
         private const val DRIFT_TOLERANCE_MS = 120L
+        const val ROLLING_CHUNK_DURATION_MS = 30_000L
     }
 }

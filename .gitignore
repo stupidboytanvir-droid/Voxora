@@ -21,3 +21,4 @@ debug.keystore.base64
 app/libs/*.aar
 .build-outputs/
 .aistudio/
+.gh_push_token*

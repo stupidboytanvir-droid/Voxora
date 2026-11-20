@@ -187,6 +187,62 @@ class OfflineDiarizationEngine(
         }
     }
 
+    /**
+     * Runs offline Sherpa-ONNX speaker diarization directly on a single already-decoded
+     * 30-second 16 kHz mono PCM buffer (~1.92 MB). Eliminates full-video PCM decoding
+     * and prevents Stage 2 OOM crashes on mobile devices.
+     */
+    suspend fun diarizePcmChunk(
+        samples16kMono: FloatArray,
+        startTimeMs: Long,
+        numClusters: Int = -1,
+        threshold: Float = 0.5f,
+        onProgress: (fraction: Float, statusLabel: String) -> Unit = { _, _ -> }
+    ): Result<List<SpeakerSegment>> = withContext(Dispatchers.IO) {
+        if (samples16kMono.isEmpty()) {
+            return@withContext Result.success(emptyList())
+        }
+        val modelFiles = modelManager.getInstalledModelPaths()
+            ?: return@withContext Result.failure(DiarizationModelNotInstalledException())
+
+        cancelRequested.set(false)
+        try {
+            coroutineContext.ensureActive()
+            onProgress(0.15f, "Diarizing 30s audio window...")
+            val segments = runNativeDiarization(
+                modelFiles = modelFiles,
+                samples = samples16kMono,
+                timeOffsetMs = startTimeMs,
+                numClusters = numClusters,
+                threshold = threshold,
+                onChunkProgress = { processed, total ->
+                    val frac = if (total > 0) processed.toFloat() / total.toFloat() else 0.5f
+                    onProgress(
+                        (0.15f + frac * 0.80f).coerceIn(0.15f, 0.95f),
+                        "Detecting speakers ($processed/$total)..."
+                    )
+                }
+            )
+            if (cancelRequested.get()) {
+                throw CancellationException("Speaker diarization cancelled.")
+            }
+            val sorted = segments.sortedBy { it.startMs }
+            onProgress(1.0f, "Detected ${sorted.map { it.speakerIndex }.distinct().size} speaker(s)")
+            Result.success(sorted)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: UnsatisfiedLinkError) {
+            Result.failure(
+                IllegalStateException(
+                    "Native Sherpa-ONNX library could not be loaded on this device ABI: ${t.message}",
+                    t
+                )
+            )
+        } catch (t: Throwable) {
+            Result.failure(t)
+        }
+    }
+
     private suspend fun runNativeDiarization(
         modelFiles: DiarizationModelFiles,
         samples: FloatArray,
@@ -296,7 +352,7 @@ class OfflineDiarizationEngine(
     }
 
     companion object {
-        // 20 minutes @ 16 kHz mono = 19,200,000 floats (~76 MB) — balances global accuracy & mobile RAM safety
-        private const val MAX_WINDOW_SAMPLES = 20 * 60 * PcmResampler.WHISPER_SAMPLE_RATE
+        // Strict 30-second window @ 16 kHz mono = 480,000 floats (~1.92 MB) — prevents OOM crashes on mobile devices
+        private const val MAX_WINDOW_SAMPLES = 30 * PcmResampler.WHISPER_SAMPLE_RATE
     }
 }

@@ -141,6 +141,7 @@ data class DubbingSessionConfig(
     val preserveOriginalBackgroundAudio: Boolean = true,
     val bgmDuckingStrength: Float = 0.80f,
     val vocalAttenuationEnabled: Boolean = false,
+    val fastMovieModeEnabled: Boolean = true,
     val autoDetectSourceLanguage: Boolean = false,
     val characterVoices: List<CharacterVoiceProfile> = DubbingVoiceCatalog.defaultCharacters()
 )

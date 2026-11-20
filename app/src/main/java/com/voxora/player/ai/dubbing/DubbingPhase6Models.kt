@@ -49,6 +49,8 @@ data class LiveDubbingPlaybackState(
     val isTrackReady: Boolean = false,
     val isAssemblingTrack: Boolean = false,
     val isOriginalDucked: Boolean = false,
+    val isChunkStreamingMode: Boolean = false,
+    val readyChunkCount: Int = 0,
     val activeSegmentIndex: Int? = null,
     val activeCharacterId: String? = null,
     val activeBengaliLine: String? = null,
@@ -61,11 +63,11 @@ data class LiveDubbingPlaybackState(
 
 enum class AutoDubStage(val stageNumber: Int, val label: String) {
     IDLE(0, "Ready"),
-    TRANSCRIBING(1, "Extracting audio & transcribing English (whisper.cpp)..."),
+    TRANSCRIBING(1, "Extracting 30s audio & transcribing English (whisper.cpp)..."),
     DIARIZING(2, "Detecting speakers & mapping characters (Sherpa-ONNX)..."),
     TRANSLATING(3, "Translating dialogue to Bengali (ML Kit)..."),
     SYNTHESIZING_BENGALI(4, "Generating offline Bengali character voices (VITS)..."),
-    ASSEMBLING_LIVE_TRACK(4, "Assembling synchronized Bengali dub track..."),
+    ASSEMBLING_LIVE_TRACK(4, "Assembling synchronized 30s Bengali chunk..."),
     COMPLETED(4, "Bengali dubbing ready & active!"),
     ERROR(0, "Auto-Dub failed")
 }
@@ -77,11 +79,20 @@ data class AutoDubPipelineState(
     val totalStages: Int = 4,
     val stageLabel: String = "Ready",
     val stageProgressFraction: Float = 0f,
+    val isLiveChunkStreaming: Boolean = false,
+    val activeChunkIndex: Int = 0,
+    val completedChunkCount: Int = 0,
+    val totalChunkCount: Int = 0,
+    val bufferedAheadChunks: Int = 0,
     val errorMessage: String? = null
 ) {
     val overallProgressFraction: Float
         get() = when {
-            currentStage == AutoDubStage.COMPLETED -> 1f
+            currentStage == AutoDubStage.COMPLETED && !isLiveChunkStreaming -> 1f
+            isLiveChunkStreaming && totalChunkCount > 0 -> {
+                ((completedChunkCount.toFloat() + stageProgressFraction.coerceIn(0f, 1f)) / totalChunkCount.toFloat())
+                    .coerceIn(0.02f, 0.99f)
+            }
             !isRunning || totalStages <= 0 -> 0f
             else -> (((stageIndex - 1).coerceAtLeast(0) + stageProgressFraction.coerceIn(0f, 1f)) / totalStages.toFloat())
                 .coerceIn(0.01f, 0.99f)

@@ -45,6 +45,7 @@ class DubbingPreferencesRepository(private val context: Context) {
         val PRESERVE_BACKGROUND = booleanPreferencesKey("dubbing_preserve_background")
         val BGM_DUCKING_STRENGTH = floatPreferencesKey("dubbing_bgm_ducking_strength")
         val VOCAL_ATTENUATION_ENABLED = booleanPreferencesKey("dubbing_vocal_attenuation_enabled")
+        val FAST_MOVIE_MODE = booleanPreferencesKey("dubbing_fast_movie_mode")
         val CHARACTER_PROFILES_JSON = stringPreferencesKey("dubbing_character_profiles_json")
         val CHARACTER_PROFILES_INITIALIZED = booleanPreferencesKey("dubbing_characters_initialized")
         val MOVIE_SPEAKER_ASSIGNMENTS_JSON = stringPreferencesKey("dubbing_movie_speaker_assignments_json")
@@ -89,6 +90,7 @@ class DubbingPreferencesRepository(private val context: Context) {
             preserveOriginalBackgroundAudio = prefs[Keys.PRESERVE_BACKGROUND] ?: true,
             bgmDuckingStrength = (prefs[Keys.BGM_DUCKING_STRENGTH] ?: 0.80f).coerceIn(0f, 0.95f),
             vocalAttenuationEnabled = prefs[Keys.VOCAL_ATTENUATION_ENABLED] ?: false,
+            fastMovieModeEnabled = prefs[Keys.FAST_MOVIE_MODE] ?: true,
             characterVoices = characters
         )
     }
@@ -162,6 +164,10 @@ class DubbingPreferencesRepository(private val context: Context) {
 
     suspend fun setVocalAttenuationEnabled(enabled: Boolean) {
         context.voxoraDubbingStore.edit { it[Keys.VOCAL_ATTENUATION_ENABLED] = enabled }
+    }
+
+    suspend fun setFastMovieModeEnabled(enabled: Boolean) {
+        context.voxoraDubbingStore.edit { it[Keys.FAST_MOVIE_MODE] = enabled }
     }
 
     suspend fun saveCharacters(characters: List<CharacterVoiceProfile>) {

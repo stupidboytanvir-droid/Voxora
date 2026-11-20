@@ -61,13 +61,14 @@ fun AutoDubHeroCard(
     allModelsInstalled: Boolean,
     autoDubState: AutoDubPipelineState,
     liveDubbingState: LiveDubbingPlaybackState,
+    fastMovieModeEnabled: Boolean = true,
     onStartAutoDub: () -> Unit,
     onCancelAutoDub: () -> Unit
 ) {
     val emerald = Color(0xFF4ADE80)
     val accentBorder = when {
+        autoDubState.isLiveChunkStreaming || liveDubbingState.isActive -> emerald.copy(alpha = 0.72f)
         autoDubState.isRunning -> VoxoraSubtleBlue
-        liveDubbingState.isActive -> emerald.copy(alpha = 0.7f)
         else -> VoxoraElectricPurple.copy(alpha = 0.7f)
     }
 
@@ -122,12 +123,20 @@ fun AutoDubHeroCard(
                     }
                     Column {
                         Text(
-                            text = "One-Click Auto-Dub Video",
+                            text = if (fastMovieModeEnabled) {
+                                "Fast Live Bengali Auto-Dub"
+                            } else {
+                                "Multi-Speaker Live Auto-Dub"
+                            },
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             color = Color.White
                         )
                         Text(
-                            text = "English → বাংলা · Transcribe → Diarize → Translate → Voice → Play",
+                            text = if (fastMovieModeEnabled) {
+                                "30s rolling chunks · Whisper tiny → বাংলা → VITS · Starts in seconds"
+                            } else {
+                                "30s rolling chunks · Whisper → Diarize → বাংলা → VITS"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.75f),
                             maxLines = 2,
@@ -136,7 +145,7 @@ fun AutoDubHeroCard(
                     }
                 }
 
-                if (liveDubbingState.isActive) {
+                if (liveDubbingState.isActive || autoDubState.isLiveChunkStreaming) {
                     Surface(
                         color = emerald.copy(alpha = 0.18f),
                         shape = RoundedCornerShape(8.dp),
@@ -154,7 +163,12 @@ fun AutoDubHeroCard(
                                 modifier = Modifier.size(12.dp)
                             )
                             Text(
-                                text = if (liveDubbingState.isOriginalDucked) "LIVE · DUCKED" else "LIVE SYNC",
+                                text = when {
+                                    liveDubbingState.isOriginalDucked -> "LIVE · DUCKED"
+                                    autoDubState.isLiveChunkStreaming && autoDubState.totalChunkCount > 0 ->
+                                        "LIVE · ${autoDubState.completedChunkCount}/${autoDubState.totalChunkCount}"
+                                    else -> "LIVE SYNC"
+                                },
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = emerald
                             )
@@ -178,7 +192,7 @@ fun AutoDubHeroCard(
                             CircularProgressIndicator(
                                 modifier = Modifier.size(16.dp),
                                 strokeWidth = 2.dp,
-                                color = VoxoraSubtleBlue
+                                color = if (autoDubState.isLiveChunkStreaming) emerald else VoxoraSubtleBlue
                             )
                             Text(
                                 text = autoDubState.stageLabel,
@@ -191,12 +205,12 @@ fun AutoDubHeroCard(
                         Text(
                             text = "${(autoDubState.overallProgressFraction * 100).toInt()}%",
                             style = TabularTimeStyle,
-                            color = VoxoraSubtleBlue
+                            color = if (autoDubState.isLiveChunkStreaming) emerald else VoxoraSubtleBlue
                         )
                     }
                     LinearProgressIndicator(
                         progress = { autoDubState.overallProgressFraction.coerceIn(0f, 1f) },
-                        color = VoxoraElectricPurpleBright,
+                        color = if (autoDubState.isLiveChunkStreaming) emerald else VoxoraElectricPurpleBright,
                         trackColor = Color.White.copy(alpha = 0.12f),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -214,7 +228,9 @@ fun AutoDubHeroCard(
                     ) {
                         Icon(Icons.Rounded.Close, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Cancel Auto-Dub")
+                        Text(
+                            if (autoDubState.isLiveChunkStreaming) "Stop Live Bengali Dubbing" else "Cancel Auto-Dub"
+                        )
                     }
                 }
             } else {
@@ -231,9 +247,9 @@ fun AutoDubHeroCard(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = if (liveDubbingState.isTrackReady) {
-                            "Re-Run Auto-Dub Video (English → বাংলা)"
+                            "Restart Live Bengali Auto-Dub"
                         } else {
-                            "Auto-Dub Entire Video (English → বাংলা)"
+                            "Start Live Bengali Auto-Dub (30s Chunks)"
                         },
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
                     )
@@ -241,7 +257,11 @@ fun AutoDubHeroCard(
 
                 if (!allModelsInstalled) {
                     Text(
-                        text = "Tip: Download all 4 offline AI models via One-Click AI Setup above before starting Auto-Dub.",
+                        text = if (fastMovieModeEnabled) {
+                            "Tip: Download Whisper tiny (~31 MB), EN→বাংলা & Bengali TTS via One-Click AI Setup above."
+                        } else {
+                            "Tip: Download all 4 offline AI models via One-Click AI Setup above before starting."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xFFFBBF24)
                     )

@@ -196,6 +196,10 @@ Java_com_voxora_player_dubbing_whisper_WhisperNativeBridge_nativeTranscribeChunk
     }
 
     struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+    params.greedy.best_of = 1;
+    params.beam_search.beam_size = 1;
+    params.temperature = 0.0f;
+    params.temperature_inc = 0.0f;
     params.print_realtime = false;
     params.print_progress = false;
     params.print_timestamps = false;

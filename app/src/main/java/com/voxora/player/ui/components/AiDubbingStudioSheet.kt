@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Info
@@ -155,6 +156,7 @@ fun AiDubbingStudioSheet(
     onPreserveBackgroundChange: (Boolean) -> Unit,
     onBgmDuckingStrengthChange: (Float) -> Unit,
     onVocalAttenuationChange: (Boolean) -> Unit,
+    onFastMovieModeChange: (Boolean) -> Unit,
     onAddCharacter: (CharacterVoiceProfile) -> Unit,
     onUpdateCharacter: (CharacterVoiceProfile) -> Unit,
     onRemoveCharacter: (String) -> Unit,
@@ -257,7 +259,7 @@ fun AiDubbingStudioSheet(
                             border = BorderStroke(1.dp, VoxoraElectricPurple)
                         ) {
                             Text(
-                                text = "v2.0",
+                                text = "v2.1",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = VoxoraElectricPurpleBright,
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
@@ -265,7 +267,7 @@ fun AiDubbingStudioSheet(
                         }
                     }
                     Text(
-                        text = "${state.config.sourceLanguage.displayName} → ${state.config.targetLanguage.displayName} (${state.config.targetLanguage.nativeName}) · Full Offline AI Dubbing & MP4 Export",
+                        text = "${state.config.sourceLanguage.displayName} → ${state.config.targetLanguage.displayName} (${state.config.targetLanguage.nativeName}) · Fast Live 30s Chunk Dubbing & MP4 Export",
                         style = MaterialTheme.typography.bodySmall,
                         color = VoxoraSubtleBlue
                     )
@@ -365,9 +367,16 @@ fun AiDubbingStudioSheet(
 
             when (selectedTab) {
                 DubbingStudioTab.CONTROLS -> {
+                    val requiredModelsReady = if (state.config.fastMovieModeEnabled) {
+                        oneClickAiSetupState.isWhisperReady &&
+                            oneClickAiSetupState.isTranslationReady &&
+                            oneClickAiSetupState.isBengaliTtsReady
+                    } else {
+                        oneClickAiSetupState.allModelsReady
+                    }
                     DubbingControlsTab(
                         state = state,
-                        allModelsInstalled = oneClickAiSetupState.allModelsReady,
+                        allModelsInstalled = requiredModelsReady,
                         liveDubbingState = liveDubbingState,
                         autoDubPipelineState = autoDubPipelineState,
                         dubbedExportState = dubbedExportState,
@@ -387,7 +396,8 @@ fun AiDubbingStudioSheet(
                         onResetSyncOffset = onResetSyncOffset,
                         onPreserveBackgroundChange = onPreserveBackgroundChange,
                         onBgmDuckingStrengthChange = onBgmDuckingStrengthChange,
-                        onVocalAttenuationChange = onVocalAttenuationChange
+                        onVocalAttenuationChange = onVocalAttenuationChange,
+                        onFastMovieModeChange = onFastMovieModeChange
                     )
                 }
                 DubbingStudioTab.TRANSCRIBE -> {
@@ -535,21 +545,93 @@ private fun DubbingControlsTab(
     onResetSyncOffset: () -> Unit,
     onPreserveBackgroundChange: (Boolean) -> Unit,
     onBgmDuckingStrengthChange: (Float) -> Unit,
-    onVocalAttenuationChange: (Boolean) -> Unit
+    onVocalAttenuationChange: (Boolean) -> Unit,
+    onFastMovieModeChange: (Boolean) -> Unit
 ) {
     val config = state.config
     var showAllLanguages by remember { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        // 0. Prominent Phase 6 One-Click Auto-Dub Video Hero Card
+        // 0. Prominent Live Rolling Chunk Auto-Dub Video Hero Card
         AutoDubHeroCard(
             hasActiveVideo = config.mediaUriString.isNotBlank(),
             allModelsInstalled = allModelsInstalled,
             autoDubState = autoDubPipelineState,
             liveDubbingState = liveDubbingState,
+            fastMovieModeEnabled = config.fastMovieModeEnabled,
             onStartAutoDub = onStartAutoDubVideo,
             onCancelAutoDub = onCancelAutoDubVideo
         )
+
+        // 0.5. Fast Movie Mode Toggle Card (Default ON — 30s rolling chunks, skips heavy Diarization)
+        Surface(
+            color = Color(0xFF181924),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(
+                1.dp,
+                if (config.fastMovieModeEnabled) {
+                    Color(0xFF4ADE80).copy(alpha = 0.45f)
+                } else {
+                    VoxoraSubtleBlue.copy(alpha = 0.45f)
+                }
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Bolt,
+                    contentDescription = null,
+                    tint = if (config.fastMovieModeEnabled) Color(0xFF4ADE80) else VoxoraSubtleBlue,
+                    modifier = Modifier.size(22.dp)
+                )
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "Fast Movie Mode",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = Color.White
+                        )
+                        Surface(
+                            color = if (config.fastMovieModeEnabled) {
+                                Color(0xFF4ADE80).copy(alpha = 0.16f)
+                            } else {
+                                VoxoraSubtleBlue.copy(alpha = 0.18f)
+                            },
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = if (config.fastMovieModeEnabled) "5x FASTER · <20MB RAM" else "MULTI-SPEAKER",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = if (config.fastMovieModeEnabled) Color(0xFF4ADE80) else VoxoraSubtleBlue,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = if (config.fastMovieModeEnabled) {
+                            "30s live rolling chunks · Skips heavy Speaker Diarization to start Bengali playback in seconds and prevent OOM. Turn OFF for Multi-Speaker Diarization."
+                        } else {
+                            "Multi-Speaker Diarization active · Detects and assigns speakers per 30s chunk using Sherpa-ONNX (uses more CPU/RAM)."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.72f)
+                    )
+                }
+                Switch(
+                    checked = config.fastMovieModeEnabled,
+                    onCheckedChange = onFastMovieModeChange,
+                    modifier = Modifier.testTag("fast_movie_mode_switch")
+                )
+            }
+        }
         // 1. Language Pair Card (English -> Bengali Phase 1 + Future Expansion)
         Surface(
             color = Color(0xFF181924),

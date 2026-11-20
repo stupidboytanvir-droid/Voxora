@@ -325,7 +325,203 @@ class VideoPcmAudioDecoder(private val context: Context) {
         }
     }
 
+    /**
+     * Decodes ONLY a single bounded time window (`[startMs, startMs + windowDurationMs]`)
+     * directly using [MediaExtractor.seekTo] (`SEEK_TO_PREVIOUS_SYNC`).
+     *
+     * Never loads an entire movie into memory: a 30-second 16 kHz mono Float32 buffer uses
+     * only ~1.92 MB of RAM, keeping total audio processing well under 20 MB even on 3-hour movies.
+     */
+    suspend fun decodeWindowTo16kPcm(
+        mediaUriString: String,
+        startMs: Long,
+        windowDurationMs: Long = DEFAULT_CHUNK_SECONDS * 1_000L,
+        chunkIndex: Int = 0
+    ): Result<PcmAudioChunk> = withContext(Dispatchers.IO) {
+        runCatching {
+            val safeStartMs = startMs.coerceAtLeast(0L)
+            val safeWindowMs = windowDurationMs.coerceIn(5_000L, 60_000L)
+            val endMs = safeStartMs + safeWindowMs
+            val maxSamples = ((safeWindowMs * PcmResampler.WHISPER_SAMPLE_RATE) / 1_000L).toInt()
+                .coerceAtLeast(PcmResampler.WHISPER_SAMPLE_RATE)
+
+            val extractor = MediaExtractor()
+            var codec: MediaCodec? = null
+            try {
+                extractor.setDataSource(context, Uri.parse(mediaUriString), null)
+
+                var audioTrackIndex = -1
+                var inputFormat: MediaFormat? = null
+                for (i in 0 until extractor.trackCount) {
+                    val format = extractor.getTrackFormat(i)
+                    val mime = format.getString(MediaFormat.KEY_MIME).orEmpty()
+                    if (mime.startsWith("audio/", ignoreCase = true)) {
+                        audioTrackIndex = i
+                        inputFormat = format
+                        break
+                    }
+                }
+
+                if (audioTrackIndex < 0 || inputFormat == null) {
+                    throw IllegalStateException("No audio track found in the selected video.")
+                }
+
+                val mimeType = inputFormat.getString(MediaFormat.KEY_MIME)
+                    ?: throw IllegalStateException("Audio track MIME type is missing.")
+                var currentSampleRate = runCatching {
+                    inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                }.getOrDefault(48_000)
+                var currentChannels = runCatching {
+                    inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                }.getOrDefault(2)
+
+                extractor.selectTrack(audioTrackIndex)
+                if (safeStartMs > 0L) {
+                    extractor.seekTo(safeStartMs * 1_000L, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                }
+
+                codec = MediaCodec.createDecoderByType(mimeType)
+                codec.configure(inputFormat, null, null, 0)
+                codec.start()
+
+                val accumulator = FloatArray(maxSamples)
+                var accumulatedCount = 0
+                val bufferInfo = MediaCodec.BufferInfo()
+                var sawInputEos = false
+                var sawOutputEos = false
+                var scratchBytes = ByteArray(64 * 1024)
+                val endUs = endMs * 1_000L
+
+                while (!sawOutputEos && accumulatedCount < maxSamples) {
+                    coroutineContext.ensureActive()
+
+                    if (!sawInputEos) {
+                        val inIndex = codec.dequeueInputBuffer(10_000L)
+                        if (inIndex >= 0) {
+                            val inputBuffer = codec.getInputBuffer(inIndex)
+                            if (inputBuffer != null) {
+                                val sampleTimeUs = extractor.sampleTime
+                                val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                                // Stop feeding input once we are safely past the end of the 30s window
+                                if (sampleSize < 0 || (sampleTimeUs >= 0L && sampleTimeUs > endUs + 500_000L)) {
+                                    codec.queueInputBuffer(
+                                        inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                                    )
+                                    sawInputEos = true
+                                } else {
+                                    codec.queueInputBuffer(inIndex, 0, sampleSize, sampleTimeUs.coerceAtLeast(0L), 0)
+                                    extractor.advance()
+                                }
+                            }
+                        }
+                    }
+
+                    val outIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000L)
+                    when {
+                        outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            val outFmt = codec.outputFormat
+                            currentSampleRate = runCatching {
+                                outFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                            }.getOrDefault(currentSampleRate)
+                            currentChannels = runCatching {
+                                outFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                            }.getOrDefault(currentChannels)
+                        }
+                        outIndex >= 0 -> {
+                            val outBuffer = codec.getOutputBuffer(outIndex)
+                            if (outBuffer != null && bufferInfo.size > 0) {
+                                val frameStartMs = (bufferInfo.presentationTimeUs / 1_000L).coerceAtLeast(0L)
+                                if (scratchBytes.size < bufferInfo.size) {
+                                    scratchBytes = ByteArray(bufferInfo.size)
+                                }
+                                outBuffer.position(bufferInfo.offset)
+                                outBuffer.limit(bufferInfo.offset + bufferInfo.size)
+                                outBuffer.get(scratchBytes, 0, bufferInfo.size)
+
+                                val resampled = PcmResampler.pcm16LeTo16kMonoFloat(
+                                    pcmBytes = scratchBytes,
+                                    byteLength = bufferInfo.size,
+                                    sourceSampleRate = currentSampleRate,
+                                    channelCount = currentChannels
+                                )
+
+                                if (resampled.isNotEmpty()) {
+                                    val frameDurMs = (resampled.size.toLong() * 1_000L) / PcmResampler.WHISPER_SAMPLE_RATE
+                                    val frameEndMs = frameStartMs + frameDurMs
+
+                                    // Discard pre-roll frames prior to safeStartMs after SEEK_TO_PREVIOUS_SYNC
+                                    if (frameEndMs > safeStartMs && frameStartMs < endMs) {
+                                        val skipMs = (safeStartMs - frameStartMs).coerceAtLeast(0L)
+                                        val skipSamples = ((skipMs * PcmResampler.WHISPER_SAMPLE_RATE) / 1_000L)
+                                            .toInt()
+                                            .coerceIn(0, resampled.size)
+                                        val available = resampled.size - skipSamples
+                                        val spaceLeft = maxSamples - accumulatedCount
+                                        val copyCount = minOf(available, spaceLeft)
+                                        if (copyCount > 0) {
+                                            System.arraycopy(resampled, skipSamples, accumulator, accumulatedCount, copyCount)
+                                            accumulatedCount += copyCount
+                                        }
+                                    }
+                                    if (frameStartMs >= endMs) {
+                                        sawOutputEos = true
+                                    }
+                                }
+                            }
+
+                            codec.releaseOutputBuffer(outIndex, false)
+                            if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                                sawOutputEos = true
+                            }
+                        }
+                    }
+                }
+
+                val samplesOut = if (accumulatedCount == accumulator.size) {
+                    accumulator
+                } else {
+                    accumulator.copyOf(accumulatedCount)
+                }
+                val actualDurationMs = (samplesOut.size.toLong() * 1_000L) / PcmResampler.WHISPER_SAMPLE_RATE
+                PcmAudioChunk(
+                    chunkIndex = chunkIndex,
+                    startTimeMs = safeStartMs,
+                    durationMs = actualDurationMs,
+                    samples16kMono = samplesOut
+                )
+            } finally {
+                runCatching { codec?.stop() }
+                runCatching { codec?.release() }
+                runCatching { extractor.release() }
+            }
+        }
+    }
+
+    /**
+     * Reads the audio track duration (ms) via [MediaExtractor] without decoding any samples.
+     */
+    suspend fun getAudioDurationMs(mediaUriString: String): Long = withContext(Dispatchers.IO) {
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(context, Uri.parse(mediaUriString), null)
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                val mime = format.getString(MediaFormat.KEY_MIME).orEmpty()
+                if (mime.startsWith("audio/", ignoreCase = true) || mime.startsWith("video/", ignoreCase = true)) {
+                    val durUs = runCatching { format.getLong(MediaFormat.KEY_DURATION) }.getOrDefault(0L)
+                    if (durUs > 0L) return@withContext durUs / 1_000L
+                }
+            }
+            0L
+        } catch (_: Throwable) {
+            0L
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
     companion object {
         const val DEFAULT_CHUNK_SECONDS = 30
+        const val DEFAULT_WINDOW_DURATION_MS = DEFAULT_CHUNK_SECONDS * 1_000L
     }
 }

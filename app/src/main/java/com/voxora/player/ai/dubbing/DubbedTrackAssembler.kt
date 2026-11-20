@@ -40,6 +40,19 @@ data class AssembledDubTrack(
 )
 
 /**
+ * Lightweight 30-second rolling chunk WAV track (~1.32 MB at 22.05 kHz mono) aligned to
+ * `[startMs, startMs + durationMs)` on the main video timeline for instant live streaming playback.
+ */
+data class AssembledChunkTrack(
+    val chunkIndex: Int,
+    val startMs: Long,
+    val durationMs: Long,
+    val wavFile: File,
+    val sampleRate: Int,
+    val segmentCount: Int
+)
+
+/**
  * Assembles Phase 5 synthesized Bengali WAV segments ([DubbedAudioSegment]) onto a
  * timeline-accurate continuous 16-bit mono PCM WAV track in streaming chunks (low RAM!).
  *
@@ -207,9 +220,109 @@ class DubbedTrackAssembler(private val context: Context) {
         }
     }
 
+    /**
+     * Assembles ONLY a bounded 30-second chunk window (`[windowStartMs, windowStartMs + windowDurationMs)`)
+     * into `cacheDir/voxora_dub/<videoHash>/chunk_<chunkIndex>.wav` (~1.32 MB at 22.05 kHz mono).
+     *
+     * Runs in milliseconds and uses < 3 MB RAM, allowing Chunk 1 playback to start immediately
+     * while subsequent chunks are pre-dubbed in the background without ever interrupting playback.
+     */
+    suspend fun assembleChunkWindowWav(
+        videoUri: String,
+        chunkIndex: Int,
+        windowStartMs: Long,
+        windowDurationMs: Long,
+        segments: List<DubbedAudioSegment>,
+        targetSampleRate: Int = DEFAULT_LIVE_SAMPLE_RATE
+    ): Result<AssembledChunkTrack> = withContext(Dispatchers.IO) {
+        val safeStartMs = windowStartMs.coerceAtLeast(0L)
+        val safeDurationMs = windowDurationMs.coerceIn(1_000L, 45_000L)
+        val targetFile = getChunkTrackFile(videoUri, chunkIndex)
+        targetFile.parentFile?.mkdirs()
+        val tempFile = File(targetFile.parentFile, "${targetFile.name}.part")
+        if (tempFile.exists()) tempFile.delete()
+
+        try {
+            coroutineContext.ensureActive()
+
+            val totalFrames = ((safeDurationMs * targetSampleRate.toLong()) / 1_000L)
+                .toInt()
+                .coerceAtLeast(targetSampleRate)
+            // Bounded 30s mix buffer: 30 * 22050 = 661,500 floats (~2.6 MB max)
+            val mixBuffer = FloatArray(totalFrames)
+            var mixedCount = 0
+
+            for (seg in segments) {
+                coroutineContext.ensureActive()
+                val wavFile = File(seg.audioFilePath)
+                if (!wavFile.exists() || wavFile.length() < 44L) continue
+                val samples = decodeWavToMonoFloatAtRate(wavFile, targetSampleRate)
+                if (samples.isEmpty()) continue
+
+                val relStartMs = seg.startMs - safeStartMs
+                val startFrame = ((relStartMs * targetSampleRate.toLong()) / 1_000L).toInt()
+                val srcStart = if (startFrame < 0) -startFrame else 0
+                val dstStart = if (startFrame < 0) 0 else startFrame
+                if (dstStart >= totalFrames || srcStart >= samples.size) continue
+
+                val copyLen = minOf(samples.size - srcStart, totalFrames - dstStart)
+                for (i in 0 until copyLen) {
+                    mixBuffer[dstStart + i] += samples[srcStart + i]
+                }
+                mixedCount++
+            }
+
+            val totalDataBytes = totalFrames.toLong() * 2L
+            BufferedOutputStream(FileOutputStream(tempFile), 64 * 1024).use { out ->
+                out.write(buildWavHeaderBytes(dataBytes = totalDataBytes, sampleRate = targetSampleRate, channels = 1))
+                val pcmChunkBytes = ByteArray(8192)
+                var frameIdx = 0
+                while (frameIdx < totalFrames) {
+                    var bPos = 0
+                    while (frameIdx < totalFrames && bPos + 2 <= pcmChunkBytes.size) {
+                        val clipped = BackgroundAudioPreserver.softClip(mixBuffer[frameIdx++])
+                        val s16 = (clipped * 32767.0f).roundToInt().coerceIn(-32768, 32767)
+                        pcmChunkBytes[bPos++] = (s16 and 0xFF).toByte()
+                        pcmChunkBytes[bPos++] = ((s16 ushr 8) and 0xFF).toByte()
+                    }
+                    out.write(pcmChunkBytes, 0, bPos)
+                }
+                out.flush()
+            }
+
+            if (targetFile.exists()) targetFile.delete()
+            if (!tempFile.renameTo(targetFile)) {
+                tempFile.copyTo(targetFile, overwrite = true)
+                tempFile.delete()
+            }
+
+            Result.success(
+                AssembledChunkTrack(
+                    chunkIndex = chunkIndex,
+                    startMs = safeStartMs,
+                    durationMs = safeDurationMs,
+                    wavFile = targetFile,
+                    sampleRate = targetSampleRate,
+                    segmentCount = mixedCount
+                )
+            )
+        } catch (ce: CancellationException) {
+            runCatching { if (tempFile.exists()) tempFile.delete() }
+            throw ce
+        } catch (t: Throwable) {
+            runCatching { if (tempFile.exists()) tempFile.delete() }
+            Result.failure(t)
+        }
+    }
+
     fun getAssembledTrackFile(videoUri: String): File {
         val hash = OfflineBengaliTtsEngine.sha256Short(videoUri)
         return File(context.cacheDir, "voxora_dub/$hash/assembled_dub_track.wav")
+    }
+
+    fun getChunkTrackFile(videoUri: String, chunkIndex: Int): File {
+        val hash = OfflineBengaliTtsEngine.sha256Short(videoUri)
+        return File(context.cacheDir, "voxora_dub/$hash/chunk_${chunkIndex}.wav")
     }
 
     private data class IndexedSegmentFile(

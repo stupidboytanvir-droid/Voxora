@@ -28,6 +28,7 @@ import com.voxora.player.ai.translation.OfflineTranslationEngine
 import com.voxora.player.ai.translation.OfflineTranslationManager
 import com.voxora.player.ai.tts.BengaliTtsModelManager
 import com.voxora.player.ai.tts.OfflineBengaliTtsEngine
+import com.voxora.player.dubbing.whisper.VideoPcmAudioDecoder
 import com.voxora.player.dubbing.whisper.WhisperCppSpeechRecognitionEngine
 
 class VoxoraApplication : Application(), ImageLoaderFactory {
@@ -110,7 +111,8 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
             bengaliTtsModelManager = bengaliTtsModelManager,
             offlineBengaliTtsEngine = offlineBengaliTtsEngine,
             dubbingPreferencesRepository = dubbingPreferencesRepository,
-            trackAssembler = dubbedTrackAssembler
+            trackAssembler = dubbedTrackAssembler,
+            videoPcmAudioDecoder = VideoPcmAudioDecoder(this)
         )
         dubbedVideoExporter = DubbedVideoExporter(this, dubbedTrackAssembler)
     }

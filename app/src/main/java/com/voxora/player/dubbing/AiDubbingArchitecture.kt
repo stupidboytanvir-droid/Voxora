@@ -412,13 +412,13 @@ class Version1AiDubbingPipeline(
                 stage = DubbingPipelineStage.ENGLISH_SPEECH_RECOGNITION,
                 readiness = ComponentReadiness.READY,
                 statusDetail = whisperModelDetail
-                    ?: "Native whisper.cpp (base.en) loaded & verified on-device — ready offline"
+                    ?: "Native whisper.cpp (tiny.en-q5_1) installed & verified on-device — ready offline"
             )
             else -> PipelineStageStatus(
                 stage = DubbingPipelineStage.ENGLISH_SPEECH_RECOGNITION,
                 readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
                 statusDetail = whisperModelDetail
-                    ?: "Native whisper.cpp engine compiled · Download or import ggml-base.en.bin in Transcribe tab"
+                    ?: "Native whisper.cpp engine compiled · Download ggml-tiny.en-q5_1.bin (~31 MB) in One-Click Setup or Transcribe tab"
             )
         }
 

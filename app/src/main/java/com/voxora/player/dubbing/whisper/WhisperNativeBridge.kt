@@ -69,11 +69,6 @@ object WhisperNativeBridge {
 
     fun recommendedThreadCount(): Int {
         val cores = Runtime.getRuntime().availableProcessors()
-        return when {
-            cores >= 8 -> 4
-            cores >= 4 -> 3
-            cores >= 2 -> 2
-            else -> 1
-        }
+        return cores.coerceIn(1, 4)
     }
 }

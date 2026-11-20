@@ -110,7 +110,7 @@ fun WhisperTranscriptionSection(
         is WhisperModelStatus.LoadedReady -> modelStatus.model.fileName
         is WhisperModelStatus.InstalledUnloaded -> modelStatus.model.fileName
         is WhisperModelStatus.Loading -> modelStatus.model.fileName
-        else -> WhisperModelCatalog.BASE_EN.fileName
+        else -> WhisperModelCatalog.DEFAULT.fileName
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -226,7 +226,7 @@ fun WhisperTranscriptionSection(
 
                 if (!isModelLoaded) {
                     Text(
-                        text = "Install and load the real Whisper base.en model above to enable 100% offline English transcription.",
+                        text = "Install and load the fast offline Whisper tiny.en-q5_1 (~31 MB) model above to enable 100% offline English transcription.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xFFFBBF24)
                     )
@@ -591,11 +591,11 @@ private fun WhisperModelStatusCard(
 ) {
     val badgeColor = when (modelStatus) {
         is WhisperModelStatus.LoadedReady -> Color(0xFF4ADE80)
+        is WhisperModelStatus.InstalledUnloaded -> Color(0xFF4ADE80)
         is WhisperModelStatus.Downloading,
         is WhisperModelStatus.Importing,
         is WhisperModelStatus.Verifying,
         is WhisperModelStatus.Loading -> VoxoraSubtleBlue
-        is WhisperModelStatus.InstalledUnloaded -> Color(0xFFFBBF24)
         is WhisperModelStatus.NotInstalled -> Color(0xFFFBBF24)
         is WhisperModelStatus.Error -> MaterialTheme.colorScheme.error
     }
@@ -606,7 +606,7 @@ private fun WhisperModelStatusCard(
         is WhisperModelStatus.Importing -> "IMPORTING"
         is WhisperModelStatus.Verifying -> "VERIFYING"
         is WhisperModelStatus.Loading -> "LOADING NATIVE"
-        is WhisperModelStatus.InstalledUnloaded -> "INSTALLED · UNLOADED"
+        is WhisperModelStatus.InstalledUnloaded -> "READY · ON DISK"
         is WhisperModelStatus.NotInstalled -> "MODEL NOT INSTALLED"
         is WhisperModelStatus.Error -> "ERROR"
     }
@@ -649,7 +649,7 @@ private fun WhisperModelStatusCard(
                             color = Color.White
                         )
                         Text(
-                            text = WhisperModelCatalog.BASE_EN.displayName,
+                            text = WhisperModelCatalog.DEFAULT.displayName,
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.72f)
                         )
@@ -673,7 +673,7 @@ private fun WhisperModelStatusCard(
             when (modelStatus) {
                 is WhisperModelStatus.NotInstalled -> {
                     Text(
-                        text = "Download the open-source Whisper base.en model (~141 MB) once or import a local ggml-base.en.bin file. Stored in private app storage; works 100% offline afterward.",
+                        text = "Download the fast quantized Whisper tiny.en-q5_1 model (~31 MB, 5x faster) once or import any local GGML .bin file. Stored in private app storage; works 100% offline afterward.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.White.copy(alpha = 0.78f)
                     )
@@ -685,7 +685,7 @@ private fun WhisperModelStatusCard(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "Downloading ggml-base.en.bin (${FormatUtils.formatFileSize(modelStatus.downloadedBytes)} / ${FormatUtils.formatFileSize(modelStatus.totalBytes)})",
+                                text = "Downloading ${WhisperModelCatalog.DEFAULT.fileName} (${FormatUtils.formatFileSize(modelStatus.downloadedBytes)} / ${FormatUtils.formatFileSize(modelStatus.totalBytes)})",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.White.copy(alpha = 0.85f)
                             )
@@ -747,7 +747,7 @@ private fun WhisperModelStatusCard(
                 is WhisperModelStatus.InstalledUnloaded -> {
                     val m = modelStatus.model
                     Text(
-                        text = "${m.fileName} · ${FormatUtils.formatFileSize(m.sizeBytes)} · ${m.headerFormat} verified\nSHA-256: ${m.sha256.take(16)}…${if (m.matchesOfficialChecksum) " (Official base.en)" else ""}",
+                        text = "${m.fileName} · ${FormatUtils.formatFileSize(m.sizeBytes)} · ${m.headerFormat} verified on disk (loads automatically during Live Auto-Dub)\nSHA-256: ${m.sha256.take(16)}…${if (m.matchesOfficialChecksum) " (Official Verified)" else ""}",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.White.copy(alpha = 0.82f)
                     )
@@ -857,7 +857,7 @@ private fun WhisperModelStatusCard(
                         ) {
                             Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Download base.en (~141 MB)")
+                            Text("Download tiny.en-q5_1 (~31 MB)")
                         }
                         OutlinedButton(
                             onClick = onImportLocalModel,

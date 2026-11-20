@@ -70,8 +70,22 @@ sealed interface WhisperModelStatus {
 
 object WhisperModelCatalog {
     /**
-     * Official open-source Whisper Base English (`base.en`) model from whisper.cpp.
-     * Downloaded on demand to app-specific storage (never bundled in APK).
+     * Fast quantized Whisper Tiny English (`ggml-tiny.en-q5_1.bin`, ~31 MB) from whisper.cpp.
+     * ~5x faster on mobile ARM64 CPUs with ~35 MB RAM footprint for real-time 30s movie chunk dubbing.
+     */
+    val TINY_EN_Q5_1 = WhisperModelSpec(
+        id = "tiny.en-q5_1",
+        displayName = "Whisper Tiny Fast English (tiny.en-q5_1 · 5x Faster)",
+        fileName = "ggml-tiny.en-q5_1.bin",
+        downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin",
+        expectedSizeBytes = 32_166_155L,
+        expectedSha256 = "830d18b4d554f5d36e8e7c085d6b289063e5f2997e977716ff6301c11e961bf3",
+        languageLabel = "English (Fast Offline)"
+    )
+
+    /**
+     * Legacy Whisper Base English (`base.en`, ~141 MB) retained for backward compatibility with
+     * existing user installations or manual imports.
      */
     val BASE_EN = WhisperModelSpec(
         id = "base.en",
@@ -82,6 +96,14 @@ object WhisperModelCatalog {
         expectedSha256 = "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
         languageLabel = "English (Offline)"
     )
+
+    val DEFAULT: WhisperModelSpec = TINY_EN_Q5_1
+
+    fun matchingOfficialSpec(fileName: String): WhisperModelSpec? = when {
+        fileName.equals(TINY_EN_Q5_1.fileName, ignoreCase = true) -> TINY_EN_Q5_1
+        fileName.equals(BASE_EN.fileName, ignoreCase = true) -> BASE_EN
+        else -> null
+    }
 }
 
 /**
@@ -147,7 +169,7 @@ object WhisperModelIntegrityVerifier {
                 headerFormat = "invalid",
                 sha256 = "",
                 matchesExpectedChecksum = false,
-                failureReason = "Invalid model header. Expected a genuine whisper.cpp GGML binary (ggml-base.en.bin)."
+                failureReason = "Invalid model header. Expected a genuine whisper.cpp GGML binary (ggml-tiny.en-q5_1.bin)."
             )
         }
 
@@ -170,7 +192,7 @@ object WhisperModelIntegrityVerifier {
                 headerFormat = headerFormat,
                 sha256 = sha256,
                 matchesExpectedChecksum = false,
-                failureReason = "SHA-256 integrity check failed for ggml-base.en.bin. Download may be corrupted."
+                failureReason = "SHA-256 integrity check failed for ${file.name}. Download may be corrupted."
             )
         }
 
@@ -210,15 +232,37 @@ class WhisperModelManager(private val context: Context) {
     private val modelsDir: File
         get() = File(context.filesDir, "whisper_models").apply { mkdirs() }
 
-    fun getDefaultModelFile(spec: WhisperModelSpec = WhisperModelCatalog.BASE_EN): File {
+    fun getDefaultModelFile(spec: WhisperModelSpec = WhisperModelCatalog.DEFAULT): File {
         return File(modelsDir, spec.fileName)
     }
 
     /**
+     * Fast disk-only check verifying whether a valid Whisper GGML `.bin` model file exists in
+     * private app storage (`filesDir/whisper_models/`), completely independent of whether the
+     * native C++ context is currently loaded in RAM.
+     */
+    fun hasInstalledModelOnDisk(): Boolean {
+        val candidates = modelsDir.listFiles()
+            ?.filter { it.isFile && it.canRead() && it.name.endsWith(".bin", ignoreCase = true) }
+            .orEmpty()
+        for (file in candidates) {
+            if (file.length() < WhisperModelIntegrityVerifier.MIN_REAL_MODEL_BYTES) continue
+            val header = ByteArray(4)
+            val read = runCatching { FileInputStream(file).use { it.read(header) } }.getOrDefault(0)
+            if (read == 4 && WhisperModelIntegrityVerifier.detectGgmlMagic(header) != null) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
      * Scans app-specific storage for an already installed Whisper `.bin` model and verifies its header.
+     * Prefers the fast quantized `ggml-tiny.en-q5_1.bin` when present, and also accepts existing
+     * `ggml-base.en.bin` or user-imported GGML models without forcing re-download.
      */
     suspend fun findInstalledModel(
-        spec: WhisperModelSpec = WhisperModelCatalog.BASE_EN
+        spec: WhisperModelSpec = WhisperModelCatalog.DEFAULT
     ): InstalledWhisperModel? = withContext(Dispatchers.IO) {
         val preferred = getDefaultModelFile(spec)
         val candidate = when {
@@ -227,10 +271,10 @@ class WhisperModelManager(private val context: Context) {
                 ?.firstOrNull { it.isFile && it.name.endsWith(".bin", ignoreCase = true) }
         } ?: return@withContext null
 
-        val isOfficialBase = candidate.name.equals(spec.fileName, ignoreCase = true)
+        val matchedSpec = WhisperModelCatalog.matchingOfficialSpec(candidate.name)
         val verification = WhisperModelIntegrityVerifier.verifyFile(
             file = candidate,
-            expectedSha256 = if (isOfficialBase) spec.expectedSha256 else null
+            expectedSha256 = matchedSpec?.expectedSha256
         )
         if (!verification.isValid) return@withContext null
 
@@ -239,17 +283,17 @@ class WhisperModelManager(private val context: Context) {
             absolutePath = candidate.absolutePath,
             sizeBytes = verification.sizeBytes,
             sha256 = verification.sha256,
-            matchesOfficialChecksum = verification.matchesExpectedChecksum && isOfficialBase,
+            matchesOfficialChecksum = verification.matchesExpectedChecksum && matchedSpec != null,
             headerFormat = verification.headerFormat
         )
     }
 
     /**
-     * Downloads the official open-source `ggml-base.en.bin` model into app-specific storage,
-     * streaming progress and verifying SHA-256 integrity before committing.
+     * Downloads the official open-source `ggml-tiny.en-q5_1.bin` (~31 MB) model into app-specific
+     * storage, streaming progress and verifying SHA-256 integrity before committing.
      */
     suspend fun downloadModel(
-        spec: WhisperModelSpec = WhisperModelCatalog.BASE_EN,
+        spec: WhisperModelSpec = WhisperModelCatalog.DEFAULT,
         onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit,
         onVerifying: () -> Unit
     ): Result<InstalledWhisperModel> = withContext(Dispatchers.IO) {
@@ -331,7 +375,7 @@ class WhisperModelManager(private val context: Context) {
         onProgress: (copiedBytes: Long) -> Unit,
         onVerifying: () -> Unit
     ): Result<InstalledWhisperModel> = withContext(Dispatchers.IO) {
-        val safeFileName = (suggestedFileName?.takeIf { it.isNotBlank() } ?: WhisperModelCatalog.BASE_EN.fileName)
+        val safeFileName = (suggestedFileName?.takeIf { it.isNotBlank() } ?: WhisperModelCatalog.DEFAULT.fileName)
             .replace(Regex("[^a-zA-Z0-9._-]"), "_")
             .let { if (it.endsWith(".bin", ignoreCase = true)) it else "$it.bin" }
 
@@ -369,7 +413,7 @@ class WhisperModelManager(private val context: Context) {
             coroutineContext.ensureActive()
             onVerifying()
 
-            // For local imports, verify GGML magic header and minimum valid size; also note if official base.en SHA matches
+            // For local imports, verify GGML magic header and minimum valid size
             val verification = WhisperModelIntegrityVerifier.verifyFile(
                 file = tempFile,
                 expectedSha256 = null
@@ -393,15 +437,14 @@ class WhisperModelManager(private val context: Context) {
                 tempFile.delete()
             }
 
+            val matchesOfficial = verification.sha256.equals(WhisperModelCatalog.TINY_EN_Q5_1.expectedSha256, ignoreCase = true) ||
+                verification.sha256.equals(WhisperModelCatalog.BASE_EN.expectedSha256, ignoreCase = true)
             InstalledWhisperModel(
                 fileName = targetFile.name,
                 absolutePath = targetFile.absolutePath,
                 sizeBytes = verification.sizeBytes,
                 sha256 = verification.sha256,
-                matchesOfficialChecksum = verification.sha256.equals(
-                    WhisperModelCatalog.BASE_EN.expectedSha256,
-                    ignoreCase = true
-                ),
+                matchesOfficialChecksum = matchesOfficial,
                 headerFormat = verification.headerFormat
             )
         }.onFailure {
@@ -415,24 +458,30 @@ class WhisperModelManager(private val context: Context) {
         }
     }
 
-    private fun openFollowingRedirects(urlString: String, maxRedirects: Int = 6): HttpURLConnection {
+    private fun openFollowingRedirects(urlString: String, maxRedirects: Int = 10): HttpURLConnection {
         var currentUrl = urlString
         repeat(maxRedirects) {
             val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
                 instanceFollowRedirects = false
                 connectTimeout = 20_000
-                readTimeout = 30_000
-                setRequestProperty("User-Agent", "VOXORA-Android/1.2")
+                readTimeout = 45_000
+                setRequestProperty("User-Agent", "VOXORA-Media-Player/2.1.0")
+                setRequestProperty("Accept", "*/*")
             }
             val code = conn.responseCode
-            if (code in 300..399) {
+            if (code == HttpURLConnection.HTTP_MOVED_PERM ||
+                code == HttpURLConnection.HTTP_MOVED_TEMP ||
+                code == HttpURLConnection.HTTP_SEE_OTHER ||
+                code == 307 ||
+                code == 308
+            ) {
                 val location = conn.getHeaderField("Location")
                 conn.disconnect()
                 if (location.isNullOrBlank()) {
                     throw IllegalStateException("Redirect location missing (HTTP $code)")
                 }
                 currentUrl = URL(URL(currentUrl), location).toString()
-            } else if (code in 200..299) {
+            } else if (code == HttpURLConnection.HTTP_OK) {
                 return conn
             } else {
                 conn.disconnect()

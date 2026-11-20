@@ -1,6 +1,7 @@
 package com.voxora.player
 
 import com.voxora.player.ai.diarization.DiarizationModelState
+import com.voxora.player.ai.dubbing.AutoDubPipelineOrchestrator
 import com.voxora.player.ai.dubbing.AutoDubPipelineState
 import com.voxora.player.ai.dubbing.AutoDubStage
 import com.voxora.player.ai.dubbing.BackgroundAudioPreserver
@@ -10,7 +11,9 @@ import com.voxora.player.ai.translation.TranslationModelState
 import com.voxora.player.ai.tts.BengaliTtsModelState
 import com.voxora.player.ai.tts.DubbedAudioSegment
 import com.voxora.player.dubbing.ComponentReadiness
+import com.voxora.player.dubbing.DubbingSessionConfig
 import com.voxora.player.dubbing.Version1AiDubbingPipeline
+import com.voxora.player.dubbing.whisper.WhisperModelCatalog
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -146,5 +149,37 @@ class DubbingPhase6Test {
         assertEquals(7, stages.size)
         val readyCount = stages.count { it.readiness == ComponentReadiness.READY }
         assertEquals("Expected all 7/7 stages READY in v2.0.0", 7, readyCount)
+    }
+
+    @Test
+    fun v210_fastMovieModeDefaultsOn_andWhisperDefaultIsTinyEnQ5() {
+        val defaultConfig = DubbingSessionConfig()
+        assertTrue("Fast Movie Mode must default to ON in v2.1.0", defaultConfig.fastMovieModeEnabled)
+        assertEquals("ggml-tiny.en-q5_1.bin", WhisperModelCatalog.DEFAULT.fileName)
+        assertTrue(
+            "tiny.en-q5_1 should be compact (~31 MB)",
+            WhisperModelCatalog.DEFAULT.expectedSizeBytes in 25_000_000L..40_000_000L
+        )
+    }
+
+    @Test
+    fun v210_rolling30sChunkBoundariesAndUniqueSegmentIndices() {
+        assertEquals(0, AutoDubPipelineOrchestrator.chunkIndexForPositionMs(0L))
+        assertEquals(0, AutoDubPipelineOrchestrator.chunkIndexForPositionMs(29_999L))
+        assertEquals(1, AutoDubPipelineOrchestrator.chunkIndexForPositionMs(30_000L))
+        assertEquals(4, AutoDubPipelineOrchestrator.chunkIndexForPositionMs(125_000L))
+
+        assertEquals(0L, AutoDubPipelineOrchestrator.chunkWindowStartMs(0))
+        assertEquals(60_000L, AutoDubPipelineOrchestrator.chunkWindowStartMs(2))
+
+        assertEquals(1, AutoDubPipelineOrchestrator.totalChunksForDurationMs(15_000L))
+        assertEquals(2, AutoDubPipelineOrchestrator.totalChunksForDurationMs(60_000L))
+        assertEquals(3, AutoDubPipelineOrchestrator.totalChunksForDurationMs(60_001L))
+
+        // Chunk 0 and Chunk 1 segment indices never collide in WAV cache
+        val c0s0 = AutoDubPipelineOrchestrator.globalSegmentIndex(0, 0)
+        val c1s0 = AutoDubPipelineOrchestrator.globalSegmentIndex(1, 0)
+        assertEquals(0, c0s0)
+        assertEquals(1000, c1s0)
     }
 }

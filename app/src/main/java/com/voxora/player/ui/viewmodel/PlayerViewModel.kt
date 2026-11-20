@@ -76,6 +76,8 @@ import com.voxora.player.player.VoxoraPlayerEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -223,8 +225,14 @@ class PlayerViewModel(
         bengaliTtsModelState,
         _oneClickProgressState
     ) { whisperStatus, diarizationState, translationState, ttsState, progress ->
+        val isWhisperInstalledOnDisk = whisperStatus is WhisperModelStatus.LoadedReady ||
+            whisperStatus is WhisperModelStatus.InstalledUnloaded ||
+            whisperStatus is WhisperModelStatus.Loading ||
+            (whisperStatus is WhisperModelStatus.Error && whisperStatus.installedModel != null) ||
+            whisperSpeechEngine.isModelInstalledOnDisk()
+
         OneClickAiSetupState(
-            isWhisperReady = whisperStatus is WhisperModelStatus.LoadedReady,
+            isWhisperReady = isWhisperInstalledOnDisk,
             isDiarizationReady = diarizationState is DiarizationModelState.Ready,
             isTranslationReady = translationState is TranslationModelState.Ready,
             isBengaliTtsReady = ttsState is BengaliTtsModelState.Ready,
@@ -249,8 +257,14 @@ class PlayerViewModel(
     private var activeCharacterNeuralPreviewJob: Job? = null
     private var activeOneClickSetupJob: Job? = null
     private var activeAutoDubJob: Job? = null
+    private var activeChunkWorkJob: Job? = null
     private var activeExportJob: Job? = null
     private val manualSegmentCharacterOverrides = mutableMapOf<Int, String>()
+    private val completedLiveChunkIndices = mutableSetOf<Int>()
+    @Volatile
+    private var activeProcessingChunkIndex: Int = -1
+    @Volatile
+    private var pendingSeekTargetChunk: Int? = null
 
     private val diarizationAndTtsSnapshotFlow = combine(
         diarizationModelState,
@@ -276,16 +290,22 @@ class PlayerViewModel(
         _translationUiState,
         diarizationAndTtsSnapshotFlow
     ) { modelStatus, transState, translationState, translationUi, diarizationTtsSnap ->
+        val isWhisperInstalledOnDisk = modelStatus is WhisperModelStatus.LoadedReady ||
+            modelStatus is WhisperModelStatus.InstalledUnloaded ||
+            modelStatus is WhisperModelStatus.Loading ||
+            (modelStatus is WhisperModelStatus.Error && modelStatus.installedModel != null) ||
+            whisperSpeechEngine.isModelInstalledOnDisk()
+
         WhisperPipelineSnapshot(
-            isModelLoaded = modelStatus is WhisperModelStatus.LoadedReady,
+            isModelLoaded = isWhisperInstalledOnDisk,
             isTranscribing = transState.isRunning,
             detail = when (modelStatus) {
                 is WhisperModelStatus.LoadedReady -> "whisper.cpp loaded ${modelStatus.model.fileName} · Ready offline"
-                is WhisperModelStatus.InstalledUnloaded -> "Model ${modelStatus.model.fileName} installed locally · Tap Load Model in Transcribe tab"
-                is WhisperModelStatus.Downloading -> "Downloading ggml-base.en.bin (${(modelStatus.progressFraction * 100).toInt()}%)..."
+                is WhisperModelStatus.InstalledUnloaded -> "Model ${modelStatus.model.fileName} installed on disk · Ready offline (auto-loads on demand)"
+                is WhisperModelStatus.Downloading -> "Downloading ${WhisperModelCatalog.DEFAULT.fileName} (${(modelStatus.progressFraction * 100).toInt()}%)..."
                 is WhisperModelStatus.Loading -> "Loading ${modelStatus.model.fileName} into native whisper.cpp..."
                 is WhisperModelStatus.Error -> modelStatus.message
-                else -> "Native whisper.cpp compiled · Download or import ggml-base.en.bin in Transcribe tab"
+                else -> "Native whisper.cpp compiled · Download ${WhisperModelCatalog.DEFAULT.fileName} (~31 MB) in One-Click Setup or Transcribe tab"
             },
             diarizationModelState = diarizationTtsSnap.diarizationModelState,
             isDiarizing = diarizationTtsSnap.isDiarizing,
@@ -506,6 +526,7 @@ class PlayerViewModel(
 
     fun startFromBeginning() {
         playerEngine.seekTo(0L)
+        notifyLiveDubSeekToPosition(0L)
         _uiState.value = _uiState.value.copy(resumedFromPositionMs = null)
     }
 
@@ -520,9 +541,16 @@ class PlayerViewModel(
         viewModelScope.launch { persistProgressIfChanged(force = true) }
     }
 
-    fun seekTo(positionMs: Long) = playerEngine.seekTo(positionMs)
+    fun seekTo(positionMs: Long) {
+        playerEngine.seekTo(positionMs)
+        notifyLiveDubSeekToPosition(positionMs)
+    }
 
-    fun seekBySeconds(seconds: Int) = playerEngine.seekBy(seconds * 1_000L)
+    fun seekBySeconds(seconds: Int) {
+        val targetMs = (playerEngine.state.value.currentPositionMs + seconds * 1_000L).coerceAtLeast(0L)
+        playerEngine.seekBy(seconds * 1_000L)
+        notifyLiveDubSeekToPosition(targetMs)
+    }
 
     fun setPlaybackSpeed(speed: Float) {
         playerEngine.setPlaybackSpeed(speed)
@@ -722,6 +750,10 @@ class PlayerViewModel(
 
     fun setVocalAttenuationEnabled(enabled: Boolean) {
         viewModelScope.launch { dubbingPreferencesRepository.setVocalAttenuationEnabled(enabled) }
+    }
+
+    fun setFastMovieModeEnabled(enabled: Boolean) {
+        viewModelScope.launch { dubbingPreferencesRepository.setFastMovieModeEnabled(enabled) }
     }
 
     fun addDubbingCharacter(profile: CharacterVoiceProfile) {
@@ -934,7 +966,7 @@ class PlayerViewModel(
         val modelName = when (val m = whisperModelStatus.value) {
             is WhisperModelStatus.LoadedReady -> m.model.fileName
             is WhisperModelStatus.InstalledUnloaded -> m.model.fileName
-            else -> WhisperModelCatalog.BASE_EN.fileName
+            else -> WhisperModelCatalog.DEFAULT.fileName
         }
         val content = TranscriptExporter.format(
             format = format,
@@ -1704,8 +1736,28 @@ class PlayerViewModel(
         }
     }
 
-    // --- Phase 6 One-Click Auto-Dub Pipeline & Offline MP4/Audio Export ---
+    // --- Phase 6 + v2.1.0 Fast Live 30-Second Rolling Chunk Auto-Dub & Offline Export ---
 
+    private fun notifyLiveDubSeekToPosition(positionMs: Long) {
+        if (activeAutoDubJob?.isActive != true) return
+        val targetChunk = AutoDubPipelineOrchestrator.chunkIndexForPositionMs(positionMs)
+        if (targetChunk in completedLiveChunkIndices || targetChunk == activeProcessingChunkIndex) {
+            return
+        }
+        pendingSeekTargetChunk = targetChunk
+        autoDubPipelineOrchestrator.requestCancelActiveStage()
+        activeChunkWorkJob?.cancel()
+    }
+
+    /**
+     * Launches Fast Live 30-Second Rolling Chunk Dubbing starting immediately at the player's
+     * current position:
+     * 1. Dubs the current 30s chunk (`Whisper tiny -> ML Kit বাংলা -> Sherpa VITS`, skipping heavy
+     *    Diarization when Fast Movie Mode is ON).
+     * 2. As soon as Chunk 1 completes (within seconds), immediately starts synchronized Bengali playback.
+     * 3. Automatically pre-dubs the next 30s chunks in the background while playing, and immediately
+     *    re-targets if the user seeks to an un-dubbed timestamp.
+     */
     fun startAutoDubVideo() {
         if (activeAutoDubJob?.isActive == true) return
         val uri = activeUriString.orEmpty()
@@ -1727,113 +1779,283 @@ class PlayerViewModel(
 
         val title = _uiState.value.videoTitle
         val durationHint = playerEngine.state.value.durationMs
-        val currentConfig = dubbingConfigFlow.value
-        val currentAssignments = activeMovieAssignmentsFlow.value
-        val diarizationState = _diarizationUiState.value
+        val initialFastMode = dubbingConfigFlow.value.fastMovieModeEnabled
 
         _autoDubPipelineState.value = AutoDubPipelineState(
             isRunning = true,
             currentStage = AutoDubStage.TRANSCRIBING,
             stageIndex = 1,
-            totalStages = 4,
-            stageLabel = "Checking offline AI models...",
+            totalStages = if (initialFastMode) 3 else 4,
+            stageLabel = "Checking offline AI models on disk...",
             stageProgressFraction = 0.02f,
+            isLiveChunkStreaming = false,
             errorMessage = null
         )
 
         activeAutoDubJob = viewModelScope.launch {
+            completedLiveChunkIndices.clear()
+            pendingSeekTargetChunk = null
+            activeProcessingChunkIndex = -1
+            dubbingPlaybackController.clearTrack()
+
+            val chunkTranslatedMap = linkedMapOf<Int, List<com.voxora.player.ai.translation.TranslatedSegment>>()
+            val chunkDubbedMap = linkedMapOf<Int, List<DubbedAudioSegment>>()
+            val chunkSpeakerMap = linkedMapOf<Int, List<com.voxora.player.ai.diarization.SpeakerSegment>>()
+            val accumulatedSegCharMap = linkedMapOf<Int, String>()
+            val accumulatedSpeakerCharMap = linkedMapOf<Int, String>()
+            var totalAutoCreatedChars = 0
+            var firstChunkActivated = false
+
             try {
-                val result = autoDubPipelineOrchestrator.runAutoDub(
-                    videoUri = uri,
-                    videoTitle = title,
-                    videoDurationMsHint = durationHint,
-                    savedCharacters = currentConfig.characterVoices,
-                    existingMovieAssignments = currentAssignments,
-                    existingManualOverrides = manualSegmentCharacterOverrides.toMap(),
-                    diarizationNumClusters = diarizationState.numClustersConfig,
-                    diarizationThreshold = diarizationState.thresholdConfig,
-                    onStateUpdate = { nextState ->
-                        _autoDubPipelineState.value = nextState
-                    },
-                    onTranslatedSegmentsReady = { translated ->
-                        _translationUiState.value = BengaliTranslationUiState(
-                            isTranslating = false,
-                            completedSegments = translated.size,
-                            totalSegments = translated.size,
-                            statusMessage = "Translated ${translated.size} lines offline to বাংলা",
-                            activeVideoUri = uri,
-                            activeVideoTitle = title,
-                            segments = translated
-                        )
-                    },
-                    onDubbedSegmentSynthesized = { partialDubbed ->
-                        _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
-                            isSynthesizing = true,
-                            synthesizedCount = partialDubbed.size,
-                            activeVideoUri = uri,
-                            segments = partialDubbed
-                        )
-                    }
+                val missing = autoDubPipelineOrchestrator.findMissingModels(fastMovieMode = initialFastMode)
+                if (missing.isNotEmpty()) {
+                    _autoDubPipelineState.value = AutoDubPipelineState(
+                        isRunning = false,
+                        currentStage = AutoDubStage.ERROR,
+                        stageLabel = "Missing offline AI model(s)",
+                        errorMessage = "Missing offline AI model(s): ${missing.joinToString(", ")}. Tap \"Download All Missing Models\" in One-Click AI Setup above first."
+                    )
+                    return@launch
+                }
+
+                val detectedDurMs = maxOf(
+                    durationHint,
+                    autoDubPipelineOrchestrator.getVideoAudioDurationMs(uri)
                 )
+                val totalChunks = AutoDubPipelineOrchestrator.totalChunksForDurationMs(detectedDurMs)
 
-                result.fold(
-                    onSuccess = { done ->
-                        _diarizationUiState.value = _diarizationUiState.value.copy(
-                            isRunning = false,
-                            progressFraction = 1f,
-                            statusMessage = "Detected ${done.speakerSegments.map { it.speakerIndex }.distinct().size} speaker(s) via Auto-Dub",
-                            errorMessage = null,
-                            activeVideoUri = uri,
-                            detectedSegments = done.speakerSegments,
-                            speakerToCharacterMap = done.speakerToCharacterMap,
-                            segmentCharacterMap = done.segmentCharacterMap,
-                            autoCreatedCharacterCount = done.autoCreatedCharacterCount
-                        )
-                        _bengaliVoiceUiState.value = BengaliVoiceGenerationUiState(
-                            isSynthesizing = false,
-                            synthesizedCount = done.dubbedAudioSegments.size,
-                            totalCount = done.translatedSegments.size,
-                            statusMessage = "Auto-Dubbed ${done.dubbedAudioSegments.size} Bengali voice lines · Live sync active",
-                            errorMessage = null,
-                            activeVideoUri = uri,
-                            segments = done.dubbedAudioSegments
-                        )
+                while (isActive) {
+                    val currentPlayerPosMs = playerEngine.state.value.currentPositionMs.coerceAtLeast(0L)
+                    val playerChunk = AutoDubPipelineOrchestrator.chunkIndexForPositionMs(currentPlayerPosMs)
+                        .coerceIn(0, (totalChunks - 1).coerceAtLeast(0))
 
-                        // Attach assembled track & activate Live Synchronized Bengali Dubbing immediately!
-                        dubbingPlaybackController.attachDubbedSegments(
-                            videoUri = uri,
-                            segments = done.dubbedAudioSegments,
-                            videoDurationMsHint = durationHint,
-                            preAssembledTrack = done.assembledTrack
-                        )
-                        dubbingPreferencesRepository.setDubbingEnabled(true)
-                        dubbingPreferencesRepository.setOutputMode(DubbingAudioOutputMode.BENGALI_DUBBED_MIX)
-                    },
-                    onFailure = { err ->
-                        _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(isSynthesizing = false)
+                    val requestedSeekChunk = pendingSeekTargetChunk
+                        ?.also { pendingSeekTargetChunk = null }
+                        ?.coerceIn(0, (totalChunks - 1).coerceAtLeast(0))
+                        ?.takeIf { it !in completedLiveChunkIndices }
+
+                    val nextChunk: Int? = requestedSeekChunk ?: run {
+                        val lookAheadLimit = minOf(totalChunks - 1, playerChunk + LIVE_PREBUFFER_CHUNKS_AHEAD)
+                        (playerChunk..lookAheadLimit).firstOrNull { it !in completedLiveChunkIndices }
+                    }
+
+                    if (nextChunk == null) {
+                        if (completedLiveChunkIndices.size >= totalChunks) {
+                            _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(isSynthesizing = false)
+                            _autoDubPipelineState.value = AutoDubPipelineState(
+                                isRunning = false,
+                                currentStage = AutoDubStage.COMPLETED,
+                                stageIndex = if (dubbingConfigFlow.value.fastMovieModeEnabled) 3 else 4,
+                                totalStages = if (dubbingConfigFlow.value.fastMovieModeEnabled) 3 else 4,
+                                stageLabel = "All $totalChunks chunks dubbed · Live Bengali sync active!",
+                                stageProgressFraction = 1f,
+                                isLiveChunkStreaming = false,
+                                completedChunkCount = completedLiveChunkIndices.size,
+                                totalChunkCount = totalChunks,
+                                bufferedAheadChunks = 0,
+                                errorMessage = null
+                            )
+                            break
+                        }
+
+                        // Already buffered ahead of playback; idle lightly until player moves forward or user seeks
+                        val aheadCount = completedLiveChunkIndices.count { it > playerChunk }
                         _autoDubPipelineState.value = AutoDubPipelineState(
-                            isRunning = false,
-                            currentStage = AutoDubStage.ERROR,
-                            stageLabel = "Auto-Dub failed",
-                            errorMessage = err.message ?: "Auto-Dub pipeline failed."
+                            isRunning = true,
+                            currentStage = AutoDubStage.COMPLETED,
+                            stageIndex = if (dubbingConfigFlow.value.fastMovieModeEnabled) 3 else 4,
+                            totalStages = if (dubbingConfigFlow.value.fastMovieModeEnabled) 3 else 4,
+                            stageLabel = "LIVE · ${completedLiveChunkIndices.size}/$totalChunks chunks ready ($aheadCount buffered ahead)",
+                            stageProgressFraction = 1f,
+                            isLiveChunkStreaming = true,
+                            activeChunkIndex = playerChunk,
+                            completedChunkCount = completedLiveChunkIndices.size,
+                            totalChunkCount = totalChunks,
+                            bufferedAheadChunks = aheadCount,
+                            errorMessage = null
+                        )
+                        delay(400L)
+                        continue
+                    }
+
+                    val liveFastMode = dubbingConfigFlow.value.fastMovieModeEnabled
+                    val windowStartMs = AutoDubPipelineOrchestrator.chunkWindowStartMs(nextChunk)
+                    val remainingMs = if (detectedDurMs > 0L) {
+                        (detectedDurMs - windowStartMs).coerceIn(1_000L, AutoDubPipelineOrchestrator.ROLLING_CHUNK_DURATION_MS)
+                    } else {
+                        AutoDubPipelineOrchestrator.ROLLING_CHUNK_DURATION_MS
+                    }
+
+                    activeProcessingChunkIndex = nextChunk
+                    val chunkDeferred = async(Dispatchers.IO) {
+                        autoDubPipelineOrchestrator.dubSingleChunkWindow(
+                            videoUri = uri,
+                            chunkIndex = nextChunk,
+                            windowStartMs = windowStartMs,
+                            windowDurationMs = remainingMs,
+                            fastMovieMode = liveFastMode,
+                            savedCharacters = dubbingConfigFlow.value.characterVoices,
+                            existingMovieAssignments = activeMovieAssignmentsFlow.value,
+                            existingManualOverrides = manualSegmentCharacterOverrides.toMap(),
+                            diarizationNumClusters = _diarizationUiState.value.numClustersConfig,
+                            diarizationThreshold = _diarizationUiState.value.thresholdConfig,
+                            onStageProgress = { stage, stageIdx, totalStages, prog, detail ->
+                                val curChunk = AutoDubPipelineOrchestrator.chunkIndexForPositionMs(
+                                    playerEngine.state.value.currentPositionMs
+                                )
+                                val aheadCount = completedLiveChunkIndices.count { it > curChunk }
+                                _autoDubPipelineState.value = AutoDubPipelineState(
+                                    isRunning = true,
+                                    currentStage = stage,
+                                    stageIndex = stageIdx,
+                                    totalStages = totalStages,
+                                    stageLabel = if (firstChunkActivated) {
+                                        "LIVE · Pre-dubbing $detail"
+                                    } else {
+                                        detail
+                                    },
+                                    stageProgressFraction = prog,
+                                    isLiveChunkStreaming = firstChunkActivated,
+                                    activeChunkIndex = nextChunk,
+                                    completedChunkCount = completedLiveChunkIndices.size,
+                                    totalChunkCount = totalChunks,
+                                    bufferedAheadChunks = aheadCount,
+                                    errorMessage = null
+                                )
+                            }
                         )
                     }
-                )
+                    activeChunkWorkJob = chunkDeferred
+
+                    val chunkResult = try {
+                        chunkDeferred.await()
+                    } catch (ce: CancellationException) {
+                        if (!isActive) throw ce
+                        // Inner chunk cancelled cleanly because user seeked to a new timestamp
+                        activeProcessingChunkIndex = -1
+                        continue
+                    } finally {
+                        activeChunkWorkJob = null
+                        activeProcessingChunkIndex = -1
+                    }
+
+                    var chunkFailed = false
+                    chunkResult.fold(
+                        onSuccess = { done ->
+                            completedLiveChunkIndices.add(done.chunkIndex)
+                            chunkTranslatedMap[done.chunkIndex] = done.translatedSegments
+                            chunkDubbedMap[done.chunkIndex] = done.dubbedAudioSegments
+                            chunkSpeakerMap[done.chunkIndex] = done.speakerSegments
+                            accumulatedSegCharMap.putAll(done.segmentCharacterMap)
+                            accumulatedSpeakerCharMap.putAll(done.speakerToCharacterMap)
+                            totalAutoCreatedChars += done.autoCreatedCharacterCount
+
+                            val sortedKeys = chunkDubbedMap.keys.sorted()
+                            val allTranslated = sortedKeys.flatMap { chunkTranslatedMap[it].orEmpty() }
+                            val allDubbed = sortedKeys.flatMap { chunkDubbedMap[it].orEmpty() }
+                            val allSpeakers = sortedKeys.flatMap { chunkSpeakerMap[it].orEmpty() }
+
+                            _translationUiState.value = BengaliTranslationUiState(
+                                isTranslating = false,
+                                completedSegments = allTranslated.size,
+                                totalSegments = allTranslated.size,
+                                statusMessage = "Live translated ${allTranslated.size} lines (${completedLiveChunkIndices.size}/$totalChunks chunks)",
+                                activeVideoUri = uri,
+                                activeVideoTitle = title,
+                                segments = allTranslated
+                            )
+                            _diarizationUiState.value = _diarizationUiState.value.copy(
+                                isRunning = false,
+                                progressFraction = (completedLiveChunkIndices.size.toFloat() / totalChunks.toFloat()).coerceIn(0f, 1f),
+                                statusMessage = if (liveFastMode) {
+                                    "Fast Movie Mode ON (Multi-Speaker Diarization skipped)"
+                                } else {
+                                    "Detected ${allSpeakers.map { it.speakerIndex }.distinct().size} speaker(s) across ${completedLiveChunkIndices.size} chunk(s)"
+                                },
+                                errorMessage = null,
+                                activeVideoUri = uri,
+                                detectedSegments = allSpeakers,
+                                speakerToCharacterMap = accumulatedSpeakerCharMap.toMap(),
+                                segmentCharacterMap = accumulatedSegCharMap.toMap(),
+                                autoCreatedCharacterCount = totalAutoCreatedChars
+                            )
+                            _bengaliVoiceUiState.value = BengaliVoiceGenerationUiState(
+                                isSynthesizing = completedLiveChunkIndices.size < totalChunks,
+                                synthesizedCount = allDubbed.size,
+                                totalCount = allTranslated.size,
+                                statusMessage = "Live Bengali streaming · ${allDubbed.size} lines (${completedLiveChunkIndices.size}/$totalChunks chunks ready)",
+                                errorMessage = null,
+                                activeVideoUri = uri,
+                                segments = allDubbed
+                            )
+
+                            if (allTranslated.isNotEmpty()) {
+                                launch(Dispatchers.IO) {
+                                    runCatching {
+                                        translationCacheRepository.saveTranslation(
+                                            videoUri = uri,
+                                            segments = allTranslated
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Attach 30s chunk without interrupting active playback of the current chunk
+                            dubbingPlaybackController.attachOrUpdateRollingChunk(
+                                videoUri = uri,
+                                chunkTrack = done.assembledChunkTrack,
+                                allAccumulatedSegments = allDubbed
+                            )
+
+                            // As soon as Chunk 1 finishes, immediately enable synchronized Bengali playback!
+                            if (!firstChunkActivated) {
+                                firstChunkActivated = true
+                                dubbingPreferencesRepository.setDubbingEnabled(true)
+                                dubbingPreferencesRepository.setOutputMode(DubbingAudioOutputMode.BENGALI_DUBBED_MIX)
+                            }
+                        },
+                        onFailure = { err ->
+                            chunkFailed = true
+                            _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(isSynthesizing = false)
+                            _autoDubPipelineState.value = AutoDubPipelineState(
+                                isRunning = false,
+                                currentStage = AutoDubStage.ERROR,
+                                stageLabel = "Live Chunk Dubbing failed",
+                                isLiveChunkStreaming = false,
+                                completedChunkCount = completedLiveChunkIndices.size,
+                                totalChunkCount = totalChunks,
+                                errorMessage = err.message ?: "Live chunk dubbing failed on chunk ${nextChunk + 1}."
+                            )
+                        }
+                    )
+                    if (chunkFailed) break
+                }
             } catch (ce: CancellationException) {
                 _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(isSynthesizing = false)
                 _autoDubPipelineState.value = AutoDubPipelineState(
                     isRunning = false,
                     currentStage = AutoDubStage.IDLE,
-                    stageLabel = "Auto-Dub cancelled by user",
+                    stageLabel = "Live Bengali dubbing stopped",
+                    isLiveChunkStreaming = false,
+                    completedChunkCount = completedLiveChunkIndices.size,
                     errorMessage = null
                 )
                 throw ce
+            } finally {
+                activeChunkWorkJob = null
+                activeProcessingChunkIndex = -1
+                pendingSeekTargetChunk = null
+                withContext(NonCancellable) {
+                    autoDubPipelineOrchestrator.releaseEnginesAfterLiveSession()
+                }
             }
         }
     }
 
     fun cancelAutoDubVideo() {
         autoDubPipelineOrchestrator.requestCancelActiveStage()
+        activeChunkWorkJob?.cancel()
+        activeChunkWorkJob = null
         val job = activeAutoDubJob
         activeAutoDubJob = null
         job?.cancel()
@@ -1841,7 +2063,9 @@ class PlayerViewModel(
             _autoDubPipelineState.value = AutoDubPipelineState(
                 isRunning = false,
                 currentStage = AutoDubStage.IDLE,
-                stageLabel = "Auto-Dub cancelled by user",
+                stageLabel = "Live Bengali dubbing stopped",
+                isLiveChunkStreaming = false,
+                completedChunkCount = completedLiveChunkIndices.size,
                 errorMessage = null
             )
         }
@@ -1950,7 +2174,7 @@ class PlayerViewModel(
         if (activeOneClickSetupJob?.isActive == true) return
 
         val missingSteps = mutableListOf<String>()
-        if (whisperModelStatus.value !is WhisperModelStatus.LoadedReady) missingSteps.add("Whisper ASR")
+        if (!whisperSpeechEngine.isModelInstalledOnDisk()) missingSteps.add("Whisper ASR")
         if (diarizationModelState.value !is DiarizationModelState.Ready) missingSteps.add("Speaker Diarization")
         if (translationModelState.value !is TranslationModelState.Ready) missingSteps.add("ML Kit EN→বাংলা")
         if (bengaliTtsModelState.value !is BengaliTtsModelState.Ready) missingSteps.add("Bengali TTS")
@@ -2061,6 +2285,7 @@ class PlayerViewModel(
     }
 
     override fun onCleared() {
+        activeChunkWorkJob?.cancel()
         activeAutoDubJob?.cancel()
         activeExportJob?.cancel()
         activeOneClickSetupJob?.cancel()
@@ -2079,6 +2304,10 @@ class PlayerViewModel(
         ttsPreviewEngine.release()
         playerEngine.release()
         super.onCleared()
+    }
+
+    companion object {
+        private const val LIVE_PREBUFFER_CHUNKS_AHEAD = 2
     }
 
     private data class OneClickProgressSnapshot(

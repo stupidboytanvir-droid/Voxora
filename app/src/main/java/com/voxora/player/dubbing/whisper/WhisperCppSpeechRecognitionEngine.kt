@@ -84,6 +84,13 @@ class WhisperCppSpeechRecognitionEngine(
             else -> false
         }
 
+    /**
+     * Checks whether a verified Whisper model file exists on disk in app storage.
+     * Unlike [isModelLoadedAndReady], this NEVER flips to false when native RAM is unloaded
+     * between dubbing stages.
+     */
+    fun isModelInstalledOnDisk(): Boolean = isModelInstalled || modelManager.hasInstalledModelOnDisk()
+
     val isModelLoadedAndReady: Boolean
         get() = nativeContextPtr != 0L && _modelStatus.value is WhisperModelStatus.LoadedReady
 
@@ -119,8 +126,8 @@ class WhisperCppSpeechRecognitionEngine(
     }
 
     /**
-     * Downloads (if missing) and loads the Whisper `base.en` model sequentially on [Dispatchers.IO].
-     * Used both by the Transcribe tab button and the unified Phase 5 One-Click AI Setup flow.
+     * Downloads (if missing) and loads the default fast Whisper model (`ggml-tiny.en-q5_1.bin`, ~31 MB)
+     * sequentially on [Dispatchers.IO]. Used both by the Transcribe tab and One-Click AI Setup.
      */
     suspend fun ensureBaseEnModelReady(
         onProgressPercent: (Int) -> Unit = {}
@@ -144,7 +151,7 @@ class WhisperCppSpeechRecognitionEngine(
             }
         }
 
-        val spec = WhisperModelCatalog.BASE_EN
+        val spec = WhisperModelCatalog.DEFAULT
         _modelStatus.value = WhisperModelStatus.Downloading(
             progressFraction = 0f,
             downloadedBytes = 0L,
@@ -188,7 +195,7 @@ class WhisperCppSpeechRecognitionEngine(
                     throw err
                 } else {
                     _modelStatus.value = WhisperModelStatus.Error(
-                        message = err.message ?: "Failed to download Whisper base.en model."
+                        message = err.message ?: "Failed to download Whisper ${spec.displayName} model."
                     )
                     Result.failure(err)
                 }
@@ -212,7 +219,7 @@ class WhisperCppSpeechRecognitionEngine(
                 sourceUri = uri,
                 suggestedFileName = displayName,
                 onProgress = { copied ->
-                    val estimated = WhisperModelCatalog.BASE_EN.expectedSizeBytes
+                    val estimated = WhisperModelCatalog.DEFAULT.expectedSizeBytes
                     val frac = (copied.toFloat() / estimated.toFloat()).coerceIn(0f, 0.99f)
                     _modelStatus.value = WhisperModelStatus.Importing(
                         progressFraction = frac,
@@ -262,14 +269,14 @@ class WhisperCppSpeechRecognitionEngine(
         if (isModelLoadedAndReady) return@withContext Result.success(Unit)
         val installed = modelManager.findInstalledModel()
             ?: return@withContext Result.failure(
-                IllegalStateException("Whisper base.en model is not installed. Run One-Click AI Setup first.")
+                IllegalStateException("Whisper offline model is not installed. Run One-Click AI Setup first.")
             )
         loadInstalledModelInternal(installed)
         if (isModelLoadedAndReady) {
             Result.success(Unit)
         } else {
             val err = (_modelStatus.value as? WhisperModelStatus.Error)?.message
-                ?: "Failed to load Whisper base.en native context."
+                ?: "Failed to load Whisper native context."
             Result.failure(IllegalStateException(err))
         }
     }
@@ -315,6 +322,90 @@ class WhisperCppSpeechRecognitionEngine(
         } else {
             Result.success(finalState.segments)
         }
+    }
+
+    /**
+     * Runs real offline Whisper inference on a single already-decoded 30-second [PcmAudioChunk]
+     * without decoding the entire video into memory. Used by Fast Live Chunk Dubbing (v2.1.0).
+     */
+    suspend fun transcribePcmChunkSuspending(
+        chunk: PcmAudioChunk,
+        onProgressPercent: (Int) -> Unit = {}
+    ): Result<List<RecognizedSpeechSegment>> = withContext(Dispatchers.Default) {
+        if (chunk.samples16kMono.isEmpty()) {
+            return@withContext Result.success(emptyList())
+        }
+        val loadRes = ensureInstalledModelLoaded()
+        if (loadRes.isFailure) {
+            return@withContext Result.failure(
+                loadRes.exceptionOrNull() ?: IllegalStateException("Whisper model failed to load.")
+            )
+        }
+
+        WhisperNativeBridge.nativeResetAbort()
+        val chunkSegments = mutableListOf<RecognizedSpeechSegment>()
+        val counter = AtomicInteger(chunk.chunkIndex * 1000)
+
+        try {
+            coroutineContext.ensureActive()
+            val rc = nativeContextMutex.withLock {
+                val ptr = nativeContextPtr
+                if (ptr == 0L) return@withLock -1
+                val threads = WhisperNativeBridge.recommendedThreadCount()
+                val callback = object : WhisperNativeCallback {
+                    override fun onProgress(progressPercent: Int) {
+                        onProgressPercent(progressPercent.coerceIn(0, 100))
+                    }
+
+                    override fun onNewSegment(startMs: Long, endMs: Long, text: String) {
+                        val cleaned = text.trim()
+                        if (cleaned.isEmpty()) return
+                        val seg = RecognizedSpeechSegment(
+                            id = "C${chunk.chunkIndex}_SEG_${counter.incrementAndGet().toString().padStart(4, '0')}",
+                            startTimeMs = startMs.coerceAtLeast(chunk.startTimeMs),
+                            endTimeMs = endMs.coerceAtLeast(startMs),
+                            originalText = cleaned,
+                            detectedLanguageCode = "en",
+                            speakerId = "SPEAKER_01",
+                            confidence = 1.0f
+                        )
+                        synchronized(chunkSegments) {
+                            chunkSegments.add(seg)
+                        }
+                    }
+                }
+                WhisperNativeBridge.nativeTranscribeChunk(
+                    contextPtr = ptr,
+                    numThreads = threads,
+                    audioData = chunk.samples16kMono,
+                    chunkOffsetMs = chunk.startTimeMs,
+                    language = "en",
+                    callback = callback
+                )
+            }
+            if (rc == WhisperNativeBridge.RESULT_CANCELLED) {
+                throw CancellationException("Chunk transcription cancelled.")
+            }
+            if (rc != 0) {
+                return@withContext Result.failure(
+                    IllegalStateException("whisper.cpp inference returned error code $rc on chunk ${chunk.chunkIndex + 1}.")
+                )
+            }
+            onProgressPercent(100)
+            Result.success(chunkSegments.toList())
+        } catch (ce: CancellationException) {
+            WhisperNativeBridge.nativeRequestAbort()
+            throw ce
+        } catch (t: Throwable) {
+            Result.failure(t)
+        }
+    }
+
+    /**
+     * Signals native whisper.cpp to abort any in-flight chunk transcription (e.g. on user seek).
+     */
+    fun requestAbortNativeInference() {
+        WhisperNativeBridge.nativeRequestAbort()
     }
 
     fun deleteInstalledModel() {
@@ -404,7 +495,7 @@ class WhisperCppSpeechRecognitionEngine(
         }
         if (!isModelLoadedAndReady) {
             _transcriptionState.value = _transcriptionState.value.copy(
-                errorMessage = "Load the offline Whisper base.en model first before starting transcription."
+                errorMessage = "Load the offline Whisper model first before starting transcription."
             )
             return
         }

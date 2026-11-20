@@ -94,6 +94,18 @@ class BengaliTtsPhase5Test {
             val (htmlOk, _) = BengaliTtsIntegrityVerifier.verifyTokensFile(htmlFile)
             assertFalse(htmlOk)
 
+            val doctypeFile = File(tempDir, "doctype_tokens.txt").apply {
+                writeText("<!DOCTYPE html><html><body>Not Found</body></html>" + " ".repeat(200))
+            }
+            val (doctypeOk, _) = BengaliTtsIntegrityVerifier.verifyTokensFile(doctypeFile)
+            assertFalse(doctypeOk)
+
+            val jsonFile = File(tempDir, "json_tokens.txt").apply {
+                writeText("{\"error\":\"Repository not found\",\"status\":404}" + " ".repeat(200))
+            }
+            val (jsonOk, _) = BengaliTtsIntegrityVerifier.verifyTokensFile(jsonFile)
+            assertFalse(jsonOk)
+
             val goodTokens = File(tempDir, "tokens.txt").apply {
                 writeText(
                     buildString {

@@ -19,8 +19,8 @@ android {
     applicationId = "com.voxora.player"
     minSdk = 24
     targetSdk = 36
-    versionCode = 8
-    versionName = "2.0.0"
+    versionCode = 9
+    versionName = "2.0.1"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -165,6 +165,7 @@ dependencies {
   implementation(libs.kotlinx.coroutines.play.services)
   implementation(libs.mlkit.translate)
   implementation(files("libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar"))
+  implementation("org.apache.commons:commons-compress:1.26.1")
   // implementation(libs.logging.interceptor)
   // implementation(libs.moshi.kotlin)
   // implementation(libs.okhttp)

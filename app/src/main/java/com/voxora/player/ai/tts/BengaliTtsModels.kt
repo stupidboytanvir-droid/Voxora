@@ -41,6 +41,7 @@ data class BengaliTtsFileSpec(
     val displayName: String,
     val fileName: String,
     val downloadUrl: String,
+    val fallbackUrls: List<String> = emptyList(),
     val expectedSizeBytes: Long,
     val minValidSizeBytes: Long
 )

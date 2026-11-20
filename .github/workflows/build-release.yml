@@ -49,27 +49,80 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Prepare signing keystore
+      - name: Decode permanent release keystore from GitHub Secrets
+        id: keystore
         env:
-          KEYSTORE_B64: ${{ secrets.VOXORA_DEBUG_KEYSTORE_BASE64 }}
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          set -euo pipefail
           if [ -n "$KEYSTORE_B64" ]; then
-            echo "$KEYSTORE_B64" | base64 -d > debug.keystore
-            echo "Restored debug.keystore from VOXORA_DEBUG_KEYSTORE_BASE64 secret."
-          elif [ ! -f debug.keystore ]; then
-            keytool -genkeypair -v \
-              -keystore debug.keystore \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-            echo "Generated debug.keystore for CI build."
+            if [ -z "$KEYSTORE_PASSWORD" ]; then
+              echo "::error::KEYSTORE_PASSWORD secret is required when KEYSTORE_BASE64 is set."
+              exit 1
+            fi
+            EFFECTIVE_KEY_PASSWORD="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+            printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]' | base64 -d > app/voxora-release.jks
+
+            # Map custom KEY_ALIAS onto the "upload" alias expected by app/build.gradle.kts
+            # on this ephemeral CI copy (preserves the exact signing key & certificate fingerprint).
+            if ! keytool -list -keystore app/voxora-release.jks -storepass "$KEYSTORE_PASSWORD" -alias upload >/dev/null 2>&1; then
+              if [ -n "$KEY_ALIAS" ]; then
+                keytool -changealias \
+                  -keystore app/voxora-release.jks \
+                  -alias "$KEY_ALIAS" \
+                  -destalias upload \
+                  -storepass "$KEYSTORE_PASSWORD" \
+                  -keypass "$EFFECTIVE_KEY_PASSWORD"
+                echo "Aligned CI keystore alias to 'upload' (cryptographic key unchanged)."
+              else
+                echo "::error::KEY_ALIAS secret is empty and keystore does not contain alias 'upload'."
+                exit 1
+              fi
+            fi
+
+            echo "Decoded permanent release keystore to app/voxora-release.jks."
+            echo "build_type=release" >> "$GITHUB_OUTPUT"
+          else
+            if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+              echo "::error::Missing KEYSTORE_BASE64 secret. Configure KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, and KEY_PASSWORD in GitHub repository Secrets before tagging a release."
+              exit 1
+            fi
+            echo "KEYSTORE_BASE64 not set; falling back to debug signing for non-tag branch verification."
+            if [ ! -f debug.keystore ]; then
+              keytool -genkeypair -v \
+                -keystore debug.keystore \
+                -storepass android \
+                -alias androiddebugkey \
+                -keypass android \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
+            echo "build_type=debug" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build Debug APK
+      - name: Build Signed Release APK
+        if: steps.keystore.outputs.build_type == 'release'
+        env:
+          VOXORA_KEYSTORE_PATH: ${{ github.workspace }}/app/voxora-release.jks
+          KEYSTORE_PATH: ${{ github.workspace }}/app/voxora-release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.KEYSTORE_PASSWORD }}
+        run: |
+          gradle :app:assembleRelease --no-daemon --stacktrace
+          APKSIGNER="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}/build-tools/36.0.0/apksigner"
+          if [ -x "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk
+          fi
+
+      - name: Build Debug APK (Fallback when release secrets are not configured)
+        if: steps.keystore.outputs.build_type == 'debug'
         run: gradle :app:assembleDebug --no-daemon --stacktrace
 
       - name: Prepare versioned APK asset
@@ -83,7 +136,12 @@ jobs:
           fi
           APK_NAME="VOXORA-${VERSION_TAG}.apk"
           mkdir -p release-artifacts
-          cp app/build/outputs/apk/debug/app-debug.apk "release-artifacts/${APK_NAME}"
+          if [ "${{ steps.keystore.outputs.build_type }}" = "release" ]; then
+            SOURCE_APK="app/build/outputs/apk/release/app-release.apk"
+          else
+            SOURCE_APK="app/build/outputs/apk/debug/app-debug.apk"
+          fi
+          cp "$SOURCE_APK" "release-artifacts/${APK_NAME}"
           ls -lh "release-artifacts/${APK_NAME}"
           echo "apk_name=${APK_NAME}" >> "$GITHUB_OUTPUT"
           echo "apk_path=release-artifacts/${APK_NAME}" >> "$GITHUB_OUTPUT"
@@ -104,3 +162,7 @@ jobs:
           make_latest: true
           files: |
             ${{ steps.apk.outputs.apk_path }}
+
+      - name: Clean up decoded keystore
+        if: always()
+        run: rm -f app/voxora-release.jks

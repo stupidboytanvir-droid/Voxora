@@ -74,6 +74,10 @@ import com.voxora.player.ai.diarization.DiarizationModelSlot
 import com.voxora.player.ai.diarization.DiarizationModelState
 import com.voxora.player.ai.diarization.DiarizationSlotAvailability
 import com.voxora.player.ai.diarization.SpeakerDiarizationUiState
+import com.voxora.player.ai.dubbing.AutoDubPipelineState
+import com.voxora.player.ai.dubbing.DubbedExportState
+import com.voxora.player.ai.dubbing.DubbingExportFormat
+import com.voxora.player.ai.dubbing.LiveDubbingPlaybackState
 import com.voxora.player.ai.translation.BengaliTranslationUiState
 import com.voxora.player.ai.translation.TranslationExportFormat
 import com.voxora.player.ai.translation.TranslationModelState
@@ -128,8 +132,17 @@ fun AiDubbingStudioSheet(
     bengaliTtsInstalledFiles: BengaliTtsModelFiles?,
     bengaliVoiceUiState: BengaliVoiceGenerationUiState,
     oneClickAiSetupState: OneClickAiSetupState,
+    liveDubbingState: LiveDubbingPlaybackState,
+    autoDubPipelineState: AutoDubPipelineState,
+    dubbedExportState: DubbedExportState,
     onStartOneClickAiSetup: () -> Unit,
     onCancelOneClickAiSetup: () -> Unit,
+    onStartAutoDubVideo: () -> Unit,
+    onCancelAutoDubVideo: () -> Unit,
+    onExportDubbedMedia: (DubbingExportFormat) -> Unit,
+    onCancelDubbedExport: () -> Unit,
+    onOpenExportedMedia: (uriString: String, mimeType: String) -> Unit,
+    onShareExportedMedia: (uriString: String, mimeType: String, title: String) -> Unit,
     onSetEnabled: (Boolean) -> Unit,
     onSelectSourceLanguage: (DubbingLanguage) -> Unit,
     onSelectTargetLanguage: (DubbingLanguage) -> Unit,
@@ -137,8 +150,11 @@ fun AiDubbingStudioSheet(
     onOriginalVolumeChange: (Float) -> Unit,
     onDubbedVolumeChange: (Float) -> Unit,
     onAdjustSyncOffset: (Long) -> Unit,
+    onSetSyncOffsetMs: (Long) -> Unit,
     onResetSyncOffset: () -> Unit,
     onPreserveBackgroundChange: (Boolean) -> Unit,
+    onBgmDuckingStrengthChange: (Float) -> Unit,
+    onVocalAttenuationChange: (Boolean) -> Unit,
     onAddCharacter: (CharacterVoiceProfile) -> Unit,
     onUpdateCharacter: (CharacterVoiceProfile) -> Unit,
     onRemoveCharacter: (String) -> Unit,
@@ -187,7 +203,7 @@ fun AiDubbingStudioSheet(
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var selectedTab by remember { mutableStateOf(DubbingStudioTab.TRANSCRIBE) }
+    var selectedTab by remember { mutableStateOf(DubbingStudioTab.CONTROLS) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -241,7 +257,7 @@ fun AiDubbingStudioSheet(
                             border = BorderStroke(1.dp, VoxoraElectricPurple)
                         ) {
                             Text(
-                                text = "PHASE 5",
+                                text = "v2.0",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = VoxoraElectricPurpleBright,
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
@@ -249,7 +265,7 @@ fun AiDubbingStudioSheet(
                         }
                     }
                     Text(
-                        text = "${state.config.sourceLanguage.displayName} → ${state.config.targetLanguage.displayName} (${state.config.targetLanguage.nativeName}) · whisper.cpp + Sherpa-ONNX + ML Kit + VITS",
+                        text = "${state.config.sourceLanguage.displayName} → ${state.config.targetLanguage.displayName} (${state.config.targetLanguage.nativeName}) · Full Offline AI Dubbing & MP4 Export",
                         style = MaterialTheme.typography.bodySmall,
                         color = VoxoraSubtleBlue
                     )
@@ -288,7 +304,7 @@ fun AiDubbingStudioSheet(
                         modifier = Modifier.size(18.dp)
                     )
                     Text(
-                        text = "${state.readyComponentCount}/${state.totalComponentCount} stages ready on-device. Offline ASR (whisper.cpp), Diarization & VITS Bengali Voice (Sherpa-ONNX), and EN → বাংলা Translation (ML Kit) run 100% offline with zero paid APIs.",
+                        text = "${state.readyComponentCount}/${state.totalComponentCount} stages ready on-device. Full offline pipeline: Whisper ASR, Sherpa-ONNX Diarization & VITS Bengali TTS, ML Kit Translation, Smart BGM Ducking, Live Sync & MP4 Export.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.White.copy(alpha = 0.85f)
                     )
@@ -351,14 +367,27 @@ fun AiDubbingStudioSheet(
                 DubbingStudioTab.CONTROLS -> {
                     DubbingControlsTab(
                         state = state,
+                        allModelsInstalled = oneClickAiSetupState.allModelsReady,
+                        liveDubbingState = liveDubbingState,
+                        autoDubPipelineState = autoDubPipelineState,
+                        dubbedExportState = dubbedExportState,
+                        onStartAutoDubVideo = onStartAutoDubVideo,
+                        onCancelAutoDubVideo = onCancelAutoDubVideo,
+                        onExportDubbedMedia = onExportDubbedMedia,
+                        onCancelDubbedExport = onCancelDubbedExport,
+                        onOpenExportedMedia = onOpenExportedMedia,
+                        onShareExportedMedia = onShareExportedMedia,
                         onSelectSourceLanguage = onSelectSourceLanguage,
                         onSelectTargetLanguage = onSelectTargetLanguage,
                         onSelectOutputMode = onSelectOutputMode,
                         onOriginalVolumeChange = onOriginalVolumeChange,
                         onDubbedVolumeChange = onDubbedVolumeChange,
                         onAdjustSyncOffset = onAdjustSyncOffset,
+                        onSetSyncOffsetMs = onSetSyncOffsetMs,
                         onResetSyncOffset = onResetSyncOffset,
-                        onPreserveBackgroundChange = onPreserveBackgroundChange
+                        onPreserveBackgroundChange = onPreserveBackgroundChange,
+                        onBgmDuckingStrengthChange = onBgmDuckingStrengthChange,
+                        onVocalAttenuationChange = onVocalAttenuationChange
                     )
                 }
                 DubbingStudioTab.TRANSCRIBE -> {
@@ -486,19 +515,41 @@ fun AiDubbingStudioSheet(
 @Composable
 private fun DubbingControlsTab(
     state: PlayerDubbingUiState,
+    allModelsInstalled: Boolean,
+    liveDubbingState: LiveDubbingPlaybackState,
+    autoDubPipelineState: AutoDubPipelineState,
+    dubbedExportState: DubbedExportState,
+    onStartAutoDubVideo: () -> Unit,
+    onCancelAutoDubVideo: () -> Unit,
+    onExportDubbedMedia: (DubbingExportFormat) -> Unit,
+    onCancelDubbedExport: () -> Unit,
+    onOpenExportedMedia: (uriString: String, mimeType: String) -> Unit,
+    onShareExportedMedia: (uriString: String, mimeType: String, title: String) -> Unit,
     onSelectSourceLanguage: (DubbingLanguage) -> Unit,
     onSelectTargetLanguage: (DubbingLanguage) -> Unit,
     onSelectOutputMode: (DubbingAudioOutputMode) -> Unit,
     onOriginalVolumeChange: (Float) -> Unit,
     onDubbedVolumeChange: (Float) -> Unit,
     onAdjustSyncOffset: (Long) -> Unit,
+    onSetSyncOffsetMs: (Long) -> Unit,
     onResetSyncOffset: () -> Unit,
-    onPreserveBackgroundChange: (Boolean) -> Unit
+    onPreserveBackgroundChange: (Boolean) -> Unit,
+    onBgmDuckingStrengthChange: (Float) -> Unit,
+    onVocalAttenuationChange: (Boolean) -> Unit
 ) {
     val config = state.config
     var showAllLanguages by remember { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        // 0. Prominent Phase 6 One-Click Auto-Dub Video Hero Card
+        AutoDubHeroCard(
+            hasActiveVideo = config.mediaUriString.isNotBlank(),
+            allModelsInstalled = allModelsInstalled,
+            autoDubState = autoDubPipelineState,
+            liveDubbingState = liveDubbingState,
+            onStartAutoDub = onStartAutoDubVideo,
+            onCancelAutoDub = onCancelAutoDubVideo
+        )
         // 1. Language Pair Card (English -> Bengali Phase 1 + Future Expansion)
         Surface(
             color = Color(0xFF181924),
@@ -691,9 +742,19 @@ private fun DubbingControlsTab(
 
                 if (config.audioOutputMode != DubbingAudioOutputMode.ORIGINAL_AUDIO && !state.hasSynthesizedBengaliTrack) {
                     Text(
-                        text = "No offline Bengali voice track is synthesized yet (offline ASR/Translation/TTS engine required in Phase 2). Original audio remains safely controlled by your Original Audio Volume slider below.",
+                        text = "No offline Bengali voice track is synthesized for this video yet. Tap \"Auto-Dub Entire Video\" above or synthesize voices in the Voice / TTS tab.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xFFFBBF24)
+                    )
+                } else if (liveDubbingState.isActive) {
+                    Text(
+                        text = if (liveDubbingState.isOriginalDucked) {
+                            "Live synchronized Bengali dubbing active · Smart BGM Ducking engaged"
+                        } else {
+                            "Live synchronized Bengali dubbing active · Original BGM & SFX at full richness"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF4ADE80)
                     )
                 }
             }
@@ -800,11 +861,11 @@ private fun DubbingControlsTab(
                         )
                         Column {
                             Text(
-                                text = "Preserve Background Music & SFX",
+                                text = "Smart BGM & SFX Ducking",
                                 style = MaterialTheme.typography.titleSmall
                             )
                             Text(
-                                text = "Keeps movie score & ambience separate from speech (Phase 2 Demucs stem separation)",
+                                text = "Smoothly ducks original audio during Bengali dialogue (150ms ramp) and restores BGM/SFX to 100% between lines",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.White.copy(alpha = 0.65f)
                             )
@@ -814,6 +875,62 @@ private fun DubbingControlsTab(
                         checked = config.preserveOriginalBackgroundAudio,
                         onCheckedChange = onPreserveBackgroundChange,
                         modifier = Modifier.testTag("dubbing_preserve_bg_switch")
+                    )
+                }
+
+                if (config.preserveOriginalBackgroundAudio) {
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "BGM Ducking Strength",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color.White
+                            )
+                            val duckPct = (config.bgmDuckingStrength * 100f).toInt().coerceIn(0, 95)
+                            Text(
+                                text = "${duckPct}% (BGM at ${100 - duckPct}%)",
+                                style = TabularTimeStyle,
+                                color = VoxoraSubtleBlue
+                            )
+                        }
+                        Slider(
+                            value = config.bgmDuckingStrength,
+                            onValueChange = onBgmDuckingStrengthChange,
+                            valueRange = 0f..0.95f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = VoxoraSubtleBlue,
+                                activeTrackColor = VoxoraSubtleBlue
+                            ),
+                            modifier = Modifier.testTag("dubbing_bgm_ducking_slider")
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                        Text(
+                            text = "Stereo Vocal Reduction (Mid-Side)",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            text = "Attenuates center-panned English vocals while keeping stereo BGM/SFX intact during offline export",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.65f)
+                        )
+                    }
+                    Switch(
+                        checked = config.vocalAttenuationEnabled,
+                        onCheckedChange = onVocalAttenuationChange,
+                        modifier = Modifier.testTag("dubbing_vocal_attenuation_switch")
                     )
                 }
             }
@@ -852,6 +969,16 @@ private fun DubbingControlsTab(
                         color = VoxoraElectricPurpleBright
                     )
                 }
+                Slider(
+                    value = config.syncOffsetMs.toFloat(),
+                    onValueChange = { onSetSyncOffsetMs((it / 50f).toLong() * 50L) },
+                    valueRange = -5000f..5000f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = VoxoraElectricPurpleBright,
+                        activeTrackColor = VoxoraElectricPurple
+                    ),
+                    modifier = Modifier.testTag("dubbing_sync_offset_slider")
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -884,6 +1011,16 @@ private fun DubbingControlsTab(
                 }
             }
         }
+
+        // 5. Offline Dubbed Video (MP4) & Audio (M4A / WAV) Export Section
+        DubbedExportSection(
+            hasSynthesizedDubTrack = state.hasSynthesizedBengaliTrack,
+            exportState = dubbedExportState,
+            onExportFormat = onExportDubbedMedia,
+            onCancelExport = onCancelDubbedExport,
+            onOpenExportedMedia = onOpenExportedMedia,
+            onShareExportedMedia = onShareExportedMedia
+        )
     }
 }
 

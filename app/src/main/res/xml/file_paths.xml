@@ -3,4 +3,10 @@
     <cache-path
         name="apk_updates"
         path="updates/" />
+    <cache-path
+        name="dubbing_cache"
+        path="voxora_dub/" />
+    <external-files-path
+        name="dubbed_exports"
+        path="VOXORA_Exports/" />
 </paths>

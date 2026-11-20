@@ -13,6 +13,15 @@ import com.voxora.player.ai.diarization.DiarizationSlotAvailability
 import com.voxora.player.ai.diarization.OfflineDiarizationEngine
 import com.voxora.player.ai.diarization.SpeakerCharacterMapper
 import com.voxora.player.ai.diarization.SpeakerDiarizationUiState
+import com.voxora.player.ai.dubbing.AutoDubPipelineOrchestrator
+import com.voxora.player.ai.dubbing.AutoDubPipelineState
+import com.voxora.player.ai.dubbing.AutoDubStage
+import com.voxora.player.ai.dubbing.DubbedExportState
+import com.voxora.player.ai.dubbing.DubbedTrackAssembler
+import com.voxora.player.ai.dubbing.DubbedVideoExporter
+import com.voxora.player.ai.dubbing.DubbingExportFormat
+import com.voxora.player.ai.dubbing.DubbingPlaybackController
+import com.voxora.player.ai.dubbing.LiveDubbingPlaybackState
 import com.voxora.player.ai.translation.BengaliTranslationUiState
 import com.voxora.player.ai.translation.OfflineTranslationEngine
 import com.voxora.player.ai.translation.OfflineTranslationManager
@@ -107,11 +116,21 @@ class PlayerViewModel(
     private val diarizationModelManager: DiarizationModelManager,
     private val offlineDiarizationEngine: OfflineDiarizationEngine,
     private val bengaliTtsModelManager: BengaliTtsModelManager,
-    private val offlineBengaliTtsEngine: OfflineBengaliTtsEngine
+    private val offlineBengaliTtsEngine: OfflineBengaliTtsEngine,
+    private val dubbedTrackAssembler: DubbedTrackAssembler,
+    private val autoDubPipelineOrchestrator: AutoDubPipelineOrchestrator,
+    private val dubbedVideoExporter: DubbedVideoExporter
 ) : ViewModel() {
 
     val playerEngine = VoxoraPlayerEngine(app)
     val playbackState: StateFlow<PlayerPlaybackState> = playerEngine.state
+
+    private val dubbingPlaybackController = DubbingPlaybackController(
+        context = app,
+        mainExoPlayer = playerEngine.exoPlayer,
+        trackAssembler = dubbedTrackAssembler
+    )
+    val liveDubbingState: StateFlow<LiveDubbingPlaybackState> = dubbingPlaybackController.state
 
     val preferences: StateFlow<UserPreferences> = settingsRepository.preferencesFlow
         .stateIn(
@@ -189,6 +208,12 @@ class PlayerViewModel(
     private val _bengaliVoiceUiState = MutableStateFlow(BengaliVoiceGenerationUiState())
     val bengaliVoiceUiState: StateFlow<BengaliVoiceGenerationUiState> = _bengaliVoiceUiState.asStateFlow()
 
+    private val _autoDubPipelineState = MutableStateFlow(AutoDubPipelineState())
+    val autoDubPipelineState: StateFlow<AutoDubPipelineState> = _autoDubPipelineState.asStateFlow()
+
+    private val _dubbedExportState = MutableStateFlow(DubbedExportState())
+    val dubbedExportState: StateFlow<DubbedExportState> = _dubbedExportState.asStateFlow()
+
     private val _oneClickProgressState = MutableStateFlow(OneClickProgressSnapshot())
 
     val oneClickAiSetupState: StateFlow<OneClickAiSetupState> = combine(
@@ -223,20 +248,24 @@ class PlayerViewModel(
     private var activeBengaliVoiceGenJob: Job? = null
     private var activeCharacterNeuralPreviewJob: Job? = null
     private var activeOneClickSetupJob: Job? = null
+    private var activeAutoDubJob: Job? = null
+    private var activeExportJob: Job? = null
     private val manualSegmentCharacterOverrides = mutableMapOf<Int, String>()
 
     private val diarizationAndTtsSnapshotFlow = combine(
         diarizationModelState,
         _diarizationUiState,
         bengaliTtsModelState,
-        _bengaliVoiceUiState
-    ) { diarizationModel, diarizationUi, ttsModel, ttsUi ->
+        _bengaliVoiceUiState,
+        liveDubbingState
+    ) { diarizationModel, diarizationUi, ttsModel, ttsUi, liveDub ->
         DiarizationAndTtsPipelineSnapshot(
             diarizationModelState = diarizationModel,
             isDiarizing = diarizationUi.isRunning,
             bengaliTtsModelState = ttsModel,
             isSynthesizingBengaliVoice = ttsUi.isSynthesizing,
-            hasSynthesizedBengaliTrack = ttsUi.segments.isNotEmpty()
+            hasSynthesizedBengaliTrack = ttsUi.segments.isNotEmpty() || liveDub.isTrackReady,
+            isLiveDubbingActive = liveDub.isActive
         )
     }
 
@@ -264,7 +293,8 @@ class PlayerViewModel(
             isTranslating = translationUi.isTranslating,
             bengaliTtsModelState = diarizationTtsSnap.bengaliTtsModelState,
             isSynthesizingBengaliVoice = diarizationTtsSnap.isSynthesizingBengaliVoice,
-            hasSynthesizedBengaliTrack = diarizationTtsSnap.hasSynthesizedBengaliTrack
+            hasSynthesizedBengaliTrack = diarizationTtsSnap.hasSynthesizedBengaliTrack,
+            isLiveDubbingActive = diarizationTtsSnap.isLiveDubbingActive
         )
     }
 
@@ -323,7 +353,11 @@ class PlayerViewModel(
                 translationModelState = extraction.whisper.translationModelState,
                 isTranslating = extraction.whisper.isTranslating,
                 bengaliTtsModelState = extraction.whisper.bengaliTtsModelState,
-                isSynthesizingBengaliVoice = extraction.whisper.isSynthesizingBengaliVoice
+                isSynthesizingBengaliVoice = extraction.whisper.isSynthesizingBengaliVoice,
+                isLiveDubbingActive = extraction.whisper.isLiveDubbingActive,
+                preserveBackgroundAudio = effectiveConfig.preserveOriginalBackgroundAudio,
+                bgmDuckingStrength = effectiveConfig.bgmDuckingStrength,
+                vocalAttenuationEnabled = effectiveConfig.vocalAttenuationEnabled
             ),
             movieSpeakerAssignments = movieAssignments,
             ttsPreviewState = ttsState
@@ -358,11 +392,7 @@ class PlayerViewModel(
 
         viewModelScope.launch {
             dubbingConfigFlow.collect { config ->
-                val effectiveOriginalVolume = aiDubbingPipeline.computeEffectiveOriginalVolume(
-                    config = config,
-                    hasSynthesizedDubTrack = false
-                )
-                playerEngine.setOriginalAudioVolume(effectiveOriginalVolume)
+                dubbingPlaybackController.updateConfig(config)
             }
         }
 
@@ -402,7 +432,12 @@ class PlayerViewModel(
         stopSpeakerDiarization()
         stopBengaliVoiceGeneration()
         stopDubbedAudioPlayback()
+        cancelAutoDubVideo()
+        cancelDubbedExport()
+        dubbingPlaybackController.clearTrack()
         manualSegmentCharacterOverrides.clear()
+        _autoDubPipelineState.value = AutoDubPipelineState()
+        _dubbedExportState.value = DubbedExportState()
         _diarizationUiState.value = SpeakerDiarizationUiState(
             activeVideoUri = uriString,
             numClustersConfig = _diarizationUiState.value.numClustersConfig,
@@ -669,12 +704,24 @@ class PlayerViewModel(
         viewModelScope.launch { dubbingPreferencesRepository.setSyncOffsetMs(next) }
     }
 
+    fun setDubbingSyncOffsetMs(offsetMs: Long) {
+        viewModelScope.launch { dubbingPreferencesRepository.setSyncOffsetMs(offsetMs.coerceIn(-5_000L, 5_000L)) }
+    }
+
     fun resetDubbingSyncOffset() {
         viewModelScope.launch { dubbingPreferencesRepository.setSyncOffsetMs(0L) }
     }
 
     fun setPreserveBackgroundAudio(preserve: Boolean) {
         viewModelScope.launch { dubbingPreferencesRepository.setPreserveBackgroundAudio(preserve) }
+    }
+
+    fun setBgmDuckingStrength(strength: Float) {
+        viewModelScope.launch { dubbingPreferencesRepository.setBgmDuckingStrength(strength) }
+    }
+
+    fun setVocalAttenuationEnabled(enabled: Boolean) {
+        viewModelScope.launch { dubbingPreferencesRepository.setVocalAttenuationEnabled(enabled) }
     }
 
     fun addDubbingCharacter(profile: CharacterVoiceProfile) {
@@ -1559,9 +1606,14 @@ class PlayerViewModel(
                             isSynthesizing = false,
                             synthesizedCount = allSegments.size,
                             totalCount = translatedSegments.size,
-                            statusMessage = "Generated ${allSegments.size} Bengali voice line(s) offline",
+                            statusMessage = "Generated ${allSegments.size} Bengali voice line(s) offline · Live sync ready",
                             errorMessage = null,
                             segments = allSegments
+                        )
+                        dubbingPlaybackController.attachDubbedSegments(
+                            videoUri = uri,
+                            segments = allSegments,
+                            videoDurationMsHint = playerEngine.state.value.durationMs
                         )
                     },
                     onFailure = { err ->
@@ -1641,12 +1693,251 @@ class PlayerViewModel(
     fun clearSynthesizedBengaliAudio() {
         stopBengaliVoiceGeneration()
         stopDubbedAudioPlayback()
+        cancelDubbedExport()
+        dubbingPlaybackController.clearTrack()
         val uri = activeUriString.orEmpty()
         _bengaliVoiceUiState.value = BengaliVoiceGenerationUiState(activeVideoUri = uri)
         if (uri.isNotBlank()) {
             viewModelScope.launch {
                 offlineBengaliTtsEngine.clearCacheForVideo(uri)
             }
+        }
+    }
+
+    // --- Phase 6 One-Click Auto-Dub Pipeline & Offline MP4/Audio Export ---
+
+    fun startAutoDubVideo() {
+        if (activeAutoDubJob?.isActive == true) return
+        val uri = activeUriString.orEmpty()
+        if (uri.isBlank()) {
+            _autoDubPipelineState.value = AutoDubPipelineState(
+                isRunning = false,
+                currentStage = AutoDubStage.ERROR,
+                stageLabel = "Auto-Dub unavailable",
+                errorMessage = "No local video is currently loaded."
+            )
+            return
+        }
+
+        stopVoicePreview()
+        stopDubbedAudioPlayback()
+        stopBengaliTranslation()
+        stopSpeakerDiarization()
+        stopBengaliVoiceGeneration()
+
+        val title = _uiState.value.videoTitle
+        val durationHint = playerEngine.state.value.durationMs
+        val currentConfig = dubbingConfigFlow.value
+        val currentAssignments = activeMovieAssignmentsFlow.value
+        val diarizationState = _diarizationUiState.value
+
+        _autoDubPipelineState.value = AutoDubPipelineState(
+            isRunning = true,
+            currentStage = AutoDubStage.TRANSCRIBING,
+            stageIndex = 1,
+            totalStages = 4,
+            stageLabel = "Checking offline AI models...",
+            stageProgressFraction = 0.02f,
+            errorMessage = null
+        )
+
+        activeAutoDubJob = viewModelScope.launch {
+            try {
+                val result = autoDubPipelineOrchestrator.runAutoDub(
+                    videoUri = uri,
+                    videoTitle = title,
+                    videoDurationMsHint = durationHint,
+                    savedCharacters = currentConfig.characterVoices,
+                    existingMovieAssignments = currentAssignments,
+                    existingManualOverrides = manualSegmentCharacterOverrides.toMap(),
+                    diarizationNumClusters = diarizationState.numClustersConfig,
+                    diarizationThreshold = diarizationState.thresholdConfig,
+                    onStateUpdate = { nextState ->
+                        _autoDubPipelineState.value = nextState
+                    },
+                    onTranslatedSegmentsReady = { translated ->
+                        _translationUiState.value = BengaliTranslationUiState(
+                            isTranslating = false,
+                            translatedCount = translated.size,
+                            totalCount = translated.size,
+                            statusMessage = "Translated ${translated.size} lines offline to বাংলা",
+                            activeVideoUri = uri,
+                            activeVideoTitle = title,
+                            segments = translated
+                        )
+                    },
+                    onDubbedSegmentSynthesized = { partialDubbed ->
+                        _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
+                            isSynthesizing = true,
+                            synthesizedCount = partialDubbed.size,
+                            activeVideoUri = uri,
+                            segments = partialDubbed
+                        )
+                    }
+                )
+
+                result.fold(
+                    onSuccess = { done ->
+                        _diarizationUiState.value = _diarizationUiState.value.copy(
+                            isRunning = false,
+                            progressFraction = 1f,
+                            statusMessage = "Detected ${done.speakerSegments.map { it.speakerIndex }.distinct().size} speaker(s) via Auto-Dub",
+                            errorMessage = null,
+                            activeVideoUri = uri,
+                            detectedSegments = done.speakerSegments,
+                            speakerToCharacterMap = done.speakerToCharacterMap,
+                            segmentCharacterMap = done.segmentCharacterMap,
+                            autoCreatedCharacterCount = done.autoCreatedCharacterCount
+                        )
+                        _bengaliVoiceUiState.value = BengaliVoiceGenerationUiState(
+                            isSynthesizing = false,
+                            synthesizedCount = done.dubbedAudioSegments.size,
+                            totalCount = done.translatedSegments.size,
+                            statusMessage = "Auto-Dubbed ${done.dubbedAudioSegments.size} Bengali voice lines · Live sync active",
+                            errorMessage = null,
+                            activeVideoUri = uri,
+                            segments = done.dubbedAudioSegments
+                        )
+
+                        // Attach assembled track & activate Live Synchronized Bengali Dubbing immediately!
+                        dubbingPlaybackController.attachDubbedSegments(
+                            videoUri = uri,
+                            segments = done.dubbedAudioSegments,
+                            videoDurationMsHint = durationHint,
+                            preAssembledTrack = done.assembledTrack
+                        )
+                        dubbingPreferencesRepository.setDubbingEnabled(true)
+                        dubbingPreferencesRepository.setOutputMode(DubbingAudioOutputMode.BENGALI_DUBBED_MIX)
+                    },
+                    onFailure = { err ->
+                        _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(isSynthesizing = false)
+                        _autoDubPipelineState.value = AutoDubPipelineState(
+                            isRunning = false,
+                            currentStage = AutoDubStage.ERROR,
+                            stageLabel = "Auto-Dub failed",
+                            errorMessage = err.message ?: "Auto-Dub pipeline failed."
+                        )
+                    }
+                )
+            } catch (ce: CancellationException) {
+                _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(isSynthesizing = false)
+                _autoDubPipelineState.value = AutoDubPipelineState(
+                    isRunning = false,
+                    currentStage = AutoDubStage.IDLE,
+                    stageLabel = "Auto-Dub cancelled by user",
+                    errorMessage = null
+                )
+                throw ce
+            }
+        }
+    }
+
+    fun cancelAutoDubVideo() {
+        autoDubPipelineOrchestrator.requestCancelActiveStage()
+        val job = activeAutoDubJob
+        activeAutoDubJob = null
+        job?.cancel()
+        if (_autoDubPipelineState.value.isRunning) {
+            _autoDubPipelineState.value = AutoDubPipelineState(
+                isRunning = false,
+                currentStage = AutoDubStage.IDLE,
+                stageLabel = "Auto-Dub cancelled by user",
+                errorMessage = null
+            )
+        }
+    }
+
+    fun startDubbedExport(format: DubbingExportFormat) {
+        if (activeExportJob?.isActive == true) return
+        val uri = activeUriString.orEmpty()
+        val dubbedSegments = _bengaliVoiceUiState.value.segments
+        if (uri.isBlank() || dubbedSegments.isEmpty()) {
+            _dubbedExportState.value = DubbedExportState(
+                isExporting = false,
+                errorMessage = "Generate Bengali voices (or run Auto-Dub) first before exporting."
+            )
+            return
+        }
+
+        val title = _uiState.value.videoTitle
+        val durationHint = playerEngine.state.value.durationMs
+        val currentConfig = dubbingConfigFlow.value
+
+        _dubbedExportState.value = DubbedExportState(
+            isExporting = true,
+            activeFormat = format,
+            progressFraction = 0.02f,
+            statusMessage = "Preparing offline ${format.label} export...",
+            errorMessage = null
+        )
+
+        activeExportJob = viewModelScope.launch {
+            try {
+                val result = dubbedVideoExporter.exportDubbedMedia(
+                    videoUriString = uri,
+                    videoTitle = title,
+                    videoDurationMsHint = durationHint,
+                    dubbedSegments = dubbedSegments,
+                    config = currentConfig,
+                    format = format,
+                    onProgress = { frac, msg ->
+                        _dubbedExportState.value = _dubbedExportState.value.copy(
+                            progressFraction = frac.coerceIn(0f, 1f),
+                            statusMessage = msg
+                        )
+                    }
+                )
+                result.fold(
+                    onSuccess = { exported ->
+                        _dubbedExportState.value = DubbedExportState(
+                            isExporting = false,
+                            activeFormat = format,
+                            progressFraction = 1f,
+                            statusMessage = "Saved to ${exported.locationLabel}/${exported.displayName}",
+                            exportedUriString = exported.uri.toString(),
+                            exportedDisplayName = exported.displayName,
+                            exportedLocationLabel = exported.locationLabel,
+                            exportedMimeType = exported.mimeType,
+                            errorMessage = null
+                        )
+                    },
+                    onFailure = { err ->
+                        _dubbedExportState.value = DubbedExportState(
+                            isExporting = false,
+                            activeFormat = format,
+                            progressFraction = 0f,
+                            statusMessage = "Export failed",
+                            errorMessage = err.message ?: "Offline export failed."
+                        )
+                    }
+                )
+            } catch (ce: CancellationException) {
+                _dubbedExportState.value = DubbedExportState(
+                    isExporting = false,
+                    statusMessage = "Export cancelled",
+                    errorMessage = null
+                )
+                throw ce
+            }
+        }
+    }
+
+    fun cancelDubbedExport() {
+        val job = activeExportJob
+        activeExportJob = null
+        job?.cancel()
+        if (_dubbedExportState.value.isExporting) {
+            _dubbedExportState.value = DubbedExportState(
+                isExporting = false,
+                statusMessage = "Export cancelled",
+                errorMessage = null
+            )
+        }
+    }
+
+    fun clearExportStatus() {
+        if (!_dubbedExportState.value.isExporting) {
+            _dubbedExportState.value = DubbedExportState()
         }
     }
 
@@ -1770,6 +2061,8 @@ class PlayerViewModel(
     }
 
     override fun onCleared() {
+        activeAutoDubJob?.cancel()
+        activeExportJob?.cancel()
         activeOneClickSetupJob?.cancel()
         activeTranslationJob?.cancel()
         activeDiarizationModelJob?.cancel()
@@ -1777,6 +2070,7 @@ class PlayerViewModel(
         activeBengaliTtsModelJob?.cancel()
         activeBengaliVoiceGenJob?.cancel()
         activeCharacterNeuralPreviewJob?.cancel()
+        dubbingPlaybackController.release()
         dubAudioPreviewPlayer.release()
         offlineBengaliTtsEngine.release()
         offlineDiarizationEngine.release()
@@ -1801,7 +2095,8 @@ class PlayerViewModel(
         val isDiarizing: Boolean = false,
         val bengaliTtsModelState: BengaliTtsModelState = BengaliTtsModelState.NotInstalled,
         val isSynthesizingBengaliVoice: Boolean = false,
-        val hasSynthesizedBengaliTrack: Boolean = false
+        val hasSynthesizedBengaliTrack: Boolean = false,
+        val isLiveDubbingActive: Boolean = false
     )
 
     private data class WhisperPipelineSnapshot(
@@ -1814,7 +2109,8 @@ class PlayerViewModel(
         val isTranslating: Boolean = false,
         val bengaliTtsModelState: BengaliTtsModelState = BengaliTtsModelState.NotInstalled,
         val isSynthesizingBengaliVoice: Boolean = false,
-        val hasSynthesizedBengaliTrack: Boolean = false
+        val hasSynthesizedBengaliTrack: Boolean = false,
+        val isLiveDubbingActive: Boolean = false
     )
 
     private data class ExtractionUiSnapshot(
@@ -1844,7 +2140,10 @@ class PlayerViewModel(
                 diarizationModelManager = app.diarizationModelManager,
                 offlineDiarizationEngine = app.offlineDiarizationEngine,
                 bengaliTtsModelManager = app.bengaliTtsModelManager,
-                offlineBengaliTtsEngine = app.offlineBengaliTtsEngine
+                offlineBengaliTtsEngine = app.offlineBengaliTtsEngine,
+                dubbedTrackAssembler = app.dubbedTrackAssembler,
+                autoDubPipelineOrchestrator = app.autoDubPipelineOrchestrator,
+                dubbedVideoExporter = app.dubbedVideoExporter
             ) as T
         }
     }

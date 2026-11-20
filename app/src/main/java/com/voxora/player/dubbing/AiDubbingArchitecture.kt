@@ -281,7 +281,11 @@ interface AiDubbingPipeline {
         translationModelState: TranslationModelState = TranslationModelState.NotDownloaded,
         isTranslating: Boolean = false,
         bengaliTtsModelState: BengaliTtsModelState = BengaliTtsModelState.NotInstalled,
-        isSynthesizingBengaliVoice: Boolean = false
+        isSynthesizingBengaliVoice: Boolean = false,
+        isLiveDubbingActive: Boolean = false,
+        preserveBackgroundAudio: Boolean = true,
+        bgmDuckingStrength: Float = 0.80f,
+        vocalAttenuationEnabled: Boolean = false
     ): List<PipelineStageStatus>
 
     fun computeEffectiveOriginalVolume(
@@ -369,7 +373,11 @@ class Version1AiDubbingPipeline(
         translationModelState: TranslationModelState,
         isTranslating: Boolean,
         bengaliTtsModelState: BengaliTtsModelState,
-        isSynthesizingBengaliVoice: Boolean
+        isSynthesizingBengaliVoice: Boolean,
+        isLiveDubbingActive: Boolean,
+        preserveBackgroundAudio: Boolean,
+        bgmDuckingStrength: Float,
+        vocalAttenuationEnabled: Boolean
     ): List<PipelineStageStatus> {
         val extractionStatus = when {
             isExtractingAudio -> PipelineStageStatus(
@@ -511,13 +519,27 @@ class Version1AiDubbingPipeline(
             bengaliTtsStatus,
             PipelineStageStatus(
                 stage = DubbingPipelineStage.AUDIO_SYNCHRONIZATION,
-                readiness = ComponentReadiness.READY,
-                statusDetail = "Live original/dubbed volume mixing & millisecond sync controls active on Media3"
+                readiness = if (isLiveDubbingActive) ComponentReadiness.RUNNING else ComponentReadiness.READY,
+                statusDetail = if (isLiveDubbingActive) {
+                    "Live synchronized Bengali dubbing active on Media3 ExoPlayer with millisecond sync & speed lock"
+                } else {
+                    "Media3 synchronized Bengali audio timeline, speed matching & millisecond sync offset ready on-device"
+                }
             ),
             PipelineStageStatus(
                 stage = DubbingPipelineStage.BACKGROUND_AUDIO_PRESERVATION,
-                readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
-                statusDetail = "Preservation toggle wired · Awaiting offline stem separation model (Demucs)"
+                readiness = ComponentReadiness.READY,
+                statusDetail = buildString {
+                    if (preserveBackgroundAudio) {
+                        val duckPct = (bgmDuckingStrength * 100f).toInt().coerceIn(0, 95)
+                        append("Smart Audio Ducking active (${duckPct}% dialogue duck, 150ms smooth ramp)")
+                    } else {
+                        append("Smart Audio Ducking ready (currently paused by toggle)")
+                    }
+                    if (vocalAttenuationEnabled) {
+                        append(" · Mid-Side Stereo Vocal Reduction ON")
+                    }
+                }
             )
         )
     }

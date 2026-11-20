@@ -43,6 +43,8 @@ class DubbingPreferencesRepository(private val context: Context) {
         val DUBBED_VOLUME = floatPreferencesKey("dubbing_dubbed_volume")
         val SYNC_OFFSET_MS = longPreferencesKey("dubbing_sync_offset_ms")
         val PRESERVE_BACKGROUND = booleanPreferencesKey("dubbing_preserve_background")
+        val BGM_DUCKING_STRENGTH = floatPreferencesKey("dubbing_bgm_ducking_strength")
+        val VOCAL_ATTENUATION_ENABLED = booleanPreferencesKey("dubbing_vocal_attenuation_enabled")
         val CHARACTER_PROFILES_JSON = stringPreferencesKey("dubbing_character_profiles_json")
         val CHARACTER_PROFILES_INITIALIZED = booleanPreferencesKey("dubbing_characters_initialized")
         val MOVIE_SPEAKER_ASSIGNMENTS_JSON = stringPreferencesKey("dubbing_movie_speaker_assignments_json")
@@ -85,6 +87,8 @@ class DubbingPreferencesRepository(private val context: Context) {
             dubbedAudioVolume = (prefs[Keys.DUBBED_VOLUME] ?: 1.0f).coerceIn(0f, 1f),
             syncOffsetMs = (prefs[Keys.SYNC_OFFSET_MS] ?: 0L).coerceIn(-5_000L, 5_000L),
             preserveOriginalBackgroundAudio = prefs[Keys.PRESERVE_BACKGROUND] ?: true,
+            bgmDuckingStrength = (prefs[Keys.BGM_DUCKING_STRENGTH] ?: 0.80f).coerceIn(0f, 0.95f),
+            vocalAttenuationEnabled = prefs[Keys.VOCAL_ATTENUATION_ENABLED] ?: false,
             characterVoices = characters
         )
     }
@@ -150,6 +154,14 @@ class DubbingPreferencesRepository(private val context: Context) {
 
     suspend fun setPreserveBackgroundAudio(preserve: Boolean) {
         context.voxoraDubbingStore.edit { it[Keys.PRESERVE_BACKGROUND] = preserve }
+    }
+
+    suspend fun setBgmDuckingStrength(strength: Float) {
+        context.voxoraDubbingStore.edit { it[Keys.BGM_DUCKING_STRENGTH] = strength.coerceIn(0f, 0.95f) }
+    }
+
+    suspend fun setVocalAttenuationEnabled(enabled: Boolean) {
+        context.voxoraDubbingStore.edit { it[Keys.VOCAL_ATTENUATION_ENABLED] = enabled }
     }
 
     suspend fun saveCharacters(characters: List<CharacterVoiceProfile>) {

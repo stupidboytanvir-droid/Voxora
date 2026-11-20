@@ -137,6 +137,9 @@ fun PlayerScreen(
     val bengaliTtsInstalledFiles by viewModel.bengaliTtsInstalledFiles.collectAsStateWithLifecycle()
     val bengaliVoiceUiState by viewModel.bengaliVoiceUiState.collectAsStateWithLifecycle()
     val oneClickAiSetupState by viewModel.oneClickAiSetupState.collectAsStateWithLifecycle()
+    val liveDubbingState by viewModel.liveDubbingState.collectAsStateWithLifecycle()
+    val autoDubPipelineState by viewModel.autoDubPipelineState.collectAsStateWithLifecycle()
+    val dubbedExportState by viewModel.dubbedExportState.collectAsStateWithLifecycle()
     val animationsEnabled = !batterySaving.disableAnimations
 
     var controlsVisible by remember { mutableStateOf(true) }
@@ -687,8 +690,37 @@ fun PlayerScreen(
                     bengaliTtsInstalledFiles = bengaliTtsInstalledFiles,
                     bengaliVoiceUiState = bengaliVoiceUiState,
                     oneClickAiSetupState = oneClickAiSetupState,
+                    liveDubbingState = liveDubbingState,
+                    autoDubPipelineState = autoDubPipelineState,
+                    dubbedExportState = dubbedExportState,
                     onStartOneClickAiSetup = viewModel::startOneClickAiSetup,
                     onCancelOneClickAiSetup = viewModel::cancelOneClickAiSetup,
+                    onStartAutoDubVideo = viewModel::startAutoDubVideo,
+                    onCancelAutoDubVideo = viewModel::cancelAutoDubVideo,
+                    onExportDubbedMedia = viewModel::startDubbedExport,
+                    onCancelDubbedExport = viewModel::cancelDubbedExport,
+                    onOpenExportedMedia = { uriStr, mimeType ->
+                        runCatching {
+                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                setDataAndType(android.net.Uri.parse(uriStr), mimeType)
+                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(intent)
+                        }
+                    },
+                    onShareExportedMedia = { uriStr, mimeType, title ->
+                        runCatching {
+                            val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = mimeType
+                                putExtra(android.content.Intent.EXTRA_STREAM, android.net.Uri.parse(uriStr))
+                                putExtra(android.content.Intent.EXTRA_SUBJECT, title)
+                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(
+                                android.content.Intent.createChooser(shareIntent, "Share $title")
+                            )
+                        }
+                    },
                     onSetEnabled = viewModel::setDubbingEnabled,
                     onSelectSourceLanguage = viewModel::setDubbingSourceLanguage,
                     onSelectTargetLanguage = viewModel::setDubbingTargetLanguage,
@@ -696,8 +728,11 @@ fun PlayerScreen(
                     onOriginalVolumeChange = viewModel::setDubbingOriginalVolume,
                     onDubbedVolumeChange = viewModel::setDubbingVoiceVolume,
                     onAdjustSyncOffset = viewModel::adjustDubbingSyncOffset,
+                    onSetSyncOffsetMs = viewModel::setDubbingSyncOffsetMs,
                     onResetSyncOffset = viewModel::resetDubbingSyncOffset,
                     onPreserveBackgroundChange = viewModel::setPreserveBackgroundAudio,
+                    onBgmDuckingStrengthChange = viewModel::setBgmDuckingStrength,
+                    onVocalAttenuationChange = viewModel::setVocalAttenuationEnabled,
                     onAddCharacter = viewModel::addDubbingCharacter,
                     onUpdateCharacter = viewModel::updateDubbingCharacter,
                     onRemoveCharacter = viewModel::removeDubbingCharacter,

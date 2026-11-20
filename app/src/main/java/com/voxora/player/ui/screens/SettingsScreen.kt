@@ -697,7 +697,7 @@ fun SettingsScreen(
                             }
                         }
                         Text(
-                            text = "Built on AndroidX Media3 ExoPlayer, Jetpack Compose, Room, and Scoped Storage for private, responsive local playback.",
+                            text = "Built on AndroidX Media3 ExoPlayer, Jetpack Compose, Room, whisper.cpp, Sherpa-ONNX, and Google ML Kit for 100% private, offline playback and Bengali dubbing.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -716,7 +716,7 @@ fun SettingsScreen(
                                     tint = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = "AI Dubbing Architecture Ready — Multilingual voice dubbing, speaker detection, and background stem preservation arrive in a future release.",
+                                    text = "VOXORA Media Player v${BuildConfig.VERSION_NAME} — Full Offline AI Bengali Dubbing Ready: One-Click Auto-Dub, Multi-Speaker Character Mapping, Smart BGM Ducking, Live Sync Playback & Offline MP4/Audio Export.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )

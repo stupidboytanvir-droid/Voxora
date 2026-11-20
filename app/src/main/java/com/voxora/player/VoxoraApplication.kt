@@ -21,6 +21,9 @@ import com.voxora.player.dubbing.Version1AiDubbingPipeline
 import com.voxora.player.dubbing.VideoAudioExtractor
 import com.voxora.player.ai.diarization.DiarizationModelManager
 import com.voxora.player.ai.diarization.OfflineDiarizationEngine
+import com.voxora.player.ai.dubbing.AutoDubPipelineOrchestrator
+import com.voxora.player.ai.dubbing.DubbedTrackAssembler
+import com.voxora.player.ai.dubbing.DubbedVideoExporter
 import com.voxora.player.ai.translation.OfflineTranslationEngine
 import com.voxora.player.ai.translation.OfflineTranslationManager
 import com.voxora.player.ai.tts.BengaliTtsModelManager
@@ -67,6 +70,12 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         private set
     lateinit var offlineBengaliTtsEngine: OfflineBengaliTtsEngine
         private set
+    lateinit var dubbedTrackAssembler: DubbedTrackAssembler
+        private set
+    lateinit var autoDubPipelineOrchestrator: AutoDubPipelineOrchestrator
+        private set
+    lateinit var dubbedVideoExporter: DubbedVideoExporter
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -90,6 +99,20 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         offlineDiarizationEngine = OfflineDiarizationEngine(this, diarizationModelManager)
         bengaliTtsModelManager = BengaliTtsModelManager(this)
         offlineBengaliTtsEngine = OfflineBengaliTtsEngine(this, bengaliTtsModelManager)
+        dubbedTrackAssembler = DubbedTrackAssembler(this)
+        autoDubPipelineOrchestrator = AutoDubPipelineOrchestrator(
+            whisperSpeechEngine = whisperSpeechEngine,
+            diarizationModelManager = diarizationModelManager,
+            offlineDiarizationEngine = offlineDiarizationEngine,
+            offlineTranslationManager = offlineTranslationManager,
+            offlineTranslationEngine = offlineTranslationEngine,
+            translationCacheRepository = translationCacheRepository,
+            bengaliTtsModelManager = bengaliTtsModelManager,
+            offlineBengaliTtsEngine = offlineBengaliTtsEngine,
+            dubbingPreferencesRepository = dubbingPreferencesRepository,
+            trackAssembler = dubbedTrackAssembler
+        )
+        dubbedVideoExporter = DubbedVideoExporter(this, dubbedTrackAssembler)
     }
 
     override fun newImageLoader(): ImageLoader {

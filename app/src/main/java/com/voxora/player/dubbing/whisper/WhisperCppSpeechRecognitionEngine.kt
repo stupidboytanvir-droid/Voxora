@@ -250,13 +250,70 @@ class WhisperCppSpeechRecognitionEngine(
     fun unloadModel() {
         engineScope.launch {
             stopTranscription()
-            val installed = loadedModelInfo ?: modelManager.findInstalledModel()
-            unloadModelInternal()
-            _modelStatus.value = if (installed != null) {
-                WhisperModelStatus.InstalledUnloaded(installed)
-            } else {
-                WhisperModelStatus.NotInstalled
-            }
+            unloadNativeContextSuspending()
+        }
+    }
+
+    /**
+     * Loads the already-installed Whisper model into native memory if it is currently unloaded,
+     * failing honestly if no model file exists on disk.
+     */
+    suspend fun ensureInstalledModelLoaded(): Result<Unit> = withContext(Dispatchers.IO) {
+        if (isModelLoadedAndReady) return@withContext Result.success(Unit)
+        val installed = modelManager.findInstalledModel()
+            ?: return@withContext Result.failure(
+                IllegalStateException("Whisper base.en model is not installed. Run One-Click AI Setup first.")
+            )
+        loadInstalledModelInternal(installed)
+        if (isModelLoadedAndReady) {
+            Result.success(Unit)
+        } else {
+            val err = (_modelStatus.value as? WhisperModelStatus.Error)?.message
+                ?: "Failed to load Whisper base.en native context."
+            Result.failure(IllegalStateException(err))
+        }
+    }
+
+    /**
+     * Deterministically frees whisper.cpp native RAM between Auto-Dub pipeline stages
+     * to prevent OOM on mid-range phones while keeping the on-disk model marked as installed.
+     */
+    suspend fun unloadNativeContextSuspending() = withContext(Dispatchers.IO) {
+        val installed = loadedModelInfo ?: modelManager.findInstalledModel()
+        unloadModelInternal()
+        _modelStatus.value = if (installed != null) {
+            WhisperModelStatus.InstalledUnloaded(installed)
+        } else {
+            WhisperModelStatus.NotInstalled
+        }
+    }
+
+    /**
+     * Runs real offline transcription and suspends until completion, supporting clean cancellation.
+     */
+    suspend fun transcribeVideoSuspending(
+        mediaUriString: String,
+        videoTitle: String,
+        totalDurationMsHint: Long = 0L
+    ): Result<List<RecognizedSpeechSegment>> {
+        startVideoTranscription(mediaUriString, videoTitle, totalDurationMsHint)
+        val job = activeTranscriptionJob
+            ?: return Result.failure(
+                IllegalStateException(
+                    _transcriptionState.value.errorMessage ?: "Unable to start offline Whisper transcription."
+                )
+            )
+        try {
+            job.join()
+        } catch (ce: CancellationException) {
+            stopTranscription()
+            throw ce
+        }
+        val finalState = _transcriptionState.value
+        return if (!finalState.errorMessage.isNullOrBlank()) {
+            Result.failure(IllegalStateException(finalState.errorMessage))
+        } else {
+            Result.success(finalState.segments)
         }
     }
 

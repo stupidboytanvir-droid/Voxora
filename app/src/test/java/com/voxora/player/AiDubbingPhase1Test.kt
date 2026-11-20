@@ -51,7 +51,7 @@ class AiDubbingPhase1Test {
     }
 
     @Test
-    fun `pipeline honestly reports 2 ready on-device stages and 5 engine-pending stages`() {
+    fun `pipeline honestly reports 3 ready on-device stages and 4 model-dependent stages when offline models are absent`() {
         val pipeline = Version1AiDubbingPipeline()
         val sampleAudio = ExtractedAudioTrackInfo(
             uriString = "content://media/external/video/media/99",
@@ -71,15 +71,15 @@ class AiDubbingPhase1Test {
         val readyStages = stages.filter { it.readiness == ComponentReadiness.READY }.map { it.stage }
         assertTrue(DubbingPipelineStage.AUDIO_EXTRACTION in readyStages)
         assertTrue(DubbingPipelineStage.AUDIO_SYNCHRONIZATION in readyStages)
-        assertEquals(2, readyStages.size)
+        assertTrue(DubbingPipelineStage.BACKGROUND_AUDIO_PRESERVATION in readyStages)
+        assertEquals(3, readyStages.size)
 
         val pendingStages = stages.filter { it.readiness == ComponentReadiness.REQUIRES_AI_ENGINE }.map { it.stage }
-        assertEquals(5, pendingStages.size)
+        assertEquals(4, pendingStages.size)
         assertTrue(DubbingPipelineStage.ENGLISH_SPEECH_RECOGNITION in pendingStages)
         assertTrue(DubbingPipelineStage.SPEAKER_DIARIZATION in pendingStages)
         assertTrue(DubbingPipelineStage.ENGLISH_TO_BENGALI_TRANSLATION in pendingStages)
         assertTrue(DubbingPipelineStage.BENGALI_SPEECH_GENERATION in pendingStages)
-        assertTrue(DubbingPipelineStage.BACKGROUND_AUDIO_PRESERVATION in pendingStages)
     }
 
     @Test

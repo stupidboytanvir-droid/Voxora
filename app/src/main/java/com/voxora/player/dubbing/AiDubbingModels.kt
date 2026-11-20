@@ -139,6 +139,8 @@ data class DubbingSessionConfig(
     val dubbedAudioVolume: Float = 1.0f,
     val syncOffsetMs: Long = 0L,
     val preserveOriginalBackgroundAudio: Boolean = true,
+    val bgmDuckingStrength: Float = 0.80f,
+    val vocalAttenuationEnabled: Boolean = false,
     val autoDetectSourceLanguage: Boolean = false,
     val characterVoices: List<CharacterVoiceProfile> = DubbingVoiceCatalog.defaultCharacters()
 )
@@ -223,7 +225,7 @@ enum class DubbingPipelineStage(
     BACKGROUND_AUDIO_PRESERVATION(
         order = 7,
         title = "Background Music & SFX Preservation",
-        openSourceTarget = "Demucs / Spleeter Stem Separation (Offline)"
+        openSourceTarget = "Smart Audio Ducking (150ms Ramp) + Mid-Side Vocal Reduction (On-Device)"
     )
 }
 

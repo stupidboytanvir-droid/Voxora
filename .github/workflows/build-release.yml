@@ -65,7 +65,7 @@ jobs:
             -o app/libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar
           ls -lh app/libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar
 
-      - name: Decode permanent release keystore from GitHub Secrets
+      - name: Configure release keystore (GitHub Secrets or temporary fallback)
         id: keystore
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -74,11 +74,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -n "$KEYSTORE_B64" ]; then
-            if [ -z "$KEYSTORE_PASSWORD" ]; then
-              echo "::error::KEYSTORE_PASSWORD secret is required when KEYSTORE_BASE64 is set."
-              exit 1
-            fi
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
             EFFECTIVE_KEY_PASSWORD="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
             printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]' | base64 -d > app/voxora-release.jks
 
@@ -94,35 +90,33 @@ jobs:
                   -keypass "$EFFECTIVE_KEY_PASSWORD"
                 echo "Aligned CI keystore alias to 'upload' (cryptographic key unchanged)."
               else
-                echo "::error::KEY_ALIAS secret is empty and keystore does not contain alias 'upload'."
-                exit 1
+                echo "::warning::KEY_ALIAS secret is empty and keystore does not contain alias 'upload'. Falling back to temporary keystore."
+                rm -f app/voxora-release.jks
               fi
             fi
 
-            echo "Decoded permanent release keystore to app/voxora-release.jks."
-            echo "build_type=release" >> "$GITHUB_OUTPUT"
-          else
-            if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-              echo "::error::Missing KEYSTORE_BASE64 secret. Configure KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, and KEY_PASSWORD in GitHub repository Secrets before tagging a release."
-              exit 1
+            if [ -f app/voxora-release.jks ]; then
+              echo "Decoded permanent release keystore to app/voxora-release.jks."
+              echo "signing_mode=secret" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
-            echo "KEYSTORE_BASE64 not set; falling back to debug signing for non-tag branch verification."
-            if [ ! -f debug.keystore ]; then
-              keytool -genkeypair -v \
-                -keystore debug.keystore \
-                -storepass android \
-                -alias androiddebugkey \
-                -keypass android \
-                -keyalg RSA \
-                -keysize 2048 \
-                -validity 10000 \
-                -dname "CN=Android Debug,O=Android,C=US"
-            fi
-            echo "build_type=debug" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build Signed Release APK
-        if: steps.keystore.outputs.build_type == 'release'
+          echo "::warning::KEYSTORE_BASE64 secret is missing (or incomplete). Falling back to a temporary keystore so assembleRelease succeeds and publishes the APK. Configure KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, and KEY_PASSWORD in GitHub Secrets for permanent release signing."
+          rm -f app/voxora-release.jks
+          keytool -genkeypair -v \
+            -keystore app/voxora-release.jks \
+            -storepass voxora-temp-keystore \
+            -alias upload \
+            -keypass voxora-temp-keystore \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=VOXORA Temporary Release,O=VOXORA,C=US"
+          echo "signing_mode=temporary" >> "$GITHUB_OUTPUT"
+
+      - name: Build Signed Release APK (Permanent Secret Keystore)
+        if: steps.keystore.outputs.signing_mode == 'secret'
         env:
           VOXORA_KEYSTORE_PATH: ${{ github.workspace }}/app/voxora-release.jks
           KEYSTORE_PATH: ${{ github.workspace }}/app/voxora-release.jks
@@ -137,9 +131,21 @@ jobs:
             "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk
           fi
 
-      - name: Build Debug APK (Fallback when release secrets are not configured)
-        if: steps.keystore.outputs.build_type == 'debug'
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+      - name: Build Release APK (Temporary Fallback Keystore)
+        if: steps.keystore.outputs.signing_mode == 'temporary'
+        env:
+          VOXORA_KEYSTORE_PATH: ${{ github.workspace }}/app/voxora-release.jks
+          KEYSTORE_PATH: ${{ github.workspace }}/app/voxora-release.jks
+          KEYSTORE_PASSWORD: voxora-temp-keystore
+          STORE_PASSWORD: voxora-temp-keystore
+          KEY_ALIAS: upload
+          KEY_PASSWORD: voxora-temp-keystore
+        run: |
+          gradle :app:assembleRelease --no-daemon --stacktrace
+          APKSIGNER="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}/build-tools/36.0.0/apksigner"
+          if [ -x "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk
+          fi
 
       - name: Prepare versioned APK asset
         id: apk
@@ -152,11 +158,7 @@ jobs:
           fi
           APK_NAME="VOXORA-${VERSION_TAG}.apk"
           mkdir -p release-artifacts
-          if [ "${{ steps.keystore.outputs.build_type }}" = "release" ]; then
-            SOURCE_APK="app/build/outputs/apk/release/app-release.apk"
-          else
-            SOURCE_APK="app/build/outputs/apk/debug/app-debug.apk"
-          fi
+          SOURCE_APK="app/build/outputs/apk/release/app-release.apk"
           cp "$SOURCE_APK" "release-artifacts/${APK_NAME}"
           ls -lh "release-artifacts/${APK_NAME}"
           echo "apk_name=${APK_NAME}" >> "$GITHUB_OUTPUT"

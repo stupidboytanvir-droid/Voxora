@@ -1,4 +1,5 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.net.URI
 
 plugins {
   alias(libs.plugins.android.application)
@@ -102,7 +103,7 @@ if (!sherpaOnnxAarFile.exists()) {
   sherpaOnnxAarFile.parentFile.mkdirs()
   val aarUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.2/sherpa-onnx-static-link-onnxruntime-2.0.2.aar"
   val tmpFile = file("libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar.part")
-  java.net.URI(aarUrl).toURL().openStream().use { input ->
+  URI(aarUrl).toURL().openStream().use { input ->
     tmpFile.outputStream().use { output -> input.copyTo(output) }
   }
   tmpFile.renameTo(sherpaOnnxAarFile)

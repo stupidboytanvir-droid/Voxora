@@ -260,7 +260,7 @@ fun AiDubbingStudioSheet(
                             border = BorderStroke(1.dp, VoxoraElectricPurple)
                         ) {
                             Text(
-                                text = "v2.1.2",
+                                text = "v2.2.0",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = VoxoraElectricPurpleBright,
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
@@ -691,7 +691,7 @@ private fun DubbingControlsTab(
                             text = if (config.useSherpaVitsExperimental) {
                                 "EXPERIMENTAL · NATIVE ONNX"
                             } else {
-                                "DEFAULT · ANDROID OFFLINE TTS (ZERO CRASH)"
+                                "DEFAULT · EDGE NEURAL TTS + OFFLINE FALLBACK"
                             },
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                             color = if (config.useSherpaVitsExperimental) Color(0xFFFBBF24) else Color(0xFF4ADE80),
@@ -702,7 +702,7 @@ private fun DubbingControlsTab(
                         text = if (config.useSherpaVitsExperimental) {
                             "Uses Sherpa-ONNX VITS neural model (~109 MB). May use high native RAM on some devices."
                         } else {
-                            "Uses Android's built-in offline Bengali Text-to-Speech (bn-BD / bn-IN) with male/female pitch variation and near-zero RAM."
+                            "Free human-like Bengali Neural voices (Nabanita & Pradeep) with auto Male/Female detection, expressive prosody, and automatic offline Android TTS fallback."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.White.copy(alpha = 0.72f)

@@ -63,7 +63,11 @@ class AiDubbingPhase1Test {
             bitrateBps = 192_000,
             durationMs = 180_000L
         )
-        val stages = pipeline.buildStageStatuses(sampleAudio, isExtractingAudio = false)
+        val stages = pipeline.buildStageStatuses(
+            extractedAudioInfo = sampleAudio,
+            isExtractingAudio = false,
+            useSherpaVitsExperimental = true
+        )
 
         assertEquals(7, stages.size)
         assertEquals(DubbingPipelineStage.entries.size, stages.size)

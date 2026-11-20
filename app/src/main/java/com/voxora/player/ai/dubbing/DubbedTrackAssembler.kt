@@ -150,7 +150,9 @@ class DubbedTrackAssembler(private val context: Context) {
                         }
                     }
 
-                    // Mix any segment overlapping [cursorFrame, chunkEndFrame)
+                    // Mix any segment overlapping [cursorFrame, chunkEndFrame), hard-stopping cleanly
+                    // with a 25ms fade-out before the next dialogue segment begins so lines never clash.
+                    val fadeFrames = ((targetSampleRate * CUTOFF_FADE_MS) / 1_000L).toInt().coerceAtLeast(1)
                     for (idx in indexed.indices) {
                         val meta = indexed[idx]
                         if (meta.startFrame >= chunkEndFrame) break
@@ -159,15 +161,30 @@ class DubbedTrackAssembler(private val context: Context) {
                         val samples = activeDecoded.getOrPut(idx) {
                             decodeWavToMonoFloatAtRate(meta.file, targetSampleRate)
                         }
-                        val actualEnd = meta.startFrame + samples.size
+                        val nextStartFrame = indexed.getOrNull(idx + 1)?.startFrame
+                        val naturalEnd = meta.startFrame + samples.size
+                        val cappedEnd = if (nextStartFrame != null && nextStartFrame > meta.startFrame) {
+                            minOf(naturalEnd, nextStartFrame)
+                        } else {
+                            naturalEnd
+                        }
+                        val wasTruncated = cappedEnd < naturalEnd
                         val overlapStart = maxOf(cursorFrame, meta.startFrame)
-                        val overlapEnd = minOf(chunkEndFrame, actualEnd)
+                        val overlapEnd = minOf(chunkEndFrame, cappedEnd)
                         if (overlapStart < overlapEnd) {
                             val count = (overlapEnd - overlapStart).toInt()
                             val dstStart = (overlapStart - cursorFrame).toInt()
                             val srcStart = (overlapStart - meta.startFrame).toInt()
+                            val fadeStartAbs = (cappedEnd - fadeFrames).coerceAtLeast(meta.startFrame)
                             for (k in 0 until count) {
-                                mixBuffer[dstStart + k] += samples[srcStart + k]
+                                val absFrame = overlapStart + k
+                                var sample = samples[srcStart + k]
+                                if (wasTruncated && absFrame >= fadeStartAbs) {
+                                    val rem = (cappedEnd - absFrame).coerceAtLeast(0L)
+                                    val gain = (rem.toFloat() / fadeFrames.toFloat()).coerceIn(0f, 1f)
+                                    sample *= gain
+                                }
+                                mixBuffer[dstStart + k] += sample
                             }
                         }
                     }
@@ -252,8 +269,12 @@ class DubbedTrackAssembler(private val context: Context) {
             val mixBuffer = FloatArray(totalFrames)
             var mixedCount = 0
 
-            for (seg in segments) {
+            val sortedSegments = segments.sortedBy { it.startMs }
+            val fadeFrames = ((targetSampleRate * CUTOFF_FADE_MS) / 1_000L).toInt().coerceAtLeast(1)
+
+            for (idx in sortedSegments.indices) {
                 coroutineContext.ensureActive()
+                val seg = sortedSegments[idx]
                 val wavFile = File(seg.audioFilePath)
                 if (!wavFile.exists() || wavFile.length() < 44L) continue
                 val samples = decodeWavToMonoFloatAtRate(wavFile, targetSampleRate)
@@ -265,9 +286,31 @@ class DubbedTrackAssembler(private val context: Context) {
                 val dstStart = if (startFrame < 0) 0 else startFrame
                 if (dstStart >= totalFrames || srcStart >= samples.size) continue
 
-                val copyLen = minOf(samples.size - srcStart, totalFrames - dstStart)
+                // Hard-stop strictly before the next segment starts (with clean 25ms fade-out)
+                val nextSeg = sortedSegments.getOrNull(idx + 1)
+                val nextDstFrame = if (nextSeg != null && nextSeg.startMs > seg.startMs) {
+                    (((nextSeg.startMs - safeStartMs) * targetSampleRate.toLong()) / 1_000L)
+                        .toInt()
+                        .coerceIn(dstStart, totalFrames)
+                } else {
+                    totalFrames
+                }
+
+                val naturalLen = samples.size - srcStart
+                val availableBeforeNext = (nextDstFrame - dstStart).coerceAtLeast(0)
+                val copyLen = minOf(naturalLen, totalFrames - dstStart, availableBeforeNext)
+                if (copyLen <= 0) continue
+
+                val wasTruncatedByNext = copyLen < naturalLen
+                val fadeStartOffset = (copyLen - fadeFrames).coerceAtLeast(0)
                 for (i in 0 until copyLen) {
-                    mixBuffer[dstStart + i] += samples[srcStart + i]
+                    var sample = samples[srcStart + i]
+                    if (wasTruncatedByNext && i >= fadeStartOffset) {
+                        val rem = (copyLen - i).coerceAtLeast(0)
+                        val gain = (rem.toFloat() / fadeFrames.toFloat()).coerceIn(0f, 1f)
+                        sample *= gain
+                    }
+                    mixBuffer[dstStart + i] += sample
                 }
                 mixedCount++
             }
@@ -334,6 +377,7 @@ class DubbedTrackAssembler(private val context: Context) {
     companion object {
         const val DEFAULT_LIVE_SAMPLE_RATE = 22_050
         const val EXPORT_SAMPLE_RATE = 44_100
+        const val CUTOFF_FADE_MS = 25L
 
         data class WavHeaderInfo(
             val sampleRate: Int,

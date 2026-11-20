@@ -11,6 +11,7 @@ import com.voxora.player.ai.translation.OfflineTranslationEngine
 import com.voxora.player.ai.translation.OfflineTranslationManager
 import com.voxora.player.ai.translation.TranslatedSegment
 import com.voxora.player.ai.translation.TranslationModelState
+import com.voxora.player.ai.tts.AudioProsodyAnalyzer
 import com.voxora.player.ai.tts.BengaliTtsModelManager
 import com.voxora.player.ai.tts.BengaliTtsModelState
 import com.voxora.player.ai.tts.DubbedAudioSegment
@@ -410,6 +411,16 @@ class AutoDubPipelineOrchestrator(
                 )
             }
 
+            // Zero-extra-RAM acoustic analysis directly on the 30s 16 kHz PCM chunk:
+            // estimates per-segment F0 (>165 Hz -> Female, else Male) + RMS/pitch expressive prosody
+            val chunkAcousticProfiles = runCatching {
+                AudioProsodyAnalyzer.analyzeChunkSegments(
+                    samples16kMono = pcmChunk.samples16kMono,
+                    windowStartMs = windowStartMs,
+                    segments = translatedScoped.map { seg -> Triple(seg.index, seg.startMs, seg.endMs) }
+                )
+            }.getOrDefault(emptyMap())
+
             // Prevent native memory overlap: release Whisper native C++ context before TTS synthesis
             // whenever RAM is low or experimental Sherpa-ONNX VITS is enabled.
             if (shouldReleaseWhisperBeforeTts(useSherpaVitsExperimental)) {
@@ -417,16 +428,17 @@ class AutoDubPipelineOrchestrator(
             }
             runCatching { offlineDiarizationEngine.release() }
 
-            // 5. Offline Bengali Voice Synthesis (Default: Android Built-in Offline TTS; Optional: Sherpa-ONNX VITS)
+            // 5. Bengali Voice Synthesis (Default: Free Edge Neural TTS with Auto Gender & Expressive Prosody
+            //    + automatic offline Android TTS fallback; Optional: Sherpa-ONNX VITS)
             val ttsStageIndex = totalStages
-            val ttsEngineLabel = if (useSherpaVitsExperimental) "Sherpa VITS (Exp)" else "Android Bengali TTS"
+            val ttsEngineLabel = if (useSherpaVitsExperimental) "Sherpa VITS (Exp)" else "Edge Neural Bengali TTS"
             coroutineContext.ensureActive()
             onStageProgress(
                 AutoDubStage.SYNTHESIZING_BENGALI,
                 ttsStageIndex,
                 totalStages,
                 0.10f,
-                "$chunkLabel · Synthesizing Bengali voice via $ttsEngineLabel (${translatedScoped.size} line(s))..."
+                "$chunkLabel · Synthesizing expressive Bengali voice via $ttsEngineLabel (${translatedScoped.size} line(s))..."
             )
 
             val dubbedSegments = try {
@@ -435,6 +447,7 @@ class AutoDubPipelineOrchestrator(
                     translatedSegments = translatedScoped,
                     characters = updatedCharacters,
                     segmentCharacterOverrides = chunkSegmentCharMap,
+                    acousticProfiles = chunkAcousticProfiles,
                     useSherpaVitsExperimental = useSherpaVitsExperimental,
                     onSegmentSynthesized = { completed, total, _ ->
                         val frac = if (total > 0) (completed.toFloat() / total.toFloat()) * 0.85f else 0.5f
@@ -443,7 +456,7 @@ class AutoDubPipelineOrchestrator(
                             ttsStageIndex,
                             totalStages,
                             frac.coerceIn(0.10f, 0.88f),
-                            "$chunkLabel · Generating Bengali voice ($completed/$total)..."
+                            "$chunkLabel · Generating Bengali Neural voice ($completed/$total)..."
                         )
                     }
                 ).getOrThrow()
@@ -735,7 +748,7 @@ class AutoDubPipelineOrchestrator(
                     stageLabel = if (useSherpaVitsExperimental) {
                         "Stage 4/4: Synthesizing Bengali voices (Sherpa VITS Experimental)..."
                     } else {
-                        "Stage 4/4: Synthesizing Bengali voices (Android Offline TTS)..."
+                        "Stage 4/4: Synthesizing Bengali voices (Edge Neural TTS)..."
                     },
                     stageProgressFraction = 0.05f
                 )

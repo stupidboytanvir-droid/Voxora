@@ -62,7 +62,7 @@ class DubbingPreferencesRepository(private val context: Context) {
 
         val outputMode = prefs[Keys.OUTPUT_MODE]?.let { name ->
             DubbingAudioOutputMode.entries.firstOrNull { it.name == name }
-        } ?: DubbingAudioOutputMode.ORIGINAL_AUDIO
+        } ?: DubbingAudioOutputMode.BENGALI_DUBBED_MIX
 
         val isInitialized = prefs[Keys.CHARACTER_PROFILES_INITIALIZED] ?: false
         val rawCharacters = prefs[Keys.CHARACTER_PROFILES_JSON]
@@ -89,7 +89,7 @@ class DubbingPreferencesRepository(private val context: Context) {
             dubbedAudioVolume = (prefs[Keys.DUBBED_VOLUME] ?: 1.0f).coerceIn(0f, 1f),
             syncOffsetMs = (prefs[Keys.SYNC_OFFSET_MS] ?: 0L).coerceIn(-5_000L, 5_000L),
             preserveOriginalBackgroundAudio = prefs[Keys.PRESERVE_BACKGROUND] ?: true,
-            bgmDuckingStrength = (prefs[Keys.BGM_DUCKING_STRENGTH] ?: 0.80f).coerceIn(0f, 0.95f),
+            bgmDuckingStrength = (prefs[Keys.BGM_DUCKING_STRENGTH] ?: 0.95f).coerceIn(0f, 0.95f),
             vocalAttenuationEnabled = prefs[Keys.VOCAL_ATTENUATION_ENABLED] ?: false,
             fastMovieModeEnabled = prefs[Keys.FAST_MOVIE_MODE] ?: true,
             useSherpaVitsExperimental = prefs[Keys.USE_SHERPA_VITS_EXPERIMENTAL] ?: false,

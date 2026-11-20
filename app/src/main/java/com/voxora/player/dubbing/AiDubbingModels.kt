@@ -31,9 +31,9 @@ enum class DubbingAudioOutputMode(
         description = "Plays the unmodified original video audio track"
     ),
     BENGALI_DUBBED_MIX(
-        label = "Bengali Dubbed + Original Mix",
-        shortLabel = "বাংলা Mix",
-        description = "Layers Bengali character voices over preserved background audio"
+        label = "Bengali Dubbed + Smart Ducking",
+        shortLabel = "বাংলা Smart Duck",
+        description = "Drops original speech to 5% during Bengali lines and smoothly restores BGM to 85% in silence"
     ),
     BENGALI_DUBBED_ONLY(
         label = "Bengali Dubbed Audio",
@@ -134,12 +134,12 @@ data class DubbingSessionConfig(
     val isDubbingEnabled: Boolean = false,
     val sourceLanguage: DubbingLanguage = DubbingLanguageRegistry.ENGLISH,
     val targetLanguage: DubbingLanguage = DubbingLanguageRegistry.BENGALI,
-    val audioOutputMode: DubbingAudioOutputMode = DubbingAudioOutputMode.ORIGINAL_AUDIO,
+    val audioOutputMode: DubbingAudioOutputMode = DubbingAudioOutputMode.BENGALI_DUBBED_MIX,
     val originalAudioVolume: Float = 1.0f,
     val dubbedAudioVolume: Float = 1.0f,
     val syncOffsetMs: Long = 0L,
     val preserveOriginalBackgroundAudio: Boolean = true,
-    val bgmDuckingStrength: Float = 0.80f,
+    val bgmDuckingStrength: Float = 0.95f,
     val vocalAttenuationEnabled: Boolean = false,
     val fastMovieModeEnabled: Boolean = true,
     val useSherpaVitsExperimental: Boolean = false,

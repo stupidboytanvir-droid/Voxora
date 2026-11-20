@@ -377,27 +377,46 @@ class DubbingPlaybackController(
             }
         }
 
-        // Smart Audio Ducking calculation at current video position (only duck when dubbed chunk is available)
-        val duckGain = if (inDubTrackRange && config.preserveOriginalBackgroundAudio) {
-            BackgroundAudioPreserver.computeDuckingGain(
+        // Smart Audio Ducking calculation at current video position (only duck when dubbed chunk is available):
+        // Drops aggressively to 0.05f (5%) during every Bengali dubbed line and smoothly restores to 0.85f during silence/BGM.
+        val smartDuckVol = if (inDubTrackRange && config.preserveOriginalBackgroundAudio) {
+            BackgroundAudioPreserver.computeSmartDuckingVolume(
                 positionMs = videoPosMs,
                 windows = currentDuckingWindows,
                 duckingStrength = config.bgmDuckingStrength,
+                silenceBgmVolume = BackgroundAudioPreserver.DEFAULT_SILENCE_BGM_VOLUME,
                 fadeMs = BackgroundAudioPreserver.DEFAULT_FADE_MS
             )
         } else {
-            1.0f
+            BackgroundAudioPreserver.DEFAULT_SILENCE_BGM_VOLUME
         }
 
-        val isDuckedNow = config.preserveOriginalBackgroundAudio && duckGain < 0.95f
+        val isDuckedNow = inDubTrackRange &&
+            config.preserveOriginalBackgroundAudio &&
+            smartDuckVol < (BackgroundAudioPreserver.DEFAULT_SILENCE_BGM_VOLUME - 0.05f)
+
         val effectiveOrigVol = when (config.audioOutputMode) {
             DubbingAudioOutputMode.BENGALI_DUBBED_MIX -> {
-                (config.originalAudioVolume * duckGain).coerceIn(0f, 1f)
+                if (inDubTrackRange) {
+                    if (config.preserveOriginalBackgroundAudio) {
+                        (config.originalAudioVolume * smartDuckVol).coerceIn(0f, 1f)
+                    } else {
+                        // Even if BGM preservation is toggled off, suppress English clash during active dialogue
+                        val floor = if (findActiveSegmentAt(videoPosMs, config.syncOffsetMs) != null) {
+                            BackgroundAudioPreserver.DEFAULT_DUCKED_DIALOGUE_VOLUME
+                        } else {
+                            BackgroundAudioPreserver.DEFAULT_SILENCE_BGM_VOLUME
+                        }
+                        (config.originalAudioVolume * floor).coerceIn(0f, 1f)
+                    }
+                } else {
+                    config.originalAudioVolume.coerceIn(0f, 1f)
+                }
             }
             DubbingAudioOutputMode.BENGALI_DUBBED_ONLY -> {
                 if (config.preserveOriginalBackgroundAudio) {
                     // Gently keep BGM between dialogue while suppressing English dialogue lines
-                    val bgmScale = if (isDuckedNow) 0.06f else 0.30f
+                    val bgmScale = if (isDuckedNow) 0.05f else 0.30f
                     (config.originalAudioVolume * bgmScale).coerceIn(0f, 1f)
                 } else {
                     0f
@@ -495,9 +514,9 @@ class DubbingPlaybackController(
     }
 
     companion object {
-        private const val ACTIVE_SYNC_INTERVAL_MS = 40L
+        private const val ACTIVE_SYNC_INTERVAL_MS = 35L
         private const val IDLE_SYNC_INTERVAL_MS = 250L
-        private const val DRIFT_TOLERANCE_MS = 120L
+        private const val DRIFT_TOLERANCE_MS = 85L
         const val ROLLING_CHUNK_DURATION_MS = 30_000L
     }
 }

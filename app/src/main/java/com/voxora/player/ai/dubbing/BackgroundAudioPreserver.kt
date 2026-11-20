@@ -19,7 +19,9 @@ import kotlin.math.tanh
 object BackgroundAudioPreserver {
 
     const val DEFAULT_FADE_MS = 150L
-    const val DEFAULT_DUCKING_STRENGTH = 0.80f
+    const val DEFAULT_DUCKING_STRENGTH = 0.95f
+    const val DEFAULT_DUCKED_DIALOGUE_VOLUME = 0.05f
+    const val DEFAULT_SILENCE_BGM_VOLUME = 0.85f
     const val MIN_DUCKING_STRENGTH = 0.0f
     const val MAX_DUCKING_STRENGTH = 0.95f
     const val DEFAULT_VOCAL_ATTENUATION = 0.65f
@@ -122,6 +124,39 @@ object BackgroundAudioPreserver {
             }
         }
         return minGain.coerceIn(duckedFloor, 1.0f)
+    }
+
+    /**
+     * Computes clean non-overlapping Smart Ducking volume for live Bengali Dubbed playback:
+     * - During active Bengali dialogue windows: drops aggressively to `duckedFloor = (1 - duckingStrength)`
+     *   (default `0.05f` = 5% at 95% strength) so original English speech never clashes with Bengali audio.
+     * - During silence / BGM between lines: smoothly restores to [silenceBgmVolume] (default `0.85f` = 85%).
+     */
+    fun computeSmartDuckingVolume(
+        positionMs: Long,
+        windows: List<DialogueDuckingWindow>,
+        duckingStrength: Float = DEFAULT_DUCKING_STRENGTH,
+        silenceBgmVolume: Float = DEFAULT_SILENCE_BGM_VOLUME,
+        fadeMs: Long = DEFAULT_FADE_MS
+    ): Float {
+        val ceiling = silenceBgmVolume.coerceIn(0.05f, 1.0f)
+        val clampedStrength = duckingStrength.coerceIn(MIN_DUCKING_STRENGTH, MAX_DUCKING_STRENGTH)
+        if (windows.isEmpty() || clampedStrength <= 0.001f) return ceiling
+
+        val duckedFloor = (1.0f - clampedStrength).coerceIn(DEFAULT_DUCKED_DIALOGUE_VOLUME, ceiling)
+        val rawGain = computeDuckingGain(
+            positionMs = positionMs,
+            windows = windows,
+            duckingStrength = clampedStrength,
+            fadeMs = fadeMs
+        )
+        // Map normalized [duckedFloor, 1.0f] cleanly onto [duckedFloor, ceiling]
+        val normalized = if (1.0f - duckedFloor > 0.0005f) {
+            ((rawGain - duckedFloor) / (1.0f - duckedFloor)).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+        return (duckedFloor + (ceiling - duckedFloor) * normalized).coerceIn(duckedFloor, ceiling)
     }
 
     /**

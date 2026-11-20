@@ -350,6 +350,15 @@ class PlayerViewModel(
                 statusMessage = "Experimental Sherpa-ONNX VITS Bengali voice Ready. Preview plays offline VITS Bengali speech.",
                 activePreviewCharacterId = activeNeuralCharId
             )
+        } else if (!config.useSherpaVitsExperimental) {
+            systemTtsState.copy(
+                isChecking = false,
+                isRealTtsEngineAvailable = true,
+                isBengaliVoiceSupported = true,
+                matchedLocaleTag = "bn-BD-Neural",
+                statusMessage = "Microsoft Edge Neural Bengali TTS Ready (Nabanita & Pradeep) · Automatic offline Android TTS fallback.",
+                activePreviewCharacterId = activeNeuralCharId
+            )
         } else {
             systemTtsState
         }
@@ -838,7 +847,9 @@ class PlayerViewModel(
     }
 
     fun previewCharacterVoice(profile: CharacterVoiceProfile) {
-        if (dubbingConfigFlow.value.useSherpaVitsExperimental && bengaliTtsModelState.value is BengaliTtsModelState.Ready) {
+        val useSherpaVits = dubbingConfigFlow.value.useSherpaVitsExperimental
+        val canUseUnifiedPreview = !useSherpaVits || bengaliTtsModelState.value is BengaliTtsModelState.Ready
+        if (canUseUnifiedPreview) {
             if (_activeNeuralPreviewCharacterId.value == profile.characterId) {
                 stopVoicePreview()
                 return
@@ -850,7 +861,7 @@ class PlayerViewModel(
                 val synthResult = offlineBengaliTtsEngine.synthesizeCharacterPreview(
                     profile = profile,
                     sampleText = OfflineBengaliTtsEngine.DEFAULT_BENGALI_PREVIEW_PHRASE,
-                    useSherpaVitsExperimental = true
+                    useSherpaVitsExperimental = useSherpaVits
                 )
                 synthResult.fold(
                     onSuccess = { wavFile ->
@@ -1596,7 +1607,7 @@ class PlayerViewModel(
         val useSherpaVits = dubbingConfigFlow.value.useSherpaVitsExperimental
         if (useSherpaVits && bengaliTtsModelState.value !is BengaliTtsModelState.Ready) {
             _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
-                errorMessage = "Sherpa-ONNX VITS (Experimental) Model Required / Not Installed: Download the VITS model pack or turn OFF Experimental VITS to use Android built-in Bengali TTS."
+                errorMessage = "Sherpa-ONNX VITS (Experimental) Model Required / Not Installed: Download the VITS model pack or turn OFF Experimental VITS to use Edge Neural Bengali TTS."
             )
             return
         }
@@ -1619,7 +1630,7 @@ class PlayerViewModel(
             statusMessage = if (useSherpaVits) {
                 "Initializing experimental Sherpa-ONNX VITS Bengali voice..."
             } else {
-                "Initializing Android built-in offline Bengali TTS (bn-BD / bn-IN)..."
+                "Synthesizing Bengali Neural voices (Edge TTS · offline fallback ready)..."
             },
             errorMessage = null,
             activeVideoUri = uri,

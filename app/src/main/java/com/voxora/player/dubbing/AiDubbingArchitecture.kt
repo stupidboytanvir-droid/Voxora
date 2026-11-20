@@ -285,7 +285,7 @@ interface AiDubbingPipeline {
         isSynthesizingBengaliVoice: Boolean = false,
         isLiveDubbingActive: Boolean = false,
         preserveBackgroundAudio: Boolean = true,
-        bgmDuckingStrength: Float = 0.80f,
+        bgmDuckingStrength: Float = 0.95f,
         vocalAttenuationEnabled: Boolean = false
     ): List<PipelineStageStatus>
 
@@ -492,13 +492,13 @@ class Version1AiDubbingPipeline(
                 statusDetail = if (useSherpaVitsExperimental) {
                     "Synthesizing Bengali character voices offline via Sherpa-ONNX VITS (Experimental)..."
                 } else {
-                    "Synthesizing Bengali character voices offline via Android built-in TextToSpeech..."
+                    "Synthesizing expressive Bengali Neural voices via Microsoft Edge TTS (offline fallback ready)..."
                 }
             )
             !useSherpaVitsExperimental -> PipelineStageStatus(
                 stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
                 readiness = ComponentReadiness.READY,
-                statusDetail = "Android built-in offline Bengali TTS (bn-BD / bn-IN) active by default · Near-zero RAM & zero native crash"
+                statusDetail = "Microsoft Edge Neural Bengali TTS (Nabanita & Pradeep · Auto Gender & Prosody) + offline Android TTS fallback"
             )
             bengaliTtsModelState is BengaliTtsModelState.Ready -> PipelineStageStatus(
                 stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,

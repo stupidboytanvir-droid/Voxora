@@ -145,7 +145,7 @@ fun BengaliVoiceTtsSection(
                                 text = if (useSherpaVitsExperimental) {
                                     "Sherpa-ONNX VITS (Experimental)"
                                 } else {
-                                    "Android Built-in Bengali TTS"
+                                    "Edge Neural Bengali TTS"
                                 },
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
                                 color = Color.White
@@ -154,7 +154,7 @@ fun BengaliVoiceTtsSection(
                                 text = if (useSherpaVitsExperimental) {
                                     "Optional native ONNX neural model (~109 MB)"
                                 } else {
-                                    "Default · 100% Offline · bn-BD / bn-IN · Near-Zero RAM"
+                                    "Default · Free Neural (bn-BD / bn-IN) · Auto Gender & Prosody · Offline Fallback"
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.White.copy(alpha = 0.72f)
@@ -170,7 +170,7 @@ fun BengaliVoiceTtsSection(
                         shape = RoundedCornerShape(8.dp)
                     ) {
                         Text(
-                            text = if (useSherpaVitsExperimental) "EXPERIMENTAL" else "READY · DEFAULT",
+                            text = if (useSherpaVitsExperimental) "EXPERIMENTAL" else "NEURAL · DEFAULT",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                             color = if (useSherpaVitsExperimental) Color(0xFFFBBF24) else Color(0xFF4ADE80),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
@@ -192,7 +192,7 @@ fun BengaliVoiceTtsSection(
                             color = Color.White
                         )
                         Text(
-                            text = "Keep OFF for crash-free offline Bengali dubbing via Android TextToSpeech with male/female pitch variation.",
+                            text = "Keep OFF to use expressive Microsoft Edge Neural Bengali voices (auto Male/Female + emotion matching) with automatic offline Android TTS fallback.",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.68f)
                         )

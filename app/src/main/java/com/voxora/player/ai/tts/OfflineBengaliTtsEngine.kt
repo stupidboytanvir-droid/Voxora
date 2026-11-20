@@ -36,6 +36,7 @@ class OfflineBengaliTtsEngine(
     private val modelManager: BengaliTtsModelManager
 ) {
     private val systemBengaliTtsEngine = AndroidSystemBengaliTtsEngine(context)
+    private val edgeNeuralTtsEngine = EdgeNeuralTtsEngine(context, systemBengaliTtsEngine)
     private val nativeMutex = Mutex()
     private val cancelRequested = AtomicBoolean(false)
 
@@ -47,6 +48,7 @@ class OfflineBengaliTtsEngine(
 
     fun requestCancel() {
         cancelRequested.set(true)
+        edgeNeuralTtsEngine.requestCancel()
         systemBengaliTtsEngine.requestCancel()
     }
 
@@ -61,9 +63,10 @@ class OfflineBengaliTtsEngine(
      * Synthesizes all [translatedSegments] into per-line WAV files inside
      * `cacheDir/voxora_dub/<videoHash>/seg_<index>.wav`.
      *
-     * - Default (`useSherpaVitsExperimental = false`): uses Android's built-in offline
-     *   [android.speech.tts.TextToSpeech] (`bn-BD` / `bn-IN`) via `synthesizeToFile` — zero native
-     *   SIGSEGV crash risk and near-zero RAM usage.
+     * - Default (`useSherpaVitsExperimental = false`): uses free Microsoft Edge Neural Bengali TTS
+     *   (`bn-BD-NabanitaNeural` / `bn-BD-PradeepNeural` / `bn-IN-TanishaaNeural` / `bn-IN-BashkarNeural`)
+     *   with expressive SSML prosody, auto F0 gender matching, and strict lip-sync rate clamping,
+     *   automatically falling back to offline Android [android.speech.tts.TextToSpeech] when offline.
      * - Experimental (`useSherpaVitsExperimental = true`): uses Sherpa-ONNX VITS `OfflineTts`.
      */
     suspend fun synthesizeSegments(
@@ -71,16 +74,18 @@ class OfflineBengaliTtsEngine(
         translatedSegments: List<TranslatedSegment>,
         characters: List<CharacterVoiceProfile>,
         segmentCharacterOverrides: Map<Int, String> = emptyMap(),
+        acousticProfiles: Map<Int, SegmentAcousticProfile> = emptyMap(),
         useSherpaVitsExperimental: Boolean = false,
         onSegmentSynthesized: (completedCount: Int, totalCount: Int, segment: DubbedAudioSegment) -> Unit = { _, _, _ -> },
         onStatusUpdate: (String) -> Unit = {}
     ): Result<List<DubbedAudioSegment>> {
         if (!useSherpaVitsExperimental) {
-            return systemBengaliTtsEngine.synthesizeSegments(
+            return edgeNeuralTtsEngine.synthesizeSegments(
                 videoUri = videoUri,
                 translatedSegments = translatedSegments,
                 characters = characters,
                 segmentCharacterOverrides = segmentCharacterOverrides,
+                acousticProfiles = acousticProfiles,
                 onSegmentSynthesized = onSegmentSynthesized,
                 onStatusUpdate = onStatusUpdate
             )
@@ -182,7 +187,7 @@ class OfflineBengaliTtsEngine(
         useSherpaVitsExperimental: Boolean = false
     ): Result<File> {
         if (!useSherpaVitsExperimental) {
-            return systemBengaliTtsEngine.synthesizeCharacterPreview(
+            return edgeNeuralTtsEngine.synthesizeCharacterPreview(
                 profile = profile,
                 sampleText = sampleText
             )
@@ -231,6 +236,7 @@ class OfflineBengaliTtsEngine(
      */
     fun release() {
         cancelRequested.set(true)
+        edgeNeuralTtsEngine.release()
         systemBengaliTtsEngine.release()
         val instance = activeTts
         activeTts = null

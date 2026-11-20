@@ -60,6 +60,7 @@ import com.voxora.player.ai.tts.BengaliTtsModelState
 import com.voxora.player.ai.tts.BengaliTtsSlotAvailability
 import com.voxora.player.ai.tts.BengaliVoiceGenerationUiState
 import com.voxora.player.ai.tts.DubbedAudioSegment
+import com.voxora.player.ai.tts.TtsEngineDiagnosticState
 import com.voxora.player.dubbing.CharacterVoiceProfile
 import com.voxora.player.dubbing.whisper.TranscriptExporter
 import com.voxora.player.ui.theme.TabularTimeStyle
@@ -83,6 +84,7 @@ fun BengaliVoiceTtsSection(
     translatedSegmentCount: Int,
     useSherpaVitsExperimental: Boolean = false,
     onUseSherpaVitsExperimentalChange: (Boolean) -> Unit = {},
+    ttsEngineDiagnostic: TtsEngineDiagnosticState = TtsEngineDiagnosticState(),
     modelState: BengaliTtsModelState,
     slotAvailability: BengaliTtsSlotAvailability,
     installedFiles: BengaliTtsModelFiles?,
@@ -170,12 +172,37 @@ fun BengaliVoiceTtsSection(
                         shape = RoundedCornerShape(8.dp)
                     ) {
                         Text(
-                            text = if (useSherpaVitsExperimental) "EXPERIMENTAL" else "NEURAL · DEFAULT",
+                            text = if (useSherpaVitsExperimental) "EXPERIMENTAL" else if (ttsEngineDiagnostic.isFallback) "FALLBACK" else "NEURAL · DEFAULT",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = if (useSherpaVitsExperimental) Color(0xFFFBBF24) else Color(0xFF4ADE80),
+                            color = if (useSherpaVitsExperimental || ttsEngineDiagnostic.isFallback) Color(0xFFFBBF24) else Color(0xFF4ADE80),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
                     }
+                }
+
+                // Visible Active Voice / Fallback Diagnostic Banner
+                Surface(
+                    color = if (ttsEngineDiagnostic.isFallback) {
+                        Color(0xFFFBBF24).copy(alpha = 0.14f)
+                    } else {
+                        Color(0xFF4ADE80).copy(alpha = 0.12f)
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        if (ttsEngineDiagnostic.isFallback) Color(0xFFFBBF24).copy(alpha = 0.45f)
+                        else Color(0xFF4ADE80).copy(alpha = 0.35f)
+                    )
+                ) {
+                    Text(
+                        text = ttsEngineDiagnostic.activeVoiceLabel,
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+                        color = if (ttsEngineDiagnostic.isFallback) Color(0xFFFDE68A) else Color(0xFF86EFAC),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 7.dp)
+                            .testTag("tts_engine_diagnostic_banner")
+                    )
                 }
 
                 HorizontalDivider(color = Color.White.copy(alpha = 0.08f))

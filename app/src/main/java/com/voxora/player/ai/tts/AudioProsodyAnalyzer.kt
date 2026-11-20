@@ -43,7 +43,7 @@ data class SegmentAcousticProfile(
 object AudioProsodyAnalyzer {
 
     const val SAMPLE_RATE_HZ = 16_000
-    const val FEMALE_F0_THRESHOLD_HZ = 165.0f
+    const val FEMALE_F0_THRESHOLD_HZ = 155.0f
 
     private const val MIN_VOICE_F0_HZ = 75.0f
     private const val MAX_VOICE_F0_HZ = 320.0f
@@ -148,7 +148,7 @@ object AudioProsodyAnalyzer {
         pitchVarianceHz: Float,
         chunkReferenceRms: Float
     ): SegmentAcousticProfile {
-        val detectedGender = if (medianF0Hz > FEMALE_F0_THRESHOLD_HZ) {
+        val detectedGender = if (medianF0Hz >= FEMALE_F0_THRESHOLD_HZ) {
             VoiceGender.FEMALE
         } else {
             VoiceGender.MALE
@@ -173,7 +173,7 @@ object AudioProsodyAnalyzer {
                 energyLevel = SegmentEnergyLevel.HIGH,
                 ssmlVolume = "+15%",
                 ssmlPitchDeltaHz = 4,
-                emotionRateBonusPercent = 6
+                emotionRateBonusPercent = 5
             )
             isSoftEnergy -> SegmentAcousticProfile(
                 segmentIndex = segmentIndex,
@@ -182,9 +182,9 @@ object AudioProsodyAnalyzer {
                 rmsEnergy = rmsEnergy,
                 pitchVarianceHz = pitchVarianceHz,
                 energyLevel = SegmentEnergyLevel.SOFT,
-                ssmlVolume = "-10%",
+                ssmlVolume = "-8%",
                 ssmlPitchDeltaHz = -2,
-                emotionRateBonusPercent = -3
+                emotionRateBonusPercent = 0
             )
             else -> SegmentAcousticProfile(
                 segmentIndex = segmentIndex,

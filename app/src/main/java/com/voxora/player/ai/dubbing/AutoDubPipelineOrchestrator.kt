@@ -21,6 +21,7 @@ import com.voxora.player.dubbing.CharacterVoiceProfile
 import com.voxora.player.dubbing.DubbingPreferencesRepository
 import com.voxora.player.dubbing.MovieSpeakerAssignment
 import com.voxora.player.dubbing.RecognizedSpeechSegment
+import com.voxora.player.dubbing.VoiceGenderOverrideMode
 import com.voxora.player.dubbing.whisper.VideoPcmAudioDecoder
 import com.voxora.player.dubbing.whisper.WhisperCppSpeechRecognitionEngine
 import kotlinx.coroutines.CancellationException
@@ -179,6 +180,7 @@ class AutoDubPipelineOrchestrator(
         windowDurationMs: Long = ROLLING_CHUNK_DURATION_MS,
         fastMovieMode: Boolean = true,
         useSherpaVitsExperimental: Boolean = false,
+        voiceGenderOverride: VoiceGenderOverrideMode = VoiceGenderOverrideMode.AUTO,
         savedCharacters: List<CharacterVoiceProfile>,
         existingMovieAssignments: List<MovieSpeakerAssignment>,
         existingManualOverrides: Map<Int, String>,
@@ -448,6 +450,7 @@ class AutoDubPipelineOrchestrator(
                     characters = updatedCharacters,
                     segmentCharacterOverrides = chunkSegmentCharMap,
                     acousticProfiles = chunkAcousticProfiles,
+                    voiceGenderOverride = voiceGenderOverride,
                     useSherpaVitsExperimental = useSherpaVitsExperimental,
                     onSegmentSynthesized = { completed, total, _ ->
                         val frac = if (total > 0) (completed.toFloat() / total.toFloat()) * 0.85f else 0.5f
@@ -549,6 +552,7 @@ class AutoDubPipelineOrchestrator(
         diarizationThreshold: Float = 0.50f,
         fastMovieMode: Boolean = true,
         useSherpaVitsExperimental: Boolean = false,
+        voiceGenderOverride: VoiceGenderOverrideMode = VoiceGenderOverrideMode.AUTO,
         onStateUpdate: (AutoDubPipelineState) -> Unit,
         onTranslatedSegmentsReady: (List<TranslatedSegment>) -> Unit = {},
         onDubbedSegmentSynthesized: (List<DubbedAudioSegment>) -> Unit = {}
@@ -761,6 +765,7 @@ class AutoDubPipelineOrchestrator(
                     translatedSegments = translatedWithCharacters,
                     characters = updatedCharacters,
                     segmentCharacterOverrides = segmentCharacterMap,
+                    voiceGenderOverride = voiceGenderOverride,
                     useSherpaVitsExperimental = useSherpaVitsExperimental,
                     onSegmentSynthesized = { completed, total, dubbed ->
                         accumulatedDubbed.add(dubbed)

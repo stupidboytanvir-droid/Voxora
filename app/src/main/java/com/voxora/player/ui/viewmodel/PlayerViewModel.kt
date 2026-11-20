@@ -38,6 +38,7 @@ import com.voxora.player.ai.tts.DubAudioPreviewPlayer
 import com.voxora.player.ai.tts.DubbedAudioSegment
 import com.voxora.player.ai.tts.OfflineBengaliTtsEngine
 import com.voxora.player.ai.tts.OneClickAiSetupState
+import com.voxora.player.ai.tts.TtsEngineDiagnosticState
 import com.voxora.player.data.local.power.BatteryMonitor
 import com.voxora.player.data.repository.MediaRepository
 import com.voxora.player.data.repository.PlaybackHistoryRepository
@@ -56,6 +57,7 @@ import com.voxora.player.dubbing.MovieSpeakerAssignment
 import com.voxora.player.dubbing.PlayerDubbingUiState
 import com.voxora.player.dubbing.TtsVoicePreviewEngine
 import com.voxora.player.dubbing.VideoAudioExtractor
+import com.voxora.player.dubbing.VoiceGenderOverrideMode
 import com.voxora.player.dubbing.whisper.TranscriptExportFormat
 import com.voxora.player.dubbing.whisper.TranscriptExporter
 import com.voxora.player.dubbing.whisper.WhisperCppSpeechRecognitionEngine
@@ -197,6 +199,25 @@ class PlayerViewModel(
     val bengaliTtsModelState: StateFlow<BengaliTtsModelState> = bengaliTtsModelManager.modelState
     val bengaliTtsSlotAvailability: StateFlow<BengaliTtsSlotAvailability> = bengaliTtsModelManager.slotAvailability
     val bengaliTtsInstalledFiles: StateFlow<BengaliTtsModelFiles?> = bengaliTtsModelManager.installedFiles
+
+    val ttsEngineDiagnosticState: StateFlow<TtsEngineDiagnosticState> = combine(
+        offlineBengaliTtsEngine.engineDiagnosticState,
+        dubbingConfigFlow
+    ) { edgeDiag, config ->
+        if (config.useSherpaVitsExperimental) {
+            TtsEngineDiagnosticState(
+                activeVoiceLabel = "Active Voice: Sherpa-ONNX VITS (Experimental)",
+                isFallback = false,
+                fallbackReason = null
+            )
+        } else {
+            edgeDiag
+        }
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = TtsEngineDiagnosticState()
+    )
 
     private val dubAudioPreviewPlayer = DubAudioPreviewPlayer()
     private val _activeNeuralPreviewCharacterId = MutableStateFlow<String?>(null)
@@ -720,6 +741,7 @@ class PlayerViewModel(
     // --- Phase 1 AI Dubbing Controls (English -> Bengali / বাংলা) ---
 
     fun setDubbingEnabled(enabled: Boolean) {
+        dubbingPlaybackController.updateConfig(dubbingConfigFlow.value.copy(isDubbingEnabled = enabled))
         viewModelScope.launch { dubbingPreferencesRepository.setDubbingEnabled(enabled) }
     }
 
@@ -734,15 +756,37 @@ class PlayerViewModel(
     }
 
     fun setDubbingOutputMode(mode: DubbingAudioOutputMode) {
+        val current = dubbingConfigFlow.value
+        val immediateOrigVol = when {
+            mode == DubbingAudioOutputMode.BENGALI_DUBBED_ONLY -> 0.0f
+            current.originalAudioVolume <= 0.01f -> 1.0f
+            else -> current.originalAudioVolume
+        }
+        // Apply immediately to main ExoPlayer with zero delay so English audio never leaks
+        dubbingPlaybackController.updateConfig(
+            current.copy(
+                audioOutputMode = mode,
+                originalAudioVolume = immediateOrigVol
+            )
+        )
         viewModelScope.launch { dubbingPreferencesRepository.setOutputMode(mode) }
     }
 
     fun setDubbingOriginalVolume(volume: Float) {
-        viewModelScope.launch { dubbingPreferencesRepository.setOriginalAudioVolume(volume) }
+        val current = dubbingConfigFlow.value
+        val clamped = if (current.audioOutputMode == DubbingAudioOutputMode.BENGALI_DUBBED_ONLY) {
+            0.0f
+        } else {
+            volume.coerceIn(0f, 1f)
+        }
+        dubbingPlaybackController.updateConfig(current.copy(originalAudioVolume = clamped))
+        viewModelScope.launch { dubbingPreferencesRepository.setOriginalAudioVolume(clamped) }
     }
 
     fun setDubbingVoiceVolume(volume: Float) {
-        viewModelScope.launch { dubbingPreferencesRepository.setDubbedAudioVolume(volume) }
+        val clamped = volume.coerceIn(0f, 1f)
+        dubbingPlaybackController.updateConfig(dubbingConfigFlow.value.copy(dubbedAudioVolume = clamped))
+        viewModelScope.launch { dubbingPreferencesRepository.setDubbedAudioVolume(clamped) }
     }
 
     fun adjustDubbingSyncOffset(deltaMs: Long) {
@@ -776,6 +820,10 @@ class PlayerViewModel(
 
     fun setUseSherpaVitsExperimental(enabled: Boolean) {
         viewModelScope.launch { dubbingPreferencesRepository.setUseSherpaVitsExperimental(enabled) }
+    }
+
+    fun setVoiceGenderOverride(mode: VoiceGenderOverrideMode) {
+        viewModelScope.launch { dubbingPreferencesRepository.setVoiceGenderOverride(mode) }
     }
 
     fun addDubbingCharacter(profile: CharacterVoiceProfile) {
@@ -1650,6 +1698,7 @@ class PlayerViewModel(
                     translatedSegments = translatedSegments,
                     characters = characters,
                     segmentCharacterOverrides = overrides,
+                    voiceGenderOverride = dubbingConfigFlow.value.voiceGenderOverride,
                     useSherpaVitsExperimental = useSherpaVits,
                     onSegmentSynthesized = { completed, total, dubbedSeg ->
                         accumulated.add(dubbedSeg)
@@ -1730,8 +1779,13 @@ class PlayerViewModel(
         stopVoicePreview()
         stopDubbedAudioPlayback()
 
+        val playablePath = if (java.io.File(segment.clipFilePath).exists()) {
+            segment.clipFilePath
+        } else {
+            segment.audioFilePath
+        }
         val started = dubAudioPreviewPlayer.playWavFile(
-            filePath = segment.audioFilePath,
+            filePath = playablePath,
             onCompleted = {
                 if (_bengaliVoiceUiState.value.currentlyPlayingSegmentIndex == segment.segmentIndex) {
                     _bengaliVoiceUiState.value = _bengaliVoiceUiState.value.copy(
@@ -1925,6 +1979,7 @@ class PlayerViewModel(
 
                     val liveFastMode = dubbingConfigFlow.value.fastMovieModeEnabled
                     val liveUseSherpaVits = dubbingConfigFlow.value.useSherpaVitsExperimental
+                    val liveVoiceGenderOverride = dubbingConfigFlow.value.voiceGenderOverride
                     val windowStartMs = AutoDubPipelineOrchestrator.chunkWindowStartMs(nextChunk)
                     val remainingMs = if (detectedDurMs > 0L) {
                         (detectedDurMs - windowStartMs).coerceIn(1_000L, AutoDubPipelineOrchestrator.ROLLING_CHUNK_DURATION_MS)
@@ -1941,6 +1996,7 @@ class PlayerViewModel(
                             windowDurationMs = remainingMs,
                             fastMovieMode = liveFastMode,
                             useSherpaVitsExperimental = liveUseSherpaVits,
+                            voiceGenderOverride = liveVoiceGenderOverride,
                             savedCharacters = dubbingConfigFlow.value.characterVoices,
                             existingMovieAssignments = activeMovieAssignmentsFlow.value,
                             existingManualOverrides = manualSegmentCharacterOverrides.toMap(),

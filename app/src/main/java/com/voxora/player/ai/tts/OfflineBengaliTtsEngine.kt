@@ -8,9 +8,11 @@ import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig
 import com.voxora.player.ai.translation.TranslatedSegment
 import com.voxora.player.dubbing.CharacterVoiceProfile
 import com.voxora.player.dubbing.VoiceGender
+import com.voxora.player.dubbing.VoiceGenderOverrideMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -39,6 +41,8 @@ class OfflineBengaliTtsEngine(
     private val edgeNeuralTtsEngine = EdgeNeuralTtsEngine(context, systemBengaliTtsEngine)
     private val nativeMutex = Mutex()
     private val cancelRequested = AtomicBoolean(false)
+
+    val engineDiagnosticState: StateFlow<TtsEngineDiagnosticState> = edgeNeuralTtsEngine.diagnosticState
 
     @Volatile
     private var activeTts: OfflineTts? = null
@@ -75,6 +79,7 @@ class OfflineBengaliTtsEngine(
         characters: List<CharacterVoiceProfile>,
         segmentCharacterOverrides: Map<Int, String> = emptyMap(),
         acousticProfiles: Map<Int, SegmentAcousticProfile> = emptyMap(),
+        voiceGenderOverride: VoiceGenderOverrideMode = VoiceGenderOverrideMode.AUTO,
         useSherpaVitsExperimental: Boolean = false,
         onSegmentSynthesized: (completedCount: Int, totalCount: Int, segment: DubbedAudioSegment) -> Unit = { _, _, _ -> },
         onStatusUpdate: (String) -> Unit = {}
@@ -86,6 +91,7 @@ class OfflineBengaliTtsEngine(
                 characters = characters,
                 segmentCharacterOverrides = segmentCharacterOverrides,
                 acousticProfiles = acousticProfiles,
+                voiceGenderOverride = voiceGenderOverride,
                 onSegmentSynthesized = onSegmentSynthesized,
                 onStatusUpdate = onStatusUpdate
             )

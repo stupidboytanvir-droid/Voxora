@@ -89,12 +89,14 @@ import com.voxora.player.ai.tts.BengaliTtsSlotAvailability
 import com.voxora.player.ai.tts.BengaliVoiceGenerationUiState
 import com.voxora.player.ai.tts.DubbedAudioSegment
 import com.voxora.player.ai.tts.OneClickAiSetupState
+import com.voxora.player.ai.tts.TtsEngineDiagnosticState
 import com.voxora.player.dubbing.CharacterVoiceProfile
 import com.voxora.player.dubbing.ComponentReadiness
 import com.voxora.player.dubbing.DubbingAudioOutputMode
 import com.voxora.player.dubbing.DubbingLanguage
 import com.voxora.player.dubbing.DubbingLanguageRegistry
 import com.voxora.player.dubbing.PlayerDubbingUiState
+import com.voxora.player.dubbing.VoiceGenderOverrideMode
 import com.voxora.player.ui.theme.TabularTimeStyle
 import com.voxora.player.ui.theme.VoxoraCharcoal
 import com.voxora.player.ui.theme.VoxoraElectricPurple
@@ -158,6 +160,8 @@ fun AiDubbingStudioSheet(
     onVocalAttenuationChange: (Boolean) -> Unit,
     onFastMovieModeChange: (Boolean) -> Unit,
     onUseSherpaVitsExperimentalChange: (Boolean) -> Unit,
+    ttsEngineDiagnostic: TtsEngineDiagnosticState = TtsEngineDiagnosticState(),
+    onVoiceGenderOverrideChange: (VoiceGenderOverrideMode) -> Unit = {},
     onAddCharacter: (CharacterVoiceProfile) -> Unit,
     onUpdateCharacter: (CharacterVoiceProfile) -> Unit,
     onRemoveCharacter: (String) -> Unit,
@@ -260,7 +264,7 @@ fun AiDubbingStudioSheet(
                             border = BorderStroke(1.dp, VoxoraElectricPurple)
                         ) {
                             Text(
-                                text = "v2.2.0",
+                                text = "v2.2.1",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = VoxoraElectricPurpleBright,
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
@@ -403,7 +407,9 @@ fun AiDubbingStudioSheet(
                         onBgmDuckingStrengthChange = onBgmDuckingStrengthChange,
                         onVocalAttenuationChange = onVocalAttenuationChange,
                         onFastMovieModeChange = onFastMovieModeChange,
-                        onUseSherpaVitsExperimentalChange = onUseSherpaVitsExperimentalChange
+                        onUseSherpaVitsExperimentalChange = onUseSherpaVitsExperimentalChange,
+                        ttsEngineDiagnostic = ttsEngineDiagnostic,
+                        onVoiceGenderOverrideChange = onVoiceGenderOverrideChange
                     )
                 }
                 DubbingStudioTab.TRANSCRIBE -> {
@@ -474,6 +480,7 @@ fun AiDubbingStudioSheet(
                         translatedSegmentCount = translationUiState.segments.size,
                         useSherpaVitsExperimental = state.config.useSherpaVitsExperimental,
                         onUseSherpaVitsExperimentalChange = onUseSherpaVitsExperimentalChange,
+                        ttsEngineDiagnostic = ttsEngineDiagnostic,
                         modelState = bengaliTtsModelState,
                         slotAvailability = bengaliTtsSlotAvailability,
                         installedFiles = bengaliTtsInstalledFiles,
@@ -555,7 +562,9 @@ private fun DubbingControlsTab(
     onBgmDuckingStrengthChange: (Float) -> Unit,
     onVocalAttenuationChange: (Boolean) -> Unit,
     onFastMovieModeChange: (Boolean) -> Unit,
-    onUseSherpaVitsExperimentalChange: (Boolean) -> Unit
+    onUseSherpaVitsExperimentalChange: (Boolean) -> Unit,
+    ttsEngineDiagnostic: TtsEngineDiagnosticState = TtsEngineDiagnosticState(),
+    onVoiceGenderOverrideChange: (VoiceGenderOverrideMode) -> Unit = {}
 ) {
     val config = state.config
     var showAllLanguages by remember { mutableStateOf(false) }
@@ -642,77 +651,124 @@ private fun DubbingControlsTab(
             }
         }
 
-        // 0.75. Bengali TTS Engine Selector (Default: Android Built-in Offline TTS; Optional: Sherpa-ONNX VITS Experimental)
+        // 0.75. Bengali Voice Engine Status + Quick Voice Gender Selector + Experimental VITS Toggle
         Surface(
             color = Color(0xFF181924),
             shape = RoundedCornerShape(16.dp),
             border = BorderStroke(
                 1.dp,
-                if (config.useSherpaVitsExperimental) {
-                    Color(0xFFFBBF24).copy(alpha = 0.55f)
-                } else {
-                    Color(0xFF4ADE80).copy(alpha = 0.40f)
+                when {
+                    config.useSherpaVitsExperimental || ttsEngineDiagnostic.isFallback -> Color(0xFFFBBF24).copy(alpha = 0.55f)
+                    else -> Color(0xFF4ADE80).copy(alpha = 0.45f)
                 }
             )
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Memory,
-                    contentDescription = null,
-                    tint = if (config.useSherpaVitsExperimental) Color(0xFFFBBF24) else Color(0xFF4ADE80),
-                    modifier = Modifier.size(22.dp)
-                )
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                // Visible Engine Diagnostics Banner (never fails silently)
+                Surface(
+                    color = if (ttsEngineDiagnostic.isFallback) {
+                        Color(0xFFFBBF24).copy(alpha = 0.14f)
+                    } else {
+                        Color(0xFF4ADE80).copy(alpha = 0.14f)
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        if (ttsEngineDiagnostic.isFallback) Color(0xFFFBBF24).copy(alpha = 0.45f)
+                        else Color(0xFF4ADE80).copy(alpha = 0.40f)
+                    )
+                ) {
+                    Text(
+                        text = ttsEngineDiagnostic.activeVoiceLabel,
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = if (ttsEngineDiagnostic.isFallback) Color(0xFFFDE68A) else Color(0xFF86EFAC),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                            .testTag("studio_active_voice_diagnostic")
+                    )
+                }
+
+                // Quick 3-Button Voice Gender Selector: Auto | Female (Nabanita) | Male (Pradeep)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Voice Gender Mode",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = Color.White.copy(alpha = 0.85f)
+                    )
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        VoiceGenderOverrideMode.entries.forEach { genderMode ->
+                            val isSelected = config.voiceGenderOverride == genderMode
+                            Surface(
+                                onClick = { onVoiceGenderOverrideChange(genderMode) },
+                                color = if (isSelected) VoxoraElectricPurple.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.04f),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isSelected) VoxoraElectricPurpleBright else Color.White.copy(alpha = 0.12f)
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("voice_gender_override_${genderMode.name.lowercase()}")
+                            ) {
+                                Text(
+                                    text = genderMode.shortLabel,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                    ),
+                                    color = if (isSelected) Color.White else Color.White.copy(alpha = 0.72f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 10.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Memory,
+                        contentDescription = null,
+                        tint = if (config.useSherpaVitsExperimental) Color(0xFFFBBF24) else Color(0xFF4ADE80),
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(
                             text = "Use Sherpa-ONNX VITS (Experimental)",
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
                             color = Color.White
                         )
-                    }
-                    Surface(
-                        color = if (config.useSherpaVitsExperimental) {
-                            Color(0xFFFBBF24).copy(alpha = 0.16f)
-                        } else {
-                            Color(0xFF4ADE80).copy(alpha = 0.16f)
-                        },
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
                         Text(
                             text = if (config.useSherpaVitsExperimental) {
-                                "EXPERIMENTAL · NATIVE ONNX"
+                                "Uses Sherpa-ONNX VITS neural model (~109 MB). May use high native RAM on some devices."
                             } else {
-                                "DEFAULT · EDGE NEURAL TTS + OFFLINE FALLBACK"
+                                "Keep OFF for Microsoft Edge Neural voices (Nabanita / Pradeep) with auto F0 gender detection & Android TTS fallback."
                             },
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = if (config.useSherpaVitsExperimental) Color(0xFFFBBF24) else Color(0xFF4ADE80),
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.72f)
                         )
                     }
-                    Text(
-                        text = if (config.useSherpaVitsExperimental) {
-                            "Uses Sherpa-ONNX VITS neural model (~109 MB). May use high native RAM on some devices."
-                        } else {
-                            "Free human-like Bengali Neural voices (Nabanita & Pradeep) with auto Male/Female detection, expressive prosody, and automatic offline Android TTS fallback."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White.copy(alpha = 0.72f)
+                    Switch(
+                        checked = config.useSherpaVitsExperimental,
+                        onCheckedChange = onUseSherpaVitsExperimentalChange,
+                        modifier = Modifier.testTag("use_sherpa_vits_experimental_switch")
                     )
                 }
-                Switch(
-                    checked = config.useSherpaVitsExperimental,
-                    onCheckedChange = onUseSherpaVitsExperimentalChange,
-                    modifier = Modifier.testTag("use_sherpa_vits_experimental_switch")
-                )
             }
         }
         // 1. Language Pair Card (English -> Bengali Phase 1 + Future Expansion)
@@ -948,7 +1004,9 @@ private fun DubbingControlsTab(
                     Text("Live Audio Mixer", style = MaterialTheme.typography.titleSmall)
                 }
 
-                // Original Audio Volume (Live ExoPlayer volume control)
+                // Original Audio Volume (Live ExoPlayer volume control — locked at 0% in Bengali Dubbed Audio mode)
+                val isOriginalLockedZero = config.audioOutputMode == DubbingAudioOutputMode.BENGALI_DUBBED_ONLY
+                val displayedOrigVol = if (isOriginalLockedZero) 0f else config.originalAudioVolume
                 Column {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -960,14 +1018,15 @@ private fun DubbingControlsTab(
                             color = Color.White
                         )
                         Text(
-                            text = "${(config.originalAudioVolume * 100).toInt()}%",
+                            text = if (isOriginalLockedZero) "0% (Locked)" else "${(displayedOrigVol * 100).toInt()}%",
                             style = TabularTimeStyle,
-                            color = VoxoraSubtleBlue
+                            color = if (isOriginalLockedZero) Color(0xFF4ADE80) else VoxoraSubtleBlue
                         )
                     }
                     Slider(
-                        value = config.originalAudioVolume,
+                        value = displayedOrigVol,
                         onValueChange = onOriginalVolumeChange,
+                        enabled = !isOriginalLockedZero,
                         valueRange = 0f..1f,
                         colors = SliderDefaults.colors(
                             thumbColor = VoxoraElectricPurpleBright,
@@ -1030,7 +1089,7 @@ private fun DubbingControlsTab(
                                 style = MaterialTheme.typography.titleSmall
                             )
                             Text(
-                                text = "Smoothly ducks original audio during Bengali dialogue (150ms ramp) and restores BGM/SFX to 100% between lines",
+                                text = "Drops original audio to 3% during active Bengali dialogue and smoothly restores BGM/SFX to 80% during silent gaps",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.White.copy(alpha = 0.65f)
                             )
@@ -1054,17 +1113,17 @@ private fun DubbingControlsTab(
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = Color.White
                             )
-                            val duckPct = (config.bgmDuckingStrength * 100f).toInt().coerceIn(0, 95)
+                            val duckPct = (config.bgmDuckingStrength * 100f).toInt().coerceIn(0, 97)
                             Text(
-                                text = "${duckPct}% (BGM at ${100 - duckPct}%)",
+                                text = "${duckPct}% (Original at ${100 - duckPct}%)",
                                 style = TabularTimeStyle,
                                 color = VoxoraSubtleBlue
                             )
                         }
                         Slider(
-                            value = config.bgmDuckingStrength,
+                            value = config.bgmDuckingStrength.coerceIn(0f, 0.97f),
                             onValueChange = onBgmDuckingStrengthChange,
-                            valueRange = 0f..0.95f,
+                            valueRange = 0f..0.97f,
                             colors = SliderDefaults.colors(
                                 thumbColor = VoxoraSubtleBlue,
                                 activeTrackColor = VoxoraSubtleBlue

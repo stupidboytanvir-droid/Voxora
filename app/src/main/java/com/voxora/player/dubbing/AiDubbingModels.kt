@@ -33,12 +33,12 @@ enum class DubbingAudioOutputMode(
     BENGALI_DUBBED_MIX(
         label = "Bengali Dubbed + Smart Ducking",
         shortLabel = "বাংলা Smart Duck",
-        description = "Drops original speech to 5% during Bengali lines and smoothly restores BGM to 85% in silence"
+        description = "Drops original audio to 3% during Bengali lines and smoothly restores BGM to 80% in silence"
     ),
     BENGALI_DUBBED_ONLY(
         label = "Bengali Dubbed Audio",
         shortLabel = "বাংলা Only",
-        description = "Prioritizes synthesized Bengali dialogue with minimal original dialogue"
+        description = "Locks original video audio to 0% for pure Bengali dubbing with zero English leak"
     )
 }
 
@@ -46,6 +46,16 @@ enum class DubbingAudioOutputMode(
 enum class VoiceGender(val label: String) {
     MALE("Male"),
     FEMALE("Female")
+}
+
+@Serializable
+enum class VoiceGenderOverrideMode(
+    val label: String,
+    val shortLabel: String
+) {
+    AUTO("Auto", "Auto"),
+    FEMALE("Female (Nabanita)", "Female (Nabanita)"),
+    MALE("Male (Pradeep)", "Male (Pradeep)")
 }
 
 @Serializable
@@ -139,10 +149,11 @@ data class DubbingSessionConfig(
     val dubbedAudioVolume: Float = 1.0f,
     val syncOffsetMs: Long = 0L,
     val preserveOriginalBackgroundAudio: Boolean = true,
-    val bgmDuckingStrength: Float = 0.95f,
+    val bgmDuckingStrength: Float = 0.97f,
     val vocalAttenuationEnabled: Boolean = false,
     val fastMovieModeEnabled: Boolean = true,
     val useSherpaVitsExperimental: Boolean = false,
+    val voiceGenderOverride: VoiceGenderOverrideMode = VoiceGenderOverrideMode.AUTO,
     val autoDetectSourceLanguage: Boolean = false,
     val characterVoices: List<CharacterVoiceProfile> = DubbingVoiceCatalog.defaultCharacters()
 )

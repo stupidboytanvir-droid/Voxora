@@ -47,6 +47,7 @@ class DubbingPreferencesRepository(private val context: Context) {
         val VOCAL_ATTENUATION_ENABLED = booleanPreferencesKey("dubbing_vocal_attenuation_enabled")
         val FAST_MOVIE_MODE = booleanPreferencesKey("dubbing_fast_movie_mode")
         val USE_SHERPA_VITS_EXPERIMENTAL = booleanPreferencesKey("dubbing_use_sherpa_vits_experimental")
+        val VOICE_GENDER_OVERRIDE = stringPreferencesKey("dubbing_voice_gender_override")
         val CHARACTER_PROFILES_JSON = stringPreferencesKey("dubbing_character_profiles_json")
         val CHARACTER_PROFILES_INITIALIZED = booleanPreferencesKey("dubbing_characters_initialized")
         val MOVIE_SPEAKER_ASSIGNMENTS_JSON = stringPreferencesKey("dubbing_movie_speaker_assignments_json")
@@ -80,19 +81,31 @@ class DubbingPreferencesRepository(private val context: Context) {
             DubbingVoiceCatalog.defaultCharacters()
         }
 
+        val voiceGenderOverride = prefs[Keys.VOICE_GENDER_OVERRIDE]?.let { name ->
+            VoiceGenderOverrideMode.entries.firstOrNull { it.name == name }
+        } ?: VoiceGenderOverrideMode.AUTO
+
+        val savedOrigVol = (prefs[Keys.ORIGINAL_VOLUME] ?: 1.0f).coerceIn(0f, 1f)
+        val effectiveOrigVol = if (outputMode == DubbingAudioOutputMode.BENGALI_DUBBED_ONLY) {
+            0.0f
+        } else {
+            savedOrigVol
+        }
+
         DubbingSessionConfig(
             isDubbingEnabled = prefs[Keys.ENABLED] ?: false,
             sourceLanguage = sourceLang,
             targetLanguage = targetLang,
             audioOutputMode = outputMode,
-            originalAudioVolume = (prefs[Keys.ORIGINAL_VOLUME] ?: 1.0f).coerceIn(0f, 1f),
+            originalAudioVolume = effectiveOrigVol,
             dubbedAudioVolume = (prefs[Keys.DUBBED_VOLUME] ?: 1.0f).coerceIn(0f, 1f),
             syncOffsetMs = (prefs[Keys.SYNC_OFFSET_MS] ?: 0L).coerceIn(-5_000L, 5_000L),
             preserveOriginalBackgroundAudio = prefs[Keys.PRESERVE_BACKGROUND] ?: true,
-            bgmDuckingStrength = (prefs[Keys.BGM_DUCKING_STRENGTH] ?: 0.95f).coerceIn(0f, 0.95f),
+            bgmDuckingStrength = (prefs[Keys.BGM_DUCKING_STRENGTH] ?: 0.97f).coerceIn(0f, 0.97f),
             vocalAttenuationEnabled = prefs[Keys.VOCAL_ATTENUATION_ENABLED] ?: false,
             fastMovieModeEnabled = prefs[Keys.FAST_MOVIE_MODE] ?: true,
             useSherpaVitsExperimental = prefs[Keys.USE_SHERPA_VITS_EXPERIMENTAL] ?: false,
+            voiceGenderOverride = voiceGenderOverride,
             characterVoices = characters
         )
     }
@@ -141,11 +154,28 @@ class DubbingPreferencesRepository(private val context: Context) {
     }
 
     suspend fun setOutputMode(mode: DubbingAudioOutputMode) {
-        context.voxoraDubbingStore.edit { it[Keys.OUTPUT_MODE] = mode.name }
+        context.voxoraDubbingStore.edit { prefs ->
+            prefs[Keys.OUTPUT_MODE] = mode.name
+            if (mode == DubbingAudioOutputMode.BENGALI_DUBBED_ONLY) {
+                prefs[Keys.ORIGINAL_VOLUME] = 0.0f
+            } else if ((prefs[Keys.ORIGINAL_VOLUME] ?: 1.0f) <= 0.01f) {
+                prefs[Keys.ORIGINAL_VOLUME] = 1.0f
+            }
+        }
     }
 
     suspend fun setOriginalAudioVolume(volume: Float) {
-        context.voxoraDubbingStore.edit { it[Keys.ORIGINAL_VOLUME] = volume.coerceIn(0f, 1f) }
+        context.voxoraDubbingStore.edit { prefs ->
+            val currentMode = prefs[Keys.OUTPUT_MODE]?.let { name ->
+                DubbingAudioOutputMode.entries.firstOrNull { it.name == name }
+            } ?: DubbingAudioOutputMode.BENGALI_DUBBED_MIX
+            // Keep Original Volume locked at 0% while in Bengali Dubbed Audio mode
+            prefs[Keys.ORIGINAL_VOLUME] = if (currentMode == DubbingAudioOutputMode.BENGALI_DUBBED_ONLY) {
+                0.0f
+            } else {
+                volume.coerceIn(0f, 1f)
+            }
+        }
     }
 
     suspend fun setDubbedAudioVolume(volume: Float) {
@@ -161,7 +191,7 @@ class DubbingPreferencesRepository(private val context: Context) {
     }
 
     suspend fun setBgmDuckingStrength(strength: Float) {
-        context.voxoraDubbingStore.edit { it[Keys.BGM_DUCKING_STRENGTH] = strength.coerceIn(0f, 0.95f) }
+        context.voxoraDubbingStore.edit { it[Keys.BGM_DUCKING_STRENGTH] = strength.coerceIn(0f, 0.97f) }
     }
 
     suspend fun setVocalAttenuationEnabled(enabled: Boolean) {
@@ -174,6 +204,10 @@ class DubbingPreferencesRepository(private val context: Context) {
 
     suspend fun setUseSherpaVitsExperimental(enabled: Boolean) {
         context.voxoraDubbingStore.edit { it[Keys.USE_SHERPA_VITS_EXPERIMENTAL] = enabled }
+    }
+
+    suspend fun setVoiceGenderOverride(mode: VoiceGenderOverrideMode) {
+        context.voxoraDubbingStore.edit { it[Keys.VOICE_GENDER_OVERRIDE] = mode.name }
     }
 
     suspend fun saveCharacters(characters: List<CharacterVoiceProfile>) {

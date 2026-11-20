@@ -19,11 +19,11 @@ import kotlin.math.tanh
 object BackgroundAudioPreserver {
 
     const val DEFAULT_FADE_MS = 150L
-    const val DEFAULT_DUCKING_STRENGTH = 0.95f
-    const val DEFAULT_DUCKED_DIALOGUE_VOLUME = 0.05f
-    const val DEFAULT_SILENCE_BGM_VOLUME = 0.85f
+    const val DEFAULT_DUCKING_STRENGTH = 0.97f
+    const val DEFAULT_DUCKED_DIALOGUE_VOLUME = 0.03f
+    const val DEFAULT_SILENCE_BGM_VOLUME = 0.80f
     const val MIN_DUCKING_STRENGTH = 0.0f
-    const val MAX_DUCKING_STRENGTH = 0.95f
+    const val MAX_DUCKING_STRENGTH = 0.97f
     const val DEFAULT_VOCAL_ATTENUATION = 0.65f
 
     /**
@@ -84,7 +84,7 @@ object BackgroundAudioPreserver {
         val clampedStrength = duckingStrength.coerceIn(MIN_DUCKING_STRENGTH, MAX_DUCKING_STRENGTH)
         if (windows.isEmpty() || clampedStrength <= 0.001f) return 1.0f
 
-        val duckedFloor = (1.0f - clampedStrength).coerceIn(0.05f, 1.0f)
+        val duckedFloor = (1.0f - clampedStrength).coerceIn(DEFAULT_DUCKED_DIALOGUE_VOLUME, 1.0f)
         val effectiveFade = fadeMs.coerceAtLeast(1L)
 
         var minGain = 1.0f
@@ -139,7 +139,7 @@ object BackgroundAudioPreserver {
         silenceBgmVolume: Float = DEFAULT_SILENCE_BGM_VOLUME,
         fadeMs: Long = DEFAULT_FADE_MS
     ): Float {
-        val ceiling = silenceBgmVolume.coerceIn(0.05f, 1.0f)
+        val ceiling = silenceBgmVolume.coerceIn(DEFAULT_DUCKED_DIALOGUE_VOLUME, 1.0f)
         val clampedStrength = duckingStrength.coerceIn(MIN_DUCKING_STRENGTH, MAX_DUCKING_STRENGTH)
         if (windows.isEmpty() || clampedStrength <= 0.001f) return ceiling
 

@@ -4,16 +4,21 @@ import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.media.MediaMetadataRetriever
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import com.voxora.player.ai.dubbing.DubbedTrackAssembler
 import com.voxora.player.ai.translation.TranslatedSegment
 import com.voxora.player.dubbing.CharacterVoiceProfile
 import com.voxora.player.dubbing.VoiceGender
+import com.voxora.player.dubbing.VoiceGenderOverrideMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -28,6 +33,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
+import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
@@ -44,19 +50,16 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * Free, Expressive, Human-Like Bengali Neural TTS engine powered by Microsoft Edge Read-Aloud
- * Neural TTS WebSocket (`bn-BD-NabanitaNeural`, `bn-BD-PradeepNeural`, `bn-IN-TanishaaNeural`,
- * `bn-IN-BashkarNeural`).
+ * Production-grade Free Microsoft Edge Neural Bengali TTS engine (`bn-BD-NabanitaNeural`,
+ * `bn-BD-PradeepNeural`, `bn-IN-TanishaaNeural`, `bn-IN-BashkarNeural`).
  *
- * Key guarantees:
- * - Zero API keys, 100% free, near-zero RAM footprint.
- * - Uses OkHttp WebSocket outputting `audio-24khz-48kbitrate-mono-mp3`, decoded cleanly on-device
- *   via Android [MediaExtractor] + [MediaCodec] into standard 16-bit mono PCM WAV files.
- * - Applies expressive SSML `<prosody rate="..." pitch="..." volume="...">` from original audio
- *   energy/pitch analysis ([SegmentAcousticProfile]) and strict lip-sync rate calculation
- *   clamped to `-10% .. +35%`.
- * - Automatically falls back to [AndroidSystemBengaliTtsEngine] if the device has no internet
- *   connection or if the WebSocket fails/times out.
+ * - Authenticates with Microsoft's dynamic `Sec-MS-GEC` SHA-256 token and exact Edge browser headers.
+ * - Extracts binary MP3 audio frames (`Path:audio`) into verified `.mp3` files (`> 1000` bytes)
+ *   in `cacheDir/dub_chunks/` for instant, zero-overlap per-clip playback, plus optional WAV export copy.
+ * - Publishes explicit real-time engine diagnostics ([diagnosticState]) so UI always displays
+ *   either `"Active Voice: Edge Neural (Nabanita / Pradeep)"` or `"Fallback: Android TTS (Reason: ...)"`.
+ * - Never fails silently: automatically falls back to offline Android [AndroidSystemBengaliTtsEngine]
+ *   with the exact HTTP/WebSocket failure reason logged to UI.
  */
 class EdgeNeuralTtsEngine(
     context: Context,
@@ -66,8 +69,11 @@ class EdgeNeuralTtsEngine(
     private val cancelRequested = AtomicBoolean(false)
     private val activeSocketRef = AtomicReference<WebSocket?>(null)
 
+    private val _diagnosticState = MutableStateFlow(TtsEngineDiagnosticState())
+    val diagnosticState: StateFlow<TtsEngineDiagnosticState> = _diagnosticState.asStateFlow()
+
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
@@ -84,10 +90,6 @@ class EdgeNeuralTtsEngine(
         activeSocketRef.getAndSet(null)?.cancel()
     }
 
-    /**
-     * Checks whether the device currently has an active internet connection suitable for
-     * Microsoft Edge Neural TTS WebSocket streaming.
-     */
     fun isInternetAvailable(): Boolean {
         return runCatching {
             val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -103,9 +105,11 @@ class EdgeNeuralTtsEngine(
     }
 
     /**
-     * Synthesizes all [translatedSegments] into per-line WAV files using Microsoft Edge Neural
-     * Bengali TTS by default, with automatic per-line or full-batch fallback to offline Android
-     * [AndroidSystemBengaliTtsEngine] when offline or if the WebSocket fails.
+     * Synthesizes all [translatedSegments] into verified `.mp3` clips in `cacheDir/dub_chunks/`
+     * (and sibling `.wav` files for export compatibility), applying:
+     * - Manual [voiceGenderOverride] (`Auto` | `Female (Nabanita)` | `Male (Pradeep)`) or F0 gender detection.
+     * - Expressive RMS/pitch SSML `<prosody volume="..." pitch="...">`.
+     * - Dynamic lip-sync SSML `<prosody rate="+0%..+35%">` fitted to each segment's `targetMs`.
      */
     suspend fun synthesizeSegments(
         videoUri: String,
@@ -113,6 +117,7 @@ class EdgeNeuralTtsEngine(
         characters: List<CharacterVoiceProfile>,
         segmentCharacterOverrides: Map<Int, String> = emptyMap(),
         acousticProfiles: Map<Int, SegmentAcousticProfile> = emptyMap(),
+        voiceGenderOverride: VoiceGenderOverrideMode = VoiceGenderOverrideMode.AUTO,
         onSegmentSynthesized: (completedCount: Int, totalCount: Int, segment: DubbedAudioSegment) -> Unit = { _, _, _ -> },
         onStatusUpdate: (String) -> Unit = {}
     ): Result<List<DubbedAudioSegment>> = withContext(Dispatchers.IO) {
@@ -127,9 +132,14 @@ class EdgeNeuralTtsEngine(
 
         cancelRequested.set(false)
 
-        // If device is completely offline, seamlessly delegate straight to Android Offline Bengali TTS
         if (!isInternetAvailable()) {
-            onStatusUpdate("No internet detected · Using offline Android Bengali TTS fallback...")
+            val reason = "No internet connection"
+            _diagnosticState.value = TtsEngineDiagnosticState(
+                activeVoiceLabel = "Fallback: Android TTS (Reason: $reason)",
+                isFallback = true,
+                fallbackReason = reason
+            )
+            onStatusUpdate("Fallback: Android TTS (Reason: $reason)")
             return@withContext offlineFallbackEngine.synthesizeSegments(
                 videoUri = videoUri,
                 translatedSegments = translatedSegments,
@@ -142,11 +152,13 @@ class EdgeNeuralTtsEngine(
 
         val charactersById = characters.associateBy { it.characterId }
         val fallbackCharacter = characters.firstOrNull()
-        val videoOutputDir = getVideoDubCacheDir(videoUri).apply { mkdirs() }
+        val mp3Dir = getDubChunksDir(videoUri).apply { mkdirs() }
+        val wavDir = getVideoDubCacheDir(videoUri).apply { mkdirs() }
         val sortedSegments = translatedSegments.sortedBy { it.startMs }
         val total = sortedSegments.size
         val results = mutableListOf<DubbedAudioSegment>()
         var consecutiveNetworkFailures = 0
+        var lastFailureReason: String? = null
 
         try {
             sortedSegments.forEachIndexed { idx, segment ->
@@ -168,30 +180,33 @@ class EdgeNeuralTtsEngine(
                 val baseProfile = charactersById[resolvedCharId] ?: fallbackCharacter
                 val acoustic = acousticProfiles[segment.index]
 
-                // Automatic Male/Female Voice Detection:
-                // When acoustic F0 analysis is available and user did not manually pin a character,
-                // honor the detected F0 gender (> 165 Hz -> Female, else Male).
-                val effectiveGender = when {
-                    acoustic != null && manualCharOverride == null -> acoustic.detectedGender
-                    baseProfile != null -> baseProfile.gender
-                    else -> VoiceGender.MALE
-                }
-
-                val voiceName = resolveEdgeNeuralVoice(
-                    gender = effectiveGender,
-                    characterId = resolvedCharId,
-                    voiceIdHint = baseProfile?.voiceId
+                // Priority: 1. Quick UI Voice Gender Override (Female/Male) -> 2. Manual character override
+                // -> 3. Auto F0 gender detection (>= 155 Hz Female / < 155 Hz Male) -> 4. Profile gender
+                val effectiveGender = resolveEffectiveGender(
+                    overrideMode = voiceGenderOverride,
+                    manualCharacterAssigned = manualCharOverride != null,
+                    acoustic = acoustic,
+                    profile = baseProfile
                 )
 
-                // Strict timing window: respect both dialogue duration and next segment start
-                val rawTargetMs = (segment.endMs - segment.startMs).coerceAtLeast(350L)
+                val voiceName = when (voiceGenderOverride) {
+                    VoiceGenderOverrideMode.FEMALE -> VOICE_FEMALE_PRIMARY
+                    VoiceGenderOverrideMode.MALE -> VOICE_MALE_PRIMARY
+                    VoiceGenderOverrideMode.AUTO -> resolveEdgeNeuralVoice(
+                        gender = effectiveGender,
+                        characterId = resolvedCharId,
+                        voiceIdHint = baseProfile?.voiceId
+                    )
+                }
+
+                // Strict timing window: minimum 800ms, capped cleanly before next segment start
+                val rawTargetMs = (segment.endMs - segment.startMs).coerceAtLeast(MIN_TARGET_DURATION_MS)
                 val nextStartMs = sortedSegments.getOrNull(idx + 1)?.startMs
-                val maxSlotMs = if (nextStartMs != null && nextStartMs > segment.startMs + 250L) {
-                    nextStartMs - segment.startMs
+                val strictTargetMs = if (nextStartMs != null && nextStartMs > segment.startMs + 350L) {
+                    minOf(rawTargetMs, nextStartMs - segment.startMs).coerceAtLeast(350L)
                 } else {
                     rawTargetMs
                 }
-                val strictTargetMs = minOf(rawTargetMs, maxSlotMs).coerceAtLeast(350L)
 
                 val ratePercent = computeStrictTimingRatePercent(
                     bengaliText = bengaliText,
@@ -205,55 +220,89 @@ class EdgeNeuralTtsEngine(
                 )
                 val volumeStr = acoustic?.ssmlVolume ?: "+0%"
 
-                val targetWav = File(videoOutputDir, "seg_${segment.index}.wav")
-                val genderTag = if (effectiveGender == VoiceGender.FEMALE) "Female" else "Male"
+                val targetMp3 = File(mp3Dir, "seg_${segment.index}.mp3")
+                val targetWav = File(wavDir, "seg_${segment.index}.wav")
 
-                val durationMs: Long = if (consecutiveNetworkFailures < MAX_CONSECUTIVE_WS_FAILURES) {
+                var clipPathForPlayback: String
+                var wavPathForExport: String
+                var actualDurationMs: Long
+
+                if (consecutiveNetworkFailures < MAX_CONSECUTIVE_WS_FAILURES) {
                     onStatusUpdate(
-                        "Synthesizing Bengali Neural voice ${idx + 1}/$total ($genderTag · ${shortVoiceLabel(voiceName)})..."
+                        "Edge Neural (${shortVoiceLabel(voiceName)}) · Line ${idx + 1}/$total..."
                     )
                     val edgeResult = runCatching {
-                        synthesizeEdgeLineToWav(
+                        synthesizeEdgeLineToMp3AndWav(
                             text = bengaliText,
                             voiceName = voiceName,
                             ratePercent = ratePercent,
                             pitchHz = pitchHz,
                             volume = volumeStr,
+                            outputMp3File = targetMp3,
                             outputWavFile = targetWav
                         )
                     }
                     edgeResult.fold(
-                        onSuccess = { wavDurMs ->
+                        onSuccess = { (durMs, hasWav) ->
                             consecutiveNetworkFailures = 0
-                            wavDurMs
+                            lastFailureReason = null
+                            val activeLabel = when (voiceGenderOverride) {
+                                VoiceGenderOverrideMode.FEMALE -> "Active Voice: Edge Neural (Nabanita)"
+                                VoiceGenderOverrideMode.MALE -> "Active Voice: Edge Neural (Pradeep)"
+                                VoiceGenderOverrideMode.AUTO -> "Active Voice: Edge Neural (Nabanita / Pradeep)"
+                            }
+                            _diagnosticState.value = TtsEngineDiagnosticState(
+                                activeVoiceLabel = activeLabel,
+                                isFallback = false,
+                                fallbackReason = null
+                            )
+                            clipPathForPlayback = targetMp3.absolutePath
+                            wavPathForExport = if (hasWav && targetWav.exists()) {
+                                targetWav.absolutePath
+                            } else {
+                                targetMp3.absolutePath
+                            }
+                            actualDurationMs = durMs
                         },
                         onFailure = { err ->
                             if (err is CancellationException) throw err
                             consecutiveNetworkFailures++
-                            onStatusUpdate(
-                                "Edge Neural TTS unavailable (${err.message?.take(48) ?: "network"}) · Falling back to offline Android TTS..."
+                            val reason = (err.message ?: err.javaClass.simpleName).take(120)
+                            lastFailureReason = reason
+                            _diagnosticState.value = TtsEngineDiagnosticState(
+                                activeVoiceLabel = "Fallback: Android TTS (Reason: $reason)",
+                                isFallback = true,
+                                fallbackReason = reason
                             )
-                            synthesizeSingleLineViaOfflineFallback(
+                            onStatusUpdate("Fallback: Android TTS (Reason: $reason)")
+                            val fbDur = synthesizeSingleLineViaOfflineFallback(
                                 videoUri = videoUri,
                                 segment = segment,
                                 effectiveGender = effectiveGender,
                                 baseProfile = baseProfile,
                                 targetWav = targetWav
                             )
+                            clipPathForPlayback = targetWav.absolutePath
+                            wavPathForExport = targetWav.absolutePath
+                            actualDurationMs = fbDur
                         }
                     )
                 } else {
-                    onStatusUpdate("Offline Android Bengali TTS fallback (${idx + 1}/$total)...")
-                    synthesizeSingleLineViaOfflineFallback(
+                    val reason = lastFailureReason ?: "Edge WebSocket unavailable"
+                    onStatusUpdate("Fallback: Android TTS (${idx + 1}/$total · $reason)")
+                    val fbDur = synthesizeSingleLineViaOfflineFallback(
                         videoUri = videoUri,
                         segment = segment,
                         effectiveGender = effectiveGender,
                         baseProfile = baseProfile,
                         targetWav = targetWav
                     )
+                    clipPathForPlayback = targetWav.absolutePath
+                    wavPathForExport = targetWav.absolutePath
+                    actualDurationMs = fbDur
                 }
 
-                val appliedSpeed = (1.0f + ratePercent / 100f).coerceIn(0.90f, 1.35f)
+                val appliedSpeed = (1.0f + ratePercent / 100f).coerceIn(1.0f, 1.35f)
                 val appliedPitch = (1.0f + pitchHz / 40f).coerceIn(0.75f, 1.25f)
 
                 val dubbed = DubbedAudioSegment(
@@ -261,11 +310,12 @@ class EdgeNeuralTtsEngine(
                     startMs = segment.startMs,
                     endMs = segment.endMs,
                     characterId = resolvedCharId,
-                    audioFilePath = targetWav.absolutePath,
-                    durationMs = durationMs,
+                    audioFilePath = wavPathForExport,
+                    durationMs = actualDurationMs,
                     text = segment.translatedText,
                     appliedSpeed = appliedSpeed,
-                    appliedPitch = appliedPitch
+                    appliedPitch = appliedPitch,
+                    clipFilePath = clipPathForPlayback
                 )
                 results.add(dubbed)
                 onSegmentSynthesized(results.size, total, dubbed)
@@ -280,8 +330,8 @@ class EdgeNeuralTtsEngine(
     }
 
     /**
-     * Synthesizes a human-like Bengali Neural preview sample for Character Management auditioning,
-     * falling back to offline Android TTS if offline or WebSocket fails.
+     * Auditions a Character Voice profile using Microsoft Edge Neural Bengali TTS (falling back
+     * visibly to Android TTS if offline or if WebSocket fails).
      */
     suspend fun synthesizeCharacterPreview(
         profile: CharacterVoiceProfile,
@@ -289,39 +339,61 @@ class EdgeNeuralTtsEngine(
     ): Result<File> = withContext(Dispatchers.IO) {
         cancelRequested.set(false)
         if (!isInternetAvailable()) {
+            val reason = "No internet connection"
+            _diagnosticState.value = TtsEngineDiagnosticState(
+                activeVoiceLabel = "Fallback: Android TTS (Reason: $reason)",
+                isFallback = true,
+                fallbackReason = reason
+            )
             return@withContext offlineFallbackEngine.synthesizeCharacterPreview(profile, sampleText)
         }
 
         val cleanText = OfflineBengaliTtsEngine.sanitizeBengaliText(sampleText)
             .ifBlank { OfflineBengaliTtsEngine.DEFAULT_BENGALI_PREVIEW_PHRASE }
-        val previewDir = File(appContext.cacheDir, "voxora_dub/previews").apply { mkdirs() }
+        val previewDir = File(appContext.cacheDir, "dub_chunks/previews").apply { mkdirs() }
         val safeId = profile.characterId.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-        val outputFile = File(previewDir, "preview_${safeId}.wav")
+        val outputMp3 = File(previewDir, "preview_${safeId}.mp3")
+        val outputWav = File(previewDir, "preview_${safeId}.wav")
 
         val voiceName = resolveEdgeNeuralVoice(
             gender = profile.gender,
             characterId = profile.characterId,
             voiceIdHint = profile.voiceId
         )
-        val ratePercent = (((profile.speakingRate - 1.0f) * 100f).roundToInt()).coerceIn(-10, 35)
+        val ratePercent = (((profile.speakingRate - 1.0f) * 100f).roundToInt())
+            .coerceIn(MIN_PROSODY_RATE_PERCENT, MAX_PROSODY_RATE_PERCENT)
         val pitchHz = computeEffectivePitchHz(profile = profile, acoustic = null)
 
         val edgeResult = runCatching {
-            synthesizeEdgeLineToWav(
+            synthesizeEdgeLineToMp3AndWav(
                 text = cleanText,
                 voiceName = voiceName,
                 ratePercent = ratePercent,
                 pitchHz = pitchHz,
                 volume = "+0%",
-                outputWavFile = outputFile
+                outputMp3File = outputMp3,
+                outputWavFile = outputWav
             )
-            outputFile
+            outputMp3
         }
 
         edgeResult.fold(
-            onSuccess = { Result.success(it) },
+            onSuccess = { mp3File ->
+                _diagnosticState.value = TtsEngineDiagnosticState(
+                    activeVoiceLabel = "Active Voice: Edge Neural (${shortVoiceLabel(voiceName)})",
+                    isFallback = false,
+                    fallbackReason = null
+                )
+                Result.success(mp3File)
+            },
             onFailure = { err ->
                 if (err is CancellationException) throw err
+                val reason = (err.message ?: err.javaClass.simpleName).take(120)
+                _diagnosticState.value = TtsEngineDiagnosticState(
+                    activeVoiceLabel = "Fallback: Android TTS (Reason: $reason)",
+                    isFallback = true,
+                    fallbackReason = reason
+                )
                 offlineFallbackEngine.synthesizeCharacterPreview(profile, cleanText)
             }
         )
@@ -359,18 +431,19 @@ class EdgeNeuralTtsEngine(
     }
 
     /**
-     * Streams a single Bengali utterance over Microsoft Edge Neural TTS WebSocket, receives
-     * `audio-24khz-48kbitrate-mono-mp3`, decodes it cleanly into a 16-bit mono PCM WAV file,
-     * and returns its exact duration in milliseconds.
+     * Streams MP3 bytes over Edge Neural TTS WebSocket, saves verified `.mp3` (`> 1000` bytes)
+     * in `cacheDir/dub_chunks/`, decodes a sibling `.wav` for offline export, and returns
+     * `(actualDurationMs, wavExportReady)`.
      */
-    private suspend fun synthesizeEdgeLineToWav(
+    private suspend fun synthesizeEdgeLineToMp3AndWav(
         text: String,
         voiceName: String,
         ratePercent: Int,
         pitchHz: Int,
         volume: String,
+        outputMp3File: File,
         outputWavFile: File
-    ): Long {
+    ): Pair<Long, Boolean> {
         coroutineContext.ensureActive()
         val ssml = buildSsml(
             text = text,
@@ -381,24 +454,70 @@ class EdgeNeuralTtsEngine(
         )
 
         val mp3Bytes = fetchEdgeMp3Bytes(ssml)
-        if (mp3Bytes.size < 128) {
-            throw IllegalStateException("Edge Neural TTS returned empty MP3 stream.")
+        if (mp3Bytes.size <= MIN_VALID_MP3_BYTES) {
+            throw IllegalStateException("Edge Neural TTS returned incomplete MP3 (${mp3Bytes.size} bytes <= $MIN_VALID_MP3_BYTES).")
         }
 
-        val tempMp3 = File(outputWavFile.parentFile, "${outputWavFile.name}.${UUID.randomUUID()}.mp3")
-        val tempWav = File(outputWavFile.parentFile, "${outputWavFile.name}.${UUID.randomUUID()}.wav.part")
+        outputMp3File.parentFile?.mkdirs()
+        val tempMp3 = File(outputMp3File.parentFile, "${outputMp3File.name}.${UUID.randomUUID()}.part")
         try {
             tempMp3.writeBytes(mp3Bytes)
-            val durationMs = decodeMp3FileToMono16BitWav(tempMp3, tempWav)
-            if (outputWavFile.exists()) runCatching { outputWavFile.delete() }
-            if (!tempWav.renameTo(outputWavFile)) {
-                tempWav.copyTo(outputWavFile, overwrite = true)
-                runCatching { tempWav.delete() }
+            if (tempMp3.length() <= MIN_VALID_MP3_BYTES) {
+                throw IllegalStateException("Saved Edge MP3 failed size check (${tempMp3.length()} bytes).")
             }
-            return durationMs
+            if (outputMp3File.exists()) runCatching { outputMp3File.delete() }
+            if (!tempMp3.renameTo(outputMp3File)) {
+                tempMp3.copyTo(outputMp3File, overwrite = true)
+                runCatching { tempMp3.delete() }
+            }
         } finally {
             runCatching { if (tempMp3.exists()) tempMp3.delete() }
+        }
+
+        if (!outputMp3File.exists() || outputMp3File.length() <= MIN_VALID_MP3_BYTES) {
+            throw IllegalStateException("Verified Edge MP3 file missing or <= $MIN_VALID_MP3_BYTES bytes.")
+        }
+
+        // Best-effort WAV sibling decode for offline MP4 export; live playback uses the verified MP3 directly
+        val tempWav = File(outputWavFile.parentFile, "${outputWavFile.name}.${UUID.randomUUID()}.wav.part")
+        var wavReady = false
+        var durationMs = 0L
+        try {
+            outputWavFile.parentFile?.mkdirs()
+            val decodedDur = decodeMp3FileToMono16BitWav(outputMp3File, tempWav)
+            if (outputWavFile.exists()) runCatching { outputWavFile.delete() }
+            if (tempWav.renameTo(outputWavFile) || runCatching { tempWav.copyTo(outputWavFile, overwrite = true); true }.getOrDefault(false)) {
+                wavReady = outputWavFile.exists() && outputWavFile.length() > 44L
+                durationMs = decodedDur
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            // Live playback plays the verified MP3 directly even if OEM MediaCodec refuses WAV decode
+            wavReady = false
+        } finally {
             runCatching { if (tempWav.exists()) tempWav.delete() }
+        }
+
+        if (durationMs <= 0L) {
+            durationMs = measureAudioFileDurationMs(outputMp3File)
+                ?: ((text.length * BENGALI_MS_PER_CHAR).coerceAtLeast(450L))
+        }
+
+        return durationMs to wavReady
+    }
+
+    private fun measureAudioFileDurationMs(audioFile: File): Long? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(audioFile.absolutePath)
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()
+                ?.takeIf { it > 0L }
+        } catch (_: Throwable) {
+            null
+        } finally {
+            runCatching { retriever.release() }
         }
     }
 
@@ -410,12 +529,10 @@ class EdgeNeuralTtsEngine(
 
         val request = Request.Builder()
             .url(wsUrl)
+            .header("Origin", EDGE_ORIGIN)
+            .header("User-Agent", EDGE_USER_AGENT)
             .header("Pragma", "no-cache")
             .header("Cache-Control", "no-cache")
-            .header("Origin", EDGE_ORIGIN)
-            .header("Accept-Encoding", "gzip, deflate, br")
-            .header("Accept-Language", "en-US,en;q=0.9,bn;q=0.8")
-            .header("User-Agent", EDGE_USER_AGENT)
             .build()
 
         return try {
@@ -440,7 +557,6 @@ class EdgeNeuralTtsEngine(
                             val ssmlMessage = buildString {
                                 append("X-RequestId:").append(requestId).append("\r\n")
                                 append("Content-Type:application/ssml+xml\r\n")
-                                append("X-Timestamp:").append(timestamp).append("Z\r\n")
                                 append("Path:ssml\r\n\r\n")
                                 append(ssml)
                             }
@@ -450,15 +566,15 @@ class EdgeNeuralTtsEngine(
 
                         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                             if (completed.get()) return
-                            val raw = bytes.toByteArray()
-                            if (raw.size < 2) return
-                            val headerLen = ((raw[0].toInt() and 0xFF) shl 8) or (raw[1].toInt() and 0xFF)
+                            if (bytes.size < 2) return
+                            val headerLen = ((bytes[0].toInt() and 0xFF) shl 8) or (bytes[1].toInt() and 0xFF)
                             val payloadStart = 2 + headerLen
-                            if (payloadStart >= raw.size) return
-                            val headerText = String(raw, 2, headerLen, Charsets.UTF_8)
+                            if (headerLen <= 0 || payloadStart >= bytes.size) return
+                            val headerText = bytes.substring(2, payloadStart).utf8()
                             if (headerText.contains("Path:audio", ignoreCase = true)) {
+                                val audioSlice = bytes.substring(payloadStart).toByteArray()
                                 synchronized(audioOut) {
-                                    audioOut.write(raw, payloadStart, raw.size - payloadStart)
+                                    audioOut.write(audioSlice)
                                 }
                             }
                         }
@@ -485,11 +601,11 @@ class EdgeNeuralTtsEngine(
                             if (completed.compareAndSet(false, true)) {
                                 val resultBytes = synchronized(audioOut) { audioOut.toByteArray() }
                                 if (cont.isActive) {
-                                    if (resultBytes.size >= 128) {
+                                    if (resultBytes.size > MIN_VALID_MP3_BYTES) {
                                         cont.resume(resultBytes)
                                     } else {
                                         cont.cancel(
-                                            IllegalStateException("Edge Neural TTS closed early ($code: $reason)")
+                                            IllegalStateException("WS closed $code (${reason.ifBlank { "no audio" }})")
                                         )
                                     }
                                 }
@@ -501,9 +617,9 @@ class EdgeNeuralTtsEngine(
                             if (completed.compareAndSet(false, true)) {
                                 val httpCode = response?.code
                                 val msg = if (httpCode != null) {
-                                    "Edge Neural TTS HTTP $httpCode: ${t.message ?: response.message}"
+                                    "HTTP $httpCode ${response.message}".trim()
                                 } else {
-                                    "Edge Neural TTS connection failed: ${t.message ?: "Network error"}"
+                                    t.message ?: t.javaClass.simpleName
                                 }
                                 if (cont.isActive) {
                                     cont.cancel(IllegalStateException(msg, t))
@@ -522,14 +638,10 @@ class EdgeNeuralTtsEngine(
                 }
             }
         } catch (te: TimeoutCancellationException) {
-            throw IllegalStateException("Edge Neural TTS timed out after ${EDGE_LINE_TIMEOUT_MS / 1000}s.", te)
+            throw IllegalStateException("WS timeout (${EDGE_LINE_TIMEOUT_MS / 1000}s)", te)
         }
     }
 
-    /**
-     * Decodes an MP3 file (`audio-24khz-48kbitrate-mono-mp3`) into a standard 16-bit mono PCM WAV
-     * file using Android's built-in [MediaExtractor] + [MediaCodec], returning duration in ms.
-     */
     private fun decodeMp3FileToMono16BitWav(mp3File: File, wavOutFile: File): Long {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
@@ -547,7 +659,7 @@ class EdgeNeuralTtsEngine(
                 }
             }
             if (audioTrackIndex < 0 || inputFormat == null) {
-                throw IllegalStateException("Decoded Edge TTS stream contained no audio track.")
+                throw IllegalStateException("Decoded Edge MP3 contained no audio track.")
             }
 
             extractor.selectTrack(audioTrackIndex)
@@ -573,7 +685,6 @@ class EdgeNeuralTtsEngine(
             var totalMonoFrames = 0L
 
             BufferedOutputStream(FileOutputStream(wavOutFile), 32 * 1024).use { out ->
-                // Placeholder 44-byte WAV header (patched once total PCM byte length is known)
                 out.write(DubbedTrackAssembler.buildWavHeaderBytes(0L, sampleRate, 1))
 
                 while (!sawOutputEos) {
@@ -623,8 +734,7 @@ class EdgeNeuralTtsEngine(
                                     out.write(chunkBytes)
                                     totalMonoFrames += (chunkBytes.size / 2).toLong()
                                 } else {
-                                    // Downmix interleaved 16-bit LE stereo to mono
-                                    val bb = java.nio.ByteBuffer.wrap(chunkBytes).order(ByteOrder.LITTLE_ENDIAN)
+                                    val bb = ByteBuffer.wrap(chunkBytes).order(ByteOrder.LITTLE_ENDIAN)
                                     val frames = chunkBytes.size / (2 * channelCount)
                                     val monoOut = ByteArray(frames * 2)
                                     var pos = 0
@@ -671,6 +781,11 @@ class EdgeNeuralTtsEngine(
         }
     }
 
+    private fun getDubChunksDir(videoUri: String): File {
+        val hash = OfflineBengaliTtsEngine.sha256Short(videoUri)
+        return File(appContext.cacheDir, "dub_chunks/$hash")
+    }
+
     private fun getVideoDubCacheDir(videoUri: String): File {
         val hash = OfflineBengaliTtsEngine.sha256Short(videoUri)
         return File(appContext.cacheDir, "voxora_dub/$hash")
@@ -686,9 +801,12 @@ class EdgeNeuralTtsEngine(
         const val VOICE_MALE_PRIMARY = "bn-BD-PradeepNeural"
         const val VOICE_MALE_SECONDARY = "bn-IN-BashkarNeural"
 
-        const val MIN_PROSODY_RATE_PERCENT = -10
+        const val MIN_PROSODY_RATE_PERCENT = 0
         const val MAX_PROSODY_RATE_PERCENT = 35
+        const val MIN_TARGET_DURATION_MS = 800L
+        const val MIN_VALID_MP3_BYTES = 1_000L
         const val EDGE_LINE_TIMEOUT_MS = 12_000L
+        const val BENGALI_MS_PER_CHAR = 65L
 
         private const val MAX_CONSECUTIVE_WS_FAILURES = 2
         private const val EDGE_SEC_MS_GEC_VERSION = "1-130.0.2849.68"
@@ -699,15 +817,25 @@ class EdgeNeuralTtsEngine(
         private const val SPEECH_CONFIG_JSON =
             "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}"
 
-        // Natural Bengali Neural TTS pacing (~13.5 chars/sec -> ~74 ms/char + 180 ms lead/trail)
-        private const val BENGALI_MS_PER_CHAR = 74L
-        private const val BENGALI_FIXED_OVERHEAD_MS = 180L
         private const val WIN_EPOCH_OFFSET_SECONDS = 11_644_473_600L
 
-        /**
-         * Resolves the expressive Microsoft Edge Bengali Neural voice based on gender and optional
-         * character slot so multiple speakers of the same gender can also sound distinct.
-         */
+        fun resolveEffectiveGender(
+            overrideMode: VoiceGenderOverrideMode,
+            manualCharacterAssigned: Boolean,
+            acoustic: SegmentAcousticProfile?,
+            profile: CharacterVoiceProfile?
+        ): VoiceGender {
+            return when (overrideMode) {
+                VoiceGenderOverrideMode.FEMALE -> VoiceGender.FEMALE
+                VoiceGenderOverrideMode.MALE -> VoiceGender.MALE
+                VoiceGenderOverrideMode.AUTO -> when {
+                    acoustic != null && !manualCharacterAssigned -> acoustic.detectedGender
+                    profile != null -> profile.gender
+                    else -> VoiceGender.MALE
+                }
+            }
+        }
+
         fun resolveEdgeNeuralVoice(
             gender: VoiceGender,
             characterId: String = "CHAR_001",
@@ -741,17 +869,17 @@ class EdgeNeuralTtsEngine(
         }
 
         fun shortVoiceLabel(voiceName: String): String = when (voiceName) {
-            VOICE_FEMALE_PRIMARY -> "Nabanita (bn-BD)"
-            VOICE_FEMALE_SECONDARY -> "Tanishaa (bn-IN)"
-            VOICE_MALE_PRIMARY -> "Pradeep (bn-BD)"
-            VOICE_MALE_SECONDARY -> "Bashkar (bn-IN)"
+            VOICE_FEMALE_PRIMARY -> "Nabanita"
+            VOICE_FEMALE_SECONDARY -> "Tanishaa"
+            VOICE_MALE_PRIMARY -> "Pradeep"
+            VOICE_MALE_SECONDARY -> "Bashkar"
             else -> voiceName
         }
 
         /**
-         * Estimates natural Bengali speech duration from character count and computes the dynamic
-         * SSML `<prosody rate="...">` percentage clamped strictly within `-10% .. +35%` so dubbed
-         * audio finishes inside [targetMs] and never spills into the next dialogue line.
+         * Estimates Bengali speech duration (`bengaliText.length * 65L` ms) and dynamically sets
+         * SSML `<prosody rate="...">` strictly between `+0%` and `+35%` so dubbed audio fits inside
+         * `targetMs = (segment.endMs - segment.startMs).coerceAtLeast(800L)`.
          */
         fun computeStrictTimingRatePercent(
             bengaliText: String,
@@ -759,17 +887,12 @@ class EdgeNeuralTtsEngine(
             characterSpeakingRate: Float = 1.0f,
             emotionRateBonusPercent: Int = 0
         ): Int {
-            val charCount = bengaliText.count { !it.isWhitespace() }.coerceAtLeast(1)
-            val estimatedNaturalMs = BENGALI_FIXED_OVERHEAD_MS + (charCount * BENGALI_MS_PER_CHAR)
-            val safeTargetMs = targetMs.coerceAtLeast(350L)
+            val estimatedMs = (bengaliText.length.coerceAtLeast(1).toLong() * BENGALI_MS_PER_CHAR)
+            val safeTargetMs = targetMs.coerceAtLeast(MIN_TARGET_DURATION_MS)
 
-            val timingDeltaPercent = if (estimatedNaturalMs > safeTargetMs) {
-                // Speed up proportionally so the Bengali line fits comfortably inside targetMs
-                val ratio = estimatedNaturalMs.toFloat() / safeTargetMs.toFloat()
+            val timingDeltaPercent = if (estimatedMs > safeTargetMs) {
+                val ratio = estimatedMs.toFloat() / safeTargetMs.toFloat()
                 ((ratio - 1.0f) * 100f).roundToInt()
-            } else if (estimatedNaturalMs * 1.45f < safeTargetMs) {
-                // Slightly relax delivery when there is generous breathing room
-                -6
             } else {
                 0
             }
@@ -792,10 +915,6 @@ class EdgeNeuralTtsEngine(
             return (profilePitchDelta + emotionDelta).coerceIn(-10, 12)
         }
 
-        /**
-         * Builds valid SSML 1.0 markup with expressive `<prosody rate="..." pitch="..." volume="...">`
-         * and properly XML-escaped Bengali text.
-         */
         fun buildSsml(
             text: String,
             voiceName: String,
@@ -804,7 +923,7 @@ class EdgeNeuralTtsEngine(
             volume: String
         ): String {
             val clampedRate = ratePercent.coerceIn(MIN_PROSODY_RATE_PERCENT, MAX_PROSODY_RATE_PERCENT)
-            val rateAttr = if (clampedRate >= 0) "+${clampedRate}%" else "${clampedRate}%"
+            val rateAttr = "+${clampedRate}%"
             val pitchAttr = if (pitchHz >= 0) "+${pitchHz}Hz" else "${pitchHz}Hz"
             val safeVolume = volume.ifBlank { "+0%" }
             val xmlLang = if (voiceName.startsWith("bn-IN", ignoreCase = true)) "bn-IN" else "bn-BD"
@@ -828,18 +947,16 @@ class EdgeNeuralTtsEngine(
             }
         }
 
-        /**
-         * Generates the Edge Read-Aloud `Sec-MS-GEC` SHA-256 token for the current 5-minute
-         * Windows FILETIME window so the Edge WebSocket handshake succeeds reliably.
-         */
-        fun generateSecMsGec(unixTimeMillis: Long = System.currentTimeMillis()): String {
-            var ticksSeconds = (unixTimeMillis / 1_000L) + WIN_EPOCH_OFFSET_SECONDS
-            ticksSeconds -= (ticksSeconds % 300L)
-            val ticks100Ns = ticksSeconds * 10_000_000L
-            val payload = "${ticks100Ns}$TRUSTED_CLIENT_TOKEN"
+        fun sha256Hex(input: String): String {
             val digest = MessageDigest.getInstance("SHA-256")
-                .digest(payload.toByteArray(Charsets.US_ASCII))
-            return digest.joinToString("") { "%02X".format(it) }
+                .digest(input.toByteArray(Charsets.US_ASCII))
+            return digest.joinToString("") { "%02x".format(it) }
+        }
+
+        fun generateSecMsGec(unixTimeMillis: Long = System.currentTimeMillis()): String {
+            val winEpochSec = (unixTimeMillis / 1_000L) + WIN_EPOCH_OFFSET_SECONDS
+            val roundedTicks = (winEpochSec - (winEpochSec % 300L)) * 10_000_000L
+            return sha256Hex("${roundedTicks}$TRUSTED_CLIENT_TOKEN").uppercase(Locale.US)
         }
 
         fun buildEdgeWebSocketUrl(
@@ -847,7 +964,7 @@ class EdgeNeuralTtsEngine(
             unixTimeMillis: Long = System.currentTimeMillis()
         ): String {
             val secMsGec = generateSecMsGec(unixTimeMillis)
-            return "$EDGE_TTS_BASE_WSS_URL&ConnectionId=$connectionId&Sec-MS-GEC=$secMsGec&Sec-MS-GEC-Version=$EDGE_SEC_MS_GEC_VERSION"
+            return "$EDGE_TTS_BASE_WSS_URL&Sec-MS-GEC=$secMsGec&Sec-MS-GEC-Version=$EDGE_SEC_MS_GEC_VERSION&ConnectionId=$connectionId"
         }
 
         private fun formatEdgeTimestamp(): String {

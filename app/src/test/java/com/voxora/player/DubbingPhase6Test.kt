@@ -7,6 +7,7 @@ import com.voxora.player.ai.dubbing.AutoDubStage
 import com.voxora.player.ai.dubbing.BackgroundAudioPreserver
 import com.voxora.player.ai.dubbing.DialogueDuckingWindow
 import com.voxora.player.ai.dubbing.DubbedTrackAssembler
+import com.voxora.player.ai.dubbing.DubbingPlaybackController
 import com.voxora.player.ai.translation.TranslationModelState
 import com.voxora.player.ai.tts.AndroidSystemBengaliTtsEngine
 import com.voxora.player.ai.tts.AudioProsodyAnalyzer
@@ -20,6 +21,7 @@ import com.voxora.player.dubbing.DubbingAudioOutputMode
 import com.voxora.player.dubbing.DubbingSessionConfig
 import com.voxora.player.dubbing.Version1AiDubbingPipeline
 import com.voxora.player.dubbing.VoiceGender
+import com.voxora.player.dubbing.VoiceGenderOverrideMode
 import com.voxora.player.dubbing.whisper.WhisperModelCatalog
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -226,7 +228,7 @@ class DubbingPhase6Test {
     }
 
     @Test
-    fun v220_edgeNeuralTts_voicesSsmlTimingClampingAndGecToken() {
+    fun v221_edgeNeuralTts_voicesSsmlTimingClampingAndExactSecMsGecUrl() {
         assertEquals(
             EdgeNeuralTtsEngine.VOICE_FEMALE_PRIMARY,
             EdgeNeuralTtsEngine.resolveEdgeNeuralVoice(VoiceGender.FEMALE, "CHAR_001")
@@ -244,7 +246,27 @@ class DubbingPhase6Test {
             EdgeNeuralTtsEngine.resolveEdgeNeuralVoice(VoiceGender.MALE, "CHAR_004")
         )
 
-        // Strict timing rate clamping [-10%, +35%]
+        // Manual gender override takes precedence over detected gender
+        assertEquals(
+            VoiceGender.FEMALE,
+            EdgeNeuralTtsEngine.resolveEffectiveGender(
+                overrideMode = VoiceGenderOverrideMode.FEMALE,
+                manualCharacterAssigned = false,
+                acoustic = null,
+                profile = null
+            )
+        )
+        assertEquals(
+            VoiceGender.MALE,
+            EdgeNeuralTtsEngine.resolveEffectiveGender(
+                overrideMode = VoiceGenderOverrideMode.MALE,
+                manualCharacterAssigned = false,
+                acoustic = null,
+                profile = null
+            )
+        )
+
+        // Strict timing rate clamping [+0%, +35%]
         val fastRate = EdgeNeuralTtsEngine.computeStrictTimingRatePercent(
             bengaliText = "আমি এখনই খুব তাড়াতাড়ি বাড়ি ফিরে আসছি, তুমি চিন্তা করো না।",
             targetMs = 1_200L
@@ -254,9 +276,14 @@ class DubbingPhase6Test {
         val relaxedRate = EdgeNeuralTtsEngine.computeStrictTimingRatePercent(
             bengaliText = "হ্যালো",
             targetMs = 4_000L,
-            emotionRateBonusPercent = -3
+            emotionRateBonusPercent = 0
         )
-        assertTrue("Expected rate in [-10, 0], got $relaxedRate", relaxedRate in -10..0)
+        assertEquals(0, relaxedRate)
+
+        // Lip-sync playback speed fitting clamped strictly to [1.0f, 1.35f]
+        assertEquals(1.0f, DubbingPlaybackController.computeLipSyncFitSpeed(1_500L, 2_000L), 0.001f)
+        assertEquals(1.25f, DubbingPlaybackController.computeLipSyncFitSpeed(2_500L, 2_000L), 0.001f)
+        assertEquals(1.35f, DubbingPlaybackController.computeLipSyncFitSpeed(4_000L, 1_500L), 0.001f)
 
         // Valid SSML with XML escaping and prosody tags
         val ssml = EdgeNeuralTtsEngine.buildSsml(
@@ -272,15 +299,29 @@ class DubbingPhase6Test {
         assertTrue(ssml.contains("volume='+15%'"))
         assertTrue(ssml.contains("তুমি &amp; আমি &lt;বন্ধু&gt;"))
 
-        // Sec-MS-GEC token is 64-char uppercase SHA-256 hex
+        // Sec-MS-GEC token is 64-char uppercase SHA-256 hex & URL matches exact Edge protocol format
         val gec = EdgeNeuralTtsEngine.generateSecMsGec(1_730_000_000_000L)
         assertEquals(64, gec.length)
         assertTrue(gec.all { it in '0'..'9' || it in 'A'..'F' })
+
+        val wsUrl = EdgeNeuralTtsEngine.buildEdgeWebSocketUrl(
+            connectionId = "abcdef0123456789abcdef0123456789",
+            unixTimeMillis = 1_730_000_000_000L
+        )
+        assertEquals(
+            "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1" +
+                "?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4" +
+                "&Sec-MS-GEC=$gec&Sec-MS-GEC-Version=1-130.0.2849.68" +
+                "&ConnectionId=abcdef0123456789abcdef0123456789",
+            wsUrl
+        )
     }
 
     @Test
-    fun v220_audioProsodyAnalyzer_detectsMaleFemalePitchAndLoudSoftEnergy() {
+    fun v221_audioProsodyAnalyzer_detects155HzGenderThresholdAndExpressiveVolume() {
         val sr = AudioProsodyAnalyzer.SAMPLE_RATE_HZ
+        assertEquals(155.0f, AudioProsodyAnalyzer.FEMALE_F0_THRESHOLD_HZ, 0.001f)
+
         // 0.6s synthetic 115 Hz sine wave at high amplitude (0.28 -> loud Male)
         val loudMale = FloatArray((sr * 0.6f).toInt()) { i ->
             (0.28 * sin(2.0 * PI * 115.0 * i / sr)).toFloat()
@@ -291,40 +332,41 @@ class DubbingPhase6Test {
         assertEquals("+15%", maleProfile.ssmlVolume)
         assertEquals(4, maleProfile.ssmlPitchDeltaHz)
 
-        // 0.6s synthetic 225 Hz sine wave at soft amplitude (0.032 -> soft Female)
+        // 0.6s synthetic 165 Hz sine wave (>= 155 Hz threshold -> Female) at soft amplitude (0.032 -> soft)
         val softFemale = FloatArray((sr * 0.6f).toInt()) { i ->
-            (0.032 * sin(2.0 * PI * 225.0 * i / sr)).toFloat()
+            (0.032 * sin(2.0 * PI * 165.0 * i / sr)).toFloat()
         }
         val femaleProfile = AudioProsodyAnalyzer.analyzeSlice(softFemale, segmentIndex = 1)
         assertEquals(VoiceGender.FEMALE, femaleProfile.detectedGender)
         assertEquals(SegmentEnergyLevel.SOFT, femaleProfile.energyLevel)
-        assertEquals("-10%", femaleProfile.ssmlVolume)
+        assertEquals("-8%", femaleProfile.ssmlVolume)
         assertEquals(-2, femaleProfile.ssmlPitchDeltaHz)
     }
 
     @Test
-    fun v220_smartDuckingDefaultsToMixMode_5PercentDialogueAnd85PercentSilence() {
+    fun v221_smartDuckingDefaultsToMixMode_3PercentDialogueAnd80PercentSilence() {
         val defaultConfig = DubbingSessionConfig()
         assertEquals(DubbingAudioOutputMode.BENGALI_DUBBED_MIX, defaultConfig.audioOutputMode)
-        assertEquals(0.95f, defaultConfig.bgmDuckingStrength, 0.001f)
+        assertEquals(0.97f, defaultConfig.bgmDuckingStrength, 0.001f)
+        assertEquals(VoiceGenderOverrideMode.AUTO, defaultConfig.voiceGenderOverride)
 
         val windows = listOf(DialogueDuckingWindow(startMs = 2_000L, endMs = 4_000L))
-        // During silence before dialogue -> 0.85f (85% BGM)
+        // During silence before dialogue -> 0.80f (80% BGM)
         assertEquals(
-            0.85f,
-            BackgroundAudioPreserver.computeSmartDuckingVolume(500L, windows, 0.95f),
+            0.80f,
+            BackgroundAudioPreserver.computeSmartDuckingVolume(500L, windows, 0.97f),
             0.001f
         )
-        // During active Bengali line -> 0.05f (5% original audio so English never clashes)
+        // During active Bengali line -> 0.03f (3% original audio so English never clashes)
         assertEquals(
-            0.05f,
-            BackgroundAudioPreserver.computeSmartDuckingVolume(3_000L, windows, 0.95f),
+            0.03f,
+            BackgroundAudioPreserver.computeSmartDuckingVolume(3_000L, windows, 0.97f),
             0.001f
         )
-        // After dialogue fade-out -> smoothly restored to 0.85f
+        // After dialogue fade-out -> smoothly restored to 0.80f
         assertEquals(
-            0.85f,
-            BackgroundAudioPreserver.computeSmartDuckingVolume(4_500L, windows, 0.95f),
+            0.80f,
+            BackgroundAudioPreserver.computeSmartDuckingVolume(4_500L, windows, 0.97f),
             0.001f
         )
     }

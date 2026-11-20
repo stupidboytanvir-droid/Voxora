@@ -74,7 +74,19 @@ data class BengaliTtsSlotAvailability(
 }
 
 /**
- * A single synthesized offline Bengali WAV dialogue line mapped to a VOXORA Character Profile.
+ * Visible diagnostic state showing the exact active Bengali TTS engine or fallback error reason.
+ */
+data class TtsEngineDiagnosticState(
+    val activeVoiceLabel: String = "Active Voice: Edge Neural (Nabanita / Pradeep)",
+    val isFallback: Boolean = false,
+    val fallbackReason: String? = null
+)
+
+/**
+ * A single synthesized Bengali dialogue line mapped to a VOXORA Character Profile.
+ * - [audioFilePath]: WAV file path used by offline track assembly / MP4 export.
+ * - [clipFilePath]: Direct `.mp3` (Edge Neural in `cacheDir/dub_chunks/`) or `.wav` clip path
+ *   played by the dedicated non-overlapping per-clip playback engine.
  */
 data class DubbedAudioSegment(
     val segmentIndex: Int,
@@ -85,10 +97,11 @@ data class DubbedAudioSegment(
     val durationMs: Long,
     val text: String = "",
     val appliedSpeed: Float = 1.0f,
-    val appliedPitch: Float = 1.0f
+    val appliedPitch: Float = 1.0f,
+    val clipFilePath: String = audioFilePath
 ) {
     val targetWindowMs: Long
-        get() = (endMs - startMs).coerceAtLeast(0L)
+        get() = (endMs - startMs).coerceAtLeast(800L)
 }
 
 /**

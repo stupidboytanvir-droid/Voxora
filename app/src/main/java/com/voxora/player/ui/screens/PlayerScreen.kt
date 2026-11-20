@@ -136,6 +136,7 @@ fun PlayerScreen(
     val bengaliTtsSlotAvailability by viewModel.bengaliTtsSlotAvailability.collectAsStateWithLifecycle()
     val bengaliTtsInstalledFiles by viewModel.bengaliTtsInstalledFiles.collectAsStateWithLifecycle()
     val bengaliVoiceUiState by viewModel.bengaliVoiceUiState.collectAsStateWithLifecycle()
+    val ttsEngineDiagnostic by viewModel.ttsEngineDiagnosticState.collectAsStateWithLifecycle()
     val oneClickAiSetupState by viewModel.oneClickAiSetupState.collectAsStateWithLifecycle()
     val liveDubbingState by viewModel.liveDubbingState.collectAsStateWithLifecycle()
     val autoDubPipelineState by viewModel.autoDubPipelineState.collectAsStateWithLifecycle()
@@ -735,6 +736,8 @@ fun PlayerScreen(
                     onVocalAttenuationChange = viewModel::setVocalAttenuationEnabled,
                     onFastMovieModeChange = viewModel::setFastMovieModeEnabled,
                     onUseSherpaVitsExperimentalChange = viewModel::setUseSherpaVitsExperimental,
+                    ttsEngineDiagnostic = ttsEngineDiagnostic,
+                    onVoiceGenderOverrideChange = viewModel::setVoiceGenderOverride,
                     onAddCharacter = viewModel::addDubbingCharacter,
                     onUpdateCharacter = viewModel::updateDubbingCharacter,
                     onRemoveCharacter = viewModel::removeDubbingCharacter,

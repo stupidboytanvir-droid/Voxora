@@ -49,6 +49,22 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
+      - name: Cache Sherpa-ONNX v2.0.2 Android AAR
+        id: cache-sherpa
+        uses: actions/cache@v4
+        with:
+          path: app/libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar
+          key: sherpa-onnx-static-link-onnxruntime-2.0.2-aar
+
+      - name: Download Sherpa-ONNX v2.0.2 Android AAR
+        if: steps.cache-sherpa.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p app/libs
+          curl -fSL --retry 3 --retry-delay 5 \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.2/sherpa-onnx-static-link-onnxruntime-2.0.2.aar" \
+            -o app/libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar
+          ls -lh app/libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar
+
       - name: Decode permanent release keystore from GitHub Secrets
         id: keystore
         env:

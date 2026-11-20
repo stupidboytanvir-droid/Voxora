@@ -67,6 +67,7 @@ import com.voxora.player.ai.translation.BengaliTranslationUiState
 import com.voxora.player.ai.translation.TranslationExportFormat
 import com.voxora.player.ai.translation.TranslationExporter
 import com.voxora.player.ai.translation.TranslationModelState
+import com.voxora.player.dubbing.CharacterVoiceProfile
 import com.voxora.player.dubbing.whisper.TranscriptExporter
 import com.voxora.player.ui.theme.TabularTimeStyle
 import com.voxora.player.ui.theme.VoxoraElectricPurple
@@ -92,11 +93,15 @@ fun BengaliTranslationSection(
     onClearCachedTranslation: () -> Unit,
     onExportTranslation: (TranslationExportFormat) -> Unit,
     onSwitchToTranscribeTab: () -> Unit,
-    onSeekToTimestamp: (Long) -> Unit
+    onSeekToTimestamp: (Long) -> Unit,
+    characters: List<CharacterVoiceProfile> = emptyList(),
+    segmentCharacterMap: Map<Int, String> = emptyMap(),
+    onOverrideSegmentCharacter: (segmentIndex: Int, characterId: String) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     var requireWifiForDownload by remember { mutableStateOf(false) }
     var copiedNotice by remember { mutableStateOf(false) }
+    var overrideDialogSegmentIndex by remember { mutableStateOf<Int?>(null) }
 
     val isModelReady = modelState is TranslationModelState.Ready
     val hasEnglishTranscript = englishSegmentCount > 0
@@ -524,7 +529,7 @@ fun BengaliTranslationSection(
                     )
                     if (translationState.segments.isNotEmpty()) {
                         Text(
-                            text = "Tap segment to seek",
+                            text = "Tap time to seek · Tap line to set speaker",
                             style = MaterialTheme.typography.labelSmall,
                             color = VoxoraSubtleBlue
                         )
@@ -559,26 +564,51 @@ fun BengaliTranslationSection(
                                     modifier = Modifier.padding(bottom = 8.dp)
                                 )
                             }
+                            val resolvedCharId = segment.characterId ?: segmentCharacterMap[segment.index]
+                            val assignedCharacter = characters.firstOrNull { it.characterId == resolvedCharId }
+
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
-                                    .clickable { onSeekToTimestamp(segment.startMs) }
+                                    .clickable {
+                                        if (characters.isNotEmpty()) {
+                                            overrideDialogSegmentIndex = segment.index
+                                        } else {
+                                            onSeekToTimestamp(segment.startMs)
+                                        }
+                                    }
                                     .padding(vertical = 4.dp, horizontal = 4.dp)
                                     .testTag("translated_segment_${segment.index}"),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Surface(
-                                    color = VoxoraElectricPurple.copy(alpha = 0.22f),
-                                    shape = RoundedCornerShape(8.dp),
-                                    border = BorderStroke(1.dp, VoxoraElectricPurple.copy(alpha = 0.55f))
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Text(
-                                        text = "${TranscriptExporter.formatReadableTimestamp(segment.startMs)} → ${TranscriptExporter.formatReadableTimestamp(segment.endMs)}",
-                                        style = TabularTimeStyle,
-                                        color = VoxoraElectricPurpleBright,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                                    )
+                                    Surface(
+                                        color = VoxoraElectricPurple.copy(alpha = 0.22f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, VoxoraElectricPurple.copy(alpha = 0.55f)),
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { onSeekToTimestamp(segment.startMs) }
+                                    ) {
+                                        Text(
+                                            text = "${TranscriptExporter.formatReadableTimestamp(segment.startMs)} → ${TranscriptExporter.formatReadableTimestamp(segment.endMs)}",
+                                            style = TabularTimeStyle,
+                                            color = VoxoraElectricPurpleBright,
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                        )
+                                    }
+                                    if (characters.isNotEmpty()) {
+                                        DialogueCharacterBadge(
+                                            character = assignedCharacter,
+                                            characters = characters,
+                                            onClick = { overrideDialogSegmentIndex = segment.index },
+                                            modifier = Modifier.testTag("translated_segment_character_badge_${segment.index}")
+                                        )
+                                    }
                                 }
                                 Row(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -620,6 +650,25 @@ fun BengaliTranslationSection(
                 }
             }
         }
+    }
+
+    val targetSegIndex = overrideDialogSegmentIndex
+    val targetSegment = targetSegIndex?.let { idx ->
+        translationState.segments.firstOrNull { it.index == idx }
+    }
+    if (targetSegIndex != null && targetSegment != null) {
+        val currentCharId = targetSegment.characterId ?: segmentCharacterMap[targetSegment.index]
+        CharacterOverrideDialog(
+            segmentStartMs = targetSegment.startMs,
+            dialoguePreview = "${targetSegment.originalText} — ${targetSegment.translatedText}",
+            currentCharacterId = currentCharId,
+            characters = characters,
+            onSelectCharacter = { newCharId ->
+                onOverrideSegmentCharacter(targetSegment.index, newCharId)
+            },
+            onSeekToSegment = { onSeekToTimestamp(targetSegment.startMs) },
+            onDismiss = { overrideDialogSegmentIndex = null }
+        )
     }
 }
 

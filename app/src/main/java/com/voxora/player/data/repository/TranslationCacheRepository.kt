@@ -36,6 +36,30 @@ class TranslationCacheRepository(
         translationDao.replaceSegmentsForVideo(videoUri, entities)
     }
 
+    suspend fun updateSegmentCharacterId(
+        videoUri: String,
+        segmentIndex: Int,
+        characterId: String?
+    ) {
+        if (videoUri.isBlank()) return
+        translationDao.updateSegmentCharacterId(
+            videoUri = videoUri,
+            segmentIndex = segmentIndex,
+            characterId = characterId
+        )
+    }
+
+    suspend fun updateSegmentCharacterIds(
+        videoUri: String,
+        assignments: Map<Int, String?>
+    ) {
+        if (videoUri.isBlank() || assignments.isEmpty()) return
+        translationDao.updateSegmentCharacterIds(
+            videoUri = videoUri,
+            assignments = assignments
+        )
+    }
+
     suspend fun clearTranslationForVideo(videoUri: String) {
         if (videoUri.isBlank()) return
         translationDao.deleteSegmentsForVideo(videoUri)

@@ -18,5 +18,6 @@ local.properties
 debug.keystore
 debug.keystore.base64
 *.jks
+app/libs/*.aar
 .build-outputs/
 .aistudio/

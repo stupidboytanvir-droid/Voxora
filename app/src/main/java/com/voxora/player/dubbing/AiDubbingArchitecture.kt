@@ -1,5 +1,6 @@
 package com.voxora.player.dubbing
 
+import com.voxora.player.ai.diarization.DiarizationModelState
 import com.voxora.player.ai.translation.TranslationModelState
 
 /**
@@ -274,6 +275,8 @@ interface AiDubbingPipeline {
         isWhisperModelLoaded: Boolean = false,
         isTranscribing: Boolean = false,
         whisperModelDetail: String? = null,
+        diarizationModelState: DiarizationModelState = DiarizationModelState.NotInstalled,
+        isDiarizing: Boolean = false,
         translationModelState: TranslationModelState = TranslationModelState.NotDownloaded,
         isTranslating: Boolean = false
     ): List<PipelineStageStatus>
@@ -358,6 +361,8 @@ class Version1AiDubbingPipeline(
         isWhisperModelLoaded: Boolean,
         isTranscribing: Boolean,
         whisperModelDetail: String?,
+        diarizationModelState: DiarizationModelState,
+        isDiarizing: Boolean,
         translationModelState: TranslationModelState,
         isTranslating: Boolean
     ): List<PipelineStageStatus> {
@@ -437,14 +442,38 @@ class Version1AiDubbingPipeline(
             )
         }
 
+        val diarizationStatus = when {
+            isDiarizing -> PipelineStageStatus(
+                stage = DubbingPipelineStage.SPEAKER_DIARIZATION,
+                readiness = ComponentReadiness.RUNNING,
+                statusDetail = "Detecting & clustering speakers offline via Sherpa-ONNX..."
+            )
+            diarizationModelState is DiarizationModelState.Ready -> PipelineStageStatus(
+                stage = DubbingPipelineStage.SPEAKER_DIARIZATION,
+                readiness = ComponentReadiness.READY,
+                statusDetail = "Sherpa-ONNX offline segmentation & speaker embedding models verified & ready on-device"
+            )
+            diarizationModelState is DiarizationModelState.Downloading -> PipelineStageStatus(
+                stage = DubbingPipelineStage.SPEAKER_DIARIZATION,
+                readiness = ComponentReadiness.RUNNING,
+                statusDetail = "${diarizationModelState.stageLabel} (${diarizationModelState.progress}%)"
+            )
+            diarizationModelState is DiarizationModelState.Error -> PipelineStageStatus(
+                stage = DubbingPipelineStage.SPEAKER_DIARIZATION,
+                readiness = ComponentReadiness.ERROR,
+                statusDetail = diarizationModelState.message
+            )
+            else -> PipelineStageStatus(
+                stage = DubbingPipelineStage.SPEAKER_DIARIZATION,
+                readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
+                statusDetail = "Sherpa-ONNX integrated · Diarization Model Required / Not Installed (~31 MB offline ONNX models)"
+            )
+        }
+
         return listOf(
             extractionStatus,
             asrStatus,
-            PipelineStageStatus(
-                stage = DubbingPipelineStage.SPEAKER_DIARIZATION,
-                readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
-                statusDetail = "Character registry & whole-movie speaker lock ready · Awaiting offline speaker clustering engine"
-            ),
+            diarizationStatus,
             translationStatus,
             PipelineStageStatus(
                 stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,

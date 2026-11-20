@@ -69,6 +69,11 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.voxora.player.ai.diarization.DiarizationModelFiles
+import com.voxora.player.ai.diarization.DiarizationModelSlot
+import com.voxora.player.ai.diarization.DiarizationModelState
+import com.voxora.player.ai.diarization.DiarizationSlotAvailability
+import com.voxora.player.ai.diarization.SpeakerDiarizationUiState
 import com.voxora.player.ai.translation.BengaliTranslationUiState
 import com.voxora.player.ai.translation.TranslationExportFormat
 import com.voxora.player.ai.translation.TranslationModelState
@@ -91,6 +96,7 @@ import com.voxora.player.util.FormatUtils
 private enum class DubbingStudioTab(val label: String) {
     CONTROLS("Controls"),
     TRANSCRIBE("Transcribe"),
+    SPEAKERS("Speakers"),
     TRANSLATE("Translate"),
     CHARACTERS("Characters"),
     PIPELINE("Pipeline")
@@ -105,6 +111,10 @@ fun AiDubbingStudioSheet(
     whisperTranscriptionState: WhisperTranscriptionState,
     translationModelState: TranslationModelState,
     translationUiState: BengaliTranslationUiState,
+    diarizationModelState: DiarizationModelState,
+    diarizationSlotAvailability: DiarizationSlotAvailability,
+    diarizationInstalledFiles: DiarizationModelFiles?,
+    diarizationUiState: SpeakerDiarizationUiState,
     onSetEnabled: (Boolean) -> Unit,
     onSelectSourceLanguage: (DubbingLanguage) -> Unit,
     onSelectTargetLanguage: (DubbingLanguage) -> Unit,
@@ -136,6 +146,17 @@ fun AiDubbingStudioSheet(
     onStopTranslation: () -> Unit,
     onClearCachedTranslation: () -> Unit,
     onExportTranslation: (TranslationExportFormat) -> Unit,
+    onCheckDiarizationModelStatus: () -> Unit,
+    onDownloadDiarizationModels: () -> Unit,
+    onCancelDiarizationDownload: () -> Unit,
+    onImportLocalDiarizationModel: (DiarizationModelSlot) -> Unit,
+    onDeleteDiarizationModels: () -> Unit,
+    onSelectDiarizationClusters: (Int) -> Unit,
+    onDiarizationThresholdChange: (Float) -> Unit,
+    onStartDiarization: () -> Unit,
+    onStopDiarization: () -> Unit,
+    onReassignSpeakerToCharacter: (speakerIndex: Int, characterId: String) -> Unit,
+    onOverrideSegmentCharacter: (segmentIndex: Int, characterId: String) -> Unit,
     onSeekToTimestamp: (Long) -> Unit,
     onInspectAudioTrack: () -> Unit,
     onRunStage1Extraction: () -> Unit,
@@ -196,7 +217,7 @@ fun AiDubbingStudioSheet(
                             border = BorderStroke(1.dp, VoxoraElectricPurple)
                         ) {
                             Text(
-                                text = "PHASE 3",
+                                text = "PHASE 4",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = VoxoraElectricPurpleBright,
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
@@ -204,7 +225,7 @@ fun AiDubbingStudioSheet(
                         }
                     }
                     Text(
-                        text = "${state.config.sourceLanguage.displayName} → ${state.config.targetLanguage.displayName} (${state.config.targetLanguage.nativeName}) · whisper.cpp + ML Kit Offline",
+                        text = "${state.config.sourceLanguage.displayName} → ${state.config.targetLanguage.displayName} (${state.config.targetLanguage.nativeName}) · whisper.cpp + Sherpa-ONNX + ML Kit",
                         style = MaterialTheme.typography.bodySmall,
                         color = VoxoraSubtleBlue
                     )
@@ -236,7 +257,7 @@ fun AiDubbingStudioSheet(
                         modifier = Modifier.size(18.dp)
                     )
                     Text(
-                        text = "${state.readyComponentCount}/${state.totalComponentCount} stages ready on-device. Offline English ASR (whisper.cpp) and Offline English → বাংলা Translation (ML Kit) are integrated with zero paid APIs.",
+                        text = "${state.readyComponentCount}/${state.totalComponentCount} stages ready on-device. Offline ASR (whisper.cpp), Speaker Diarization (Sherpa-ONNX), and EN → বাংলা Translation (ML Kit) run 100% offline with zero paid APIs.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.White.copy(alpha = 0.85f)
                     )
@@ -269,6 +290,7 @@ fun AiDubbingStudioSheet(
                             val icon = when (tab) {
                                 DubbingStudioTab.CONTROLS -> Icons.Rounded.Tune
                                 DubbingStudioTab.TRANSCRIBE -> Icons.Rounded.GraphicEq
+                                DubbingStudioTab.SPEAKERS -> Icons.Rounded.RecordVoiceOver
                                 DubbingStudioTab.TRANSLATE -> Icons.Rounded.Translate
                                 DubbingStudioTab.CHARACTERS -> Icons.Rounded.People
                                 DubbingStudioTab.PIPELINE -> Icons.Rounded.Layers
@@ -322,7 +344,31 @@ fun AiDubbingStudioSheet(
                         onStartTranscription = onStartTranscription,
                         onStopTranscription = onStopTranscription,
                         onExportTranscript = onExportTranscription,
-                        onSeekToTimestamp = onSeekToTimestamp
+                        onSeekToTimestamp = onSeekToTimestamp,
+                        characters = state.config.characterVoices,
+                        segmentCharacterMap = diarizationUiState.segmentCharacterMap,
+                        onOverrideSegmentCharacter = onOverrideSegmentCharacter
+                    )
+                }
+                DubbingStudioTab.SPEAKERS -> {
+                    SpeakerDiarizationSection(
+                        videoTitle = videoTitle,
+                        hasActiveVideo = state.config.mediaUriString.isNotBlank(),
+                        modelState = diarizationModelState,
+                        slotAvailability = diarizationSlotAvailability,
+                        installedFiles = diarizationInstalledFiles,
+                        diarizationState = diarizationUiState,
+                        characters = state.config.characterVoices,
+                        onCheckModelStatus = onCheckDiarizationModelStatus,
+                        onDownloadModels = onDownloadDiarizationModels,
+                        onCancelModelDownload = onCancelDiarizationDownload,
+                        onImportLocalModel = onImportLocalDiarizationModel,
+                        onDeleteModels = onDeleteDiarizationModels,
+                        onSelectNumClusters = onSelectDiarizationClusters,
+                        onThresholdChange = onDiarizationThresholdChange,
+                        onStartDiarization = onStartDiarization,
+                        onStopDiarization = onStopDiarization,
+                        onReassignSpeaker = onReassignSpeakerToCharacter
                     )
                 }
                 DubbingStudioTab.TRANSLATE -> {
@@ -339,7 +385,10 @@ fun AiDubbingStudioSheet(
                         onClearCachedTranslation = onClearCachedTranslation,
                         onExportTranslation = onExportTranslation,
                         onSwitchToTranscribeTab = { selectedTab = DubbingStudioTab.TRANSCRIBE },
-                        onSeekToTimestamp = onSeekToTimestamp
+                        onSeekToTimestamp = onSeekToTimestamp,
+                        characters = state.config.characterVoices,
+                        segmentCharacterMap = diarizationUiState.segmentCharacterMap,
+                        onOverrideSegmentCharacter = onOverrideSegmentCharacter
                     )
                 }
                 DubbingStudioTab.CHARACTERS -> {

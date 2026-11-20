@@ -25,6 +25,33 @@ interface TranslationDao {
     @Query("SELECT COUNT(*) FROM translated_segments WHERE videoUri = :videoUri")
     suspend fun countSegmentsForVideo(videoUri: String): Int
 
+    @Query(
+        "UPDATE translated_segments SET characterId = :characterId, updatedAtMs = :updatedAtMs " +
+            "WHERE videoUri = :videoUri AND segmentIndex = :segmentIndex"
+    )
+    suspend fun updateSegmentCharacterId(
+        videoUri: String,
+        segmentIndex: Int,
+        characterId: String?,
+        updatedAtMs: Long = System.currentTimeMillis()
+    )
+
+    @Transaction
+    suspend fun updateSegmentCharacterIds(
+        videoUri: String,
+        assignments: Map<Int, String?>,
+        updatedAtMs: Long = System.currentTimeMillis()
+    ) {
+        assignments.forEach { (segmentIndex, characterId) ->
+            updateSegmentCharacterId(
+                videoUri = videoUri,
+                segmentIndex = segmentIndex,
+                characterId = characterId,
+                updatedAtMs = updatedAtMs
+            )
+        }
+    }
+
     @Transaction
     suspend fun replaceSegmentsForVideo(
         videoUri: String,

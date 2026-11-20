@@ -19,6 +19,8 @@ import com.voxora.player.dubbing.AndroidVideoAudioExtractor
 import com.voxora.player.dubbing.DubbingPreferencesRepository
 import com.voxora.player.dubbing.Version1AiDubbingPipeline
 import com.voxora.player.dubbing.VideoAudioExtractor
+import com.voxora.player.ai.diarization.DiarizationModelManager
+import com.voxora.player.ai.diarization.OfflineDiarizationEngine
 import com.voxora.player.ai.translation.OfflineTranslationEngine
 import com.voxora.player.ai.translation.OfflineTranslationManager
 import com.voxora.player.dubbing.whisper.WhisperCppSpeechRecognitionEngine
@@ -55,6 +57,10 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         private set
     lateinit var translationCacheRepository: TranslationCacheRepository
         private set
+    lateinit var diarizationModelManager: DiarizationModelManager
+        private set
+    lateinit var offlineDiarizationEngine: OfflineDiarizationEngine
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -74,6 +80,8 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         offlineTranslationManager = OfflineTranslationManager()
         offlineTranslationEngine = OfflineTranslationEngine(offlineTranslationManager)
         translationCacheRepository = TranslationCacheRepository(database.translationDao())
+        diarizationModelManager = DiarizationModelManager(this)
+        offlineDiarizationEngine = OfflineDiarizationEngine(this, diarizationModelManager)
     }
 
     override fun newImageLoader(): ImageLoader {

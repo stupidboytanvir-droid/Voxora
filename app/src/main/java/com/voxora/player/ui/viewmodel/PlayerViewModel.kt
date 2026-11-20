@@ -5,6 +5,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.voxora.player.VoxoraApplication
+import com.voxora.player.ai.diarization.DiarizationModelFiles
+import com.voxora.player.ai.diarization.DiarizationModelManager
+import com.voxora.player.ai.diarization.DiarizationModelSlot
+import com.voxora.player.ai.diarization.DiarizationModelState
+import com.voxora.player.ai.diarization.DiarizationSlotAvailability
+import com.voxora.player.ai.diarization.OfflineDiarizationEngine
+import com.voxora.player.ai.diarization.SpeakerCharacterMapper
+import com.voxora.player.ai.diarization.SpeakerDiarizationUiState
 import com.voxora.player.ai.translation.BengaliTranslationUiState
 import com.voxora.player.ai.translation.OfflineTranslationEngine
 import com.voxora.player.ai.translation.OfflineTranslationManager
@@ -85,7 +93,9 @@ class PlayerViewModel(
     private val whisperSpeechEngine: WhisperCppSpeechRecognitionEngine,
     private val offlineTranslationManager: OfflineTranslationManager,
     private val offlineTranslationEngine: OfflineTranslationEngine,
-    private val translationCacheRepository: TranslationCacheRepository
+    private val translationCacheRepository: TranslationCacheRepository,
+    private val diarizationModelManager: DiarizationModelManager,
+    private val offlineDiarizationEngine: OfflineDiarizationEngine
 ) : ViewModel() {
 
     val playerEngine = VoxoraPlayerEngine(app)
@@ -148,18 +158,38 @@ class PlayerViewModel(
     val whisperModelStatus: StateFlow<WhisperModelStatus> = whisperSpeechEngine.modelStatus
     val whisperTranscriptionState: StateFlow<WhisperTranscriptionState> = whisperSpeechEngine.transcriptionState
     val translationModelState: StateFlow<TranslationModelState> = offlineTranslationManager.modelState
+    val diarizationModelState: StateFlow<DiarizationModelState> = diarizationModelManager.modelState
+    val diarizationSlotAvailability: StateFlow<DiarizationSlotAvailability> = diarizationModelManager.slotAvailability
+    val diarizationInstalledFiles: StateFlow<DiarizationModelFiles?> = diarizationModelManager.installedFiles
 
     private val _translationUiState = MutableStateFlow(BengaliTranslationUiState())
     val translationUiState: StateFlow<BengaliTranslationUiState> = _translationUiState.asStateFlow()
 
+    private val _diarizationUiState = MutableStateFlow(SpeakerDiarizationUiState())
+    val diarizationUiState: StateFlow<SpeakerDiarizationUiState> = _diarizationUiState.asStateFlow()
+
     private var activeTranslationJob: Job? = null
+    private var activeDiarizationModelJob: Job? = null
+    private var activeDiarizationJob: Job? = null
+    private val manualSegmentCharacterOverrides = mutableMapOf<Int, String>()
+
+    private val diarizationSnapshotFlow = combine(
+        diarizationModelState,
+        _diarizationUiState
+    ) { modelState, uiState ->
+        DiarizationPipelineSnapshot(
+            modelState = modelState,
+            isDiarizing = uiState.isRunning
+        )
+    }
 
     private val whisperSnapshotFlow = combine(
         whisperModelStatus,
         whisperTranscriptionState,
         translationModelState,
-        _translationUiState
-    ) { modelStatus, transState, translationState, translationUi ->
+        _translationUiState,
+        diarizationSnapshotFlow
+    ) { modelStatus, transState, translationState, translationUi, diarizationSnap ->
         WhisperPipelineSnapshot(
             isModelLoaded = modelStatus is WhisperModelStatus.LoadedReady,
             isTranscribing = transState.isRunning,
@@ -171,6 +201,8 @@ class PlayerViewModel(
                 is WhisperModelStatus.Error -> modelStatus.message
                 else -> "Native whisper.cpp compiled · Download or import ggml-base.en.bin in Transcribe tab"
             },
+            diarizationModelState = diarizationSnap.modelState,
+            isDiarizing = diarizationSnap.isDiarizing,
             translationModelState = translationState,
             isTranslating = translationUi.isTranslating
         )
@@ -207,6 +239,8 @@ class PlayerViewModel(
                 isWhisperModelLoaded = extraction.whisper.isModelLoaded,
                 isTranscribing = extraction.whisper.isTranscribing,
                 whisperModelDetail = extraction.whisper.detail,
+                diarizationModelState = extraction.whisper.diarizationModelState,
+                isDiarizing = extraction.whisper.isDiarizing,
                 translationModelState = extraction.whisper.translationModelState,
                 isTranslating = extraction.whisper.isTranslating
             ),
@@ -220,6 +254,7 @@ class PlayerViewModel(
             pipelineStages = aiDubbingPipeline.buildStageStatuses(
                 extractedAudioInfo = null,
                 isExtractingAudio = false,
+                diarizationModelState = diarizationModelManager.modelState.value,
                 translationModelState = offlineTranslationManager.modelState.value
             ),
             ttsPreviewState = ttsPreviewEngine.state.value
@@ -235,6 +270,7 @@ class PlayerViewModel(
     init {
         viewModelScope.launch {
             offlineTranslationManager.checkModelStatus()
+            diarizationModelManager.checkModelStatus()
         }
 
         viewModelScope.launch {
@@ -280,6 +316,13 @@ class PlayerViewModel(
         lastSavedPositionMs = -1L
         _extractedAudioInfo.value = null
         _extractionMessage.value = null
+        stopSpeakerDiarization()
+        manualSegmentCharacterOverrides.clear()
+        _diarizationUiState.value = SpeakerDiarizationUiState(
+            activeVideoUri = uriString,
+            numClustersConfig = _diarizationUiState.value.numClustersConfig,
+            thresholdConfig = _diarizationUiState.value.thresholdConfig
+        )
         loadCachedTranslationForVideo(uriString, fallbackTitle)
 
         viewModelScope.launch {
@@ -750,6 +793,14 @@ class PlayerViewModel(
                     .getOrDefault(emptyList())
             }
             if (activeUriString == uriString && cached.isNotEmpty()) {
+                val restoredCharacterMap = cached
+                    .mapNotNull { seg -> seg.characterId?.let { charId -> seg.index to charId } }
+                    .toMap()
+                if (restoredCharacterMap.isNotEmpty()) {
+                    _diarizationUiState.value = _diarizationUiState.value.copy(
+                        segmentCharacterMap = restoredCharacterMap
+                    )
+                }
                 _translationUiState.value = BengaliTranslationUiState(
                     isTranslating = false,
                     completedSegments = cached.size,
@@ -832,20 +883,25 @@ class PlayerViewModel(
 
                 result.fold(
                     onSuccess = { translated ->
-                        if (uri.isNotBlank() && translated.isNotEmpty()) {
+                        val assignedMap = _diarizationUiState.value.segmentCharacterMap
+                        val enriched = SpeakerCharacterMapper.applyCharactersToTranslatedSegments(
+                            segments = translated,
+                            segmentIndexToCharacterId = assignedMap
+                        )
+                        if (uri.isNotBlank() && enriched.isNotEmpty()) {
                             withContext(Dispatchers.IO) {
                                 runCatching {
-                                    translationCacheRepository.saveTranslation(uri, translated)
+                                    translationCacheRepository.saveTranslation(uri, enriched)
                                 }
                             }
                         }
                         _translationUiState.value = _translationUiState.value.copy(
                             isTranslating = false,
-                            completedSegments = translated.size,
-                            totalSegments = translated.size,
-                            segments = translated,
+                            completedSegments = enriched.size,
+                            totalSegments = enriched.size,
+                            segments = enriched,
                             isLoadedFromCache = false,
-                            statusMessage = "Completed · ${translated.size} segments translated offline & cached locally",
+                            statusMessage = "Completed · ${enriched.size} segments translated offline & cached locally",
                             errorMessage = null
                         )
                     },
@@ -930,6 +986,321 @@ class PlayerViewModel(
         }
     }
 
+    // --- Phase 4 Real Offline Speaker Diarization & Automatic Character Mapping (Sherpa-ONNX) ---
+
+    fun checkDiarizationModelStatus() {
+        viewModelScope.launch {
+            diarizationModelManager.checkModelStatus()
+        }
+    }
+
+    fun downloadDiarizationModels() {
+        if (activeDiarizationModelJob?.isActive == true) return
+        activeDiarizationModelJob = viewModelScope.launch {
+            diarizationModelManager.downloadModels()
+        }
+    }
+
+    fun cancelDiarizationModelDownload() {
+        activeDiarizationModelJob?.cancel()
+        activeDiarizationModelJob = null
+        viewModelScope.launch {
+            diarizationModelManager.checkModelStatus()
+        }
+    }
+
+    fun importLocalDiarizationModel(slot: DiarizationModelSlot, uri: Uri) {
+        if (activeDiarizationModelJob?.isActive == true) return
+        val displayName = resolveDocumentDisplayName(uri)
+        activeDiarizationModelJob = viewModelScope.launch {
+            diarizationModelManager.importLocalModel(
+                slot = slot,
+                sourceUri = uri,
+                displayName = displayName
+            )
+        }
+    }
+
+    fun deleteDiarizationModels() {
+        stopSpeakerDiarization()
+        activeDiarizationModelJob?.cancel()
+        activeDiarizationModelJob = null
+        viewModelScope.launch {
+            offlineDiarizationEngine.release()
+            diarizationModelManager.deleteModels()
+        }
+    }
+
+    fun setDiarizationNumClusters(numClusters: Int) {
+        val clamped = if (numClusters <= 0) -1 else numClusters.coerceIn(1, 10)
+        _diarizationUiState.value = _diarizationUiState.value.copy(numClustersConfig = clamped)
+    }
+
+    fun setDiarizationThreshold(threshold: Float) {
+        _diarizationUiState.value = _diarizationUiState.value.copy(
+            thresholdConfig = threshold.coerceIn(0.25f, 0.85f)
+        )
+    }
+
+    fun startSpeakerDiarization() {
+        if (activeDiarizationJob?.isActive == true) return
+        val uri = activeUriString.orEmpty()
+        if (uri.isBlank()) {
+            _diarizationUiState.value = _diarizationUiState.value.copy(
+                errorMessage = "No local video is currently loaded."
+            )
+            return
+        }
+        if (diarizationModelState.value !is DiarizationModelState.Ready) {
+            _diarizationUiState.value = _diarizationUiState.value.copy(
+                errorMessage = "Diarization Model Required / Not Installed: Download or import the offline Sherpa-ONNX models above first."
+            )
+            return
+        }
+
+        val clusters = _diarizationUiState.value.numClustersConfig
+        val threshold = _diarizationUiState.value.thresholdConfig
+
+        _diarizationUiState.value = _diarizationUiState.value.copy(
+            isRunning = true,
+            progressFraction = 0.02f,
+            statusMessage = "Starting offline Sherpa-ONNX speaker detection...",
+            errorMessage = null,
+            activeVideoUri = uri,
+            autoCreatedCharacterCount = 0
+        )
+
+        activeDiarizationJob = viewModelScope.launch {
+            try {
+                val result = offlineDiarizationEngine.diarizeVideo(
+                    mediaUriString = uri,
+                    numClusters = clusters,
+                    threshold = threshold,
+                    onProgress = { fraction, label ->
+                        _diarizationUiState.value = _diarizationUiState.value.copy(
+                            progressFraction = fraction.coerceIn(0f, 1f),
+                            statusMessage = label
+                        )
+                    }
+                )
+
+                result.fold(
+                    onSuccess = { speakerSegments ->
+                        val transcriptSegments = whisperTranscriptionState.value.segments
+                        val translatedSegments = _translationUiState.value.segments
+                        val dialogueIntervals: List<Pair<Long, Long>> = when {
+                            transcriptSegments.isNotEmpty() ->
+                                transcriptSegments.map { it.startTimeMs to it.endTimeMs }
+                            translatedSegments.isNotEmpty() ->
+                                translatedSegments.map { it.startMs to it.endMs }
+                            else -> emptyList()
+                        }
+
+                        val currentConfig = dubbingConfigFlow.value
+                        val currentAssignments = activeMovieAssignmentsFlow.value
+                        val mapping = SpeakerCharacterMapper.mapSpeakersToCharacters(
+                            speakerSegments = speakerSegments,
+                            dialogueIntervals = dialogueIntervals,
+                            savedCharacters = currentConfig.characterVoices,
+                            existingMovieAssignments = currentAssignments,
+                            existingManualOverrides = manualSegmentCharacterOverrides
+                        )
+
+                        // Persist any newly auto-created Character profiles & per-movie speaker locks
+                        if (mapping.newlyCreatedCharacterIds.isNotEmpty()) {
+                            dubbingPreferencesRepository.saveCharacters(mapping.updatedCharacters)
+                        }
+                        if (mapping.movieAssignments.isNotEmpty()) {
+                            dubbingPreferencesRepository.saveMovieAssignments(uri, mapping.movieAssignments)
+                        }
+
+                        // Apply aligned characters to Whisper transcript & Bengali translated segments + Room DB
+                        if (mapping.segmentIndexToCharacterId.isNotEmpty()) {
+                            whisperSpeechEngine.applySpeakerAssignments(mapping.segmentIndexToCharacterId)
+                            if (translatedSegments.isNotEmpty()) {
+                                val updatedTranslated = SpeakerCharacterMapper.applyCharactersToTranslatedSegments(
+                                    segments = translatedSegments,
+                                    segmentIndexToCharacterId = mapping.segmentIndexToCharacterId
+                                )
+                                _translationUiState.value = _translationUiState.value.copy(segments = updatedTranslated)
+                                withContext(Dispatchers.IO) {
+                                    runCatching {
+                                        translationCacheRepository.updateSegmentCharacterIds(
+                                            videoUri = uri,
+                                            assignments = mapping.segmentIndexToCharacterId
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        val distinctCount = speakerSegments.map { it.speakerIndex }.distinct().size
+                        val createdSuffix = if (mapping.newlyCreatedCharacterIds.isNotEmpty()) {
+                            " · Auto-created ${mapping.newlyCreatedCharacterIds.size} new character(s)"
+                        } else {
+                            ""
+                        }
+
+                        _diarizationUiState.value = _diarizationUiState.value.copy(
+                            isRunning = false,
+                            progressFraction = 1f,
+                            statusMessage = if (distinctCount == 0) {
+                                "Completed · No distinct speakers detected in audio"
+                            } else {
+                                "Detected $distinctCount speaker(s) across ${speakerSegments.size} turns$createdSuffix"
+                            },
+                            errorMessage = null,
+                            detectedSegments = speakerSegments,
+                            speakerToCharacterMap = mapping.speakerToCharacterMap,
+                            segmentCharacterMap = mapping.segmentIndexToCharacterId,
+                            autoCreatedCharacterCount = mapping.newlyCreatedCharacterIds.size
+                        )
+                    },
+                    onFailure = { err ->
+                        _diarizationUiState.value = _diarizationUiState.value.copy(
+                            isRunning = false,
+                            statusMessage = "Diarization failed",
+                            errorMessage = err.message ?: "Offline speaker diarization failed."
+                        )
+                    }
+                )
+            } catch (ce: CancellationException) {
+                _diarizationUiState.value = _diarizationUiState.value.copy(
+                    isRunning = false,
+                    statusMessage = "Stopped by user",
+                    errorMessage = null
+                )
+                throw ce
+            }
+        }
+    }
+
+    fun stopSpeakerDiarization() {
+        offlineDiarizationEngine.requestCancel()
+        val job = activeDiarizationJob
+        activeDiarizationJob = null
+        job?.cancel()
+        if (_diarizationUiState.value.isRunning) {
+            _diarizationUiState.value = _diarizationUiState.value.copy(
+                isRunning = false,
+                statusMessage = "Stopped by user",
+                errorMessage = null
+            )
+        }
+    }
+
+    /**
+     * Reassigns an entire detected speaker cluster (`Speaker 1`, `Speaker 2`, ...) to any saved
+     * VOXORA Character profile and updates DataStore movie locks, transcript labels, and Room cache.
+     */
+    fun reassignSpeakerToCharacter(speakerIndex: Int, characterId: String) {
+        val uri = activeUriString.orEmpty()
+        val currentState = _diarizationUiState.value
+        val targetCharacter = dubbingConfigFlow.value.characterVoices
+            .firstOrNull { it.characterId == characterId } ?: return
+
+        val updatedSpeakerMap = currentState.speakerToCharacterMap.toMutableMap().apply {
+            put(speakerIndex, characterId)
+        }
+
+        val transcriptSegments = whisperTranscriptionState.value.segments
+        val translatedSegments = _translationUiState.value.segments
+        val dialogueIntervals: List<Pair<Long, Long>> = when {
+            transcriptSegments.isNotEmpty() -> transcriptSegments.map { it.startTimeMs to it.endTimeMs }
+            translatedSegments.isNotEmpty() -> translatedSegments.map { it.startMs to it.endMs }
+            else -> emptyList()
+        }
+
+        val updatedSegmentMap = currentState.segmentCharacterMap.toMutableMap()
+        dialogueIntervals.forEachIndexed { index, (startMs, endMs) ->
+            if (index !in manualSegmentCharacterOverrides) {
+                val bestSpeaker = SpeakerCharacterMapper.findBestSpeakerIndexForInterval(
+                    startMs = startMs,
+                    endMs = endMs,
+                    speakerSegments = currentState.detectedSegments
+                )
+                if (bestSpeaker == speakerIndex) {
+                    updatedSegmentMap[index] = characterId
+                }
+            }
+        }
+
+        _diarizationUiState.value = currentState.copy(
+            speakerToCharacterMap = updatedSpeakerMap,
+            segmentCharacterMap = updatedSegmentMap
+        )
+
+        whisperSpeechEngine.applySpeakerAssignments(updatedSegmentMap)
+        if (translatedSegments.isNotEmpty()) {
+            val updatedTranslated = SpeakerCharacterMapper.applyCharactersToTranslatedSegments(
+                segments = translatedSegments,
+                segmentIndexToCharacterId = updatedSegmentMap
+            )
+            _translationUiState.value = _translationUiState.value.copy(segments = updatedTranslated)
+        }
+
+        viewModelScope.launch {
+            if (uri.isNotBlank()) {
+                val slotId = SpeakerCharacterMapper.speakerSlotId(speakerIndex)
+                val existingAssignments = activeMovieAssignmentsFlow.value
+                    .filterNot { it.diarizationSpeakerId.equals(slotId, ignoreCase = true) }
+                val updatedAssignment = MovieSpeakerAssignment(
+                    diarizationSpeakerId = slotId,
+                    characterId = targetCharacter.characterId,
+                    lockedVoiceId = targetCharacter.voiceId,
+                    isAutoAssigned = false
+                )
+                dubbingPreferencesRepository.saveMovieAssignments(uri, existingAssignments + updatedAssignment)
+
+                if (updatedSegmentMap.isNotEmpty()) {
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            translationCacheRepository.updateSegmentCharacterIds(uri, updatedSegmentMap)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Manually overrides the assigned VOXORA Character for a single dialogue line in both the
+     * Transcript and Bengali Translation views, persisting immediately to Room DB.
+     */
+    fun overrideSegmentCharacter(segmentIndex: Int, characterId: String) {
+        val uri = activeUriString.orEmpty()
+        manualSegmentCharacterOverrides[segmentIndex] = characterId
+
+        val updatedSegmentMap = _diarizationUiState.value.segmentCharacterMap.toMutableMap().apply {
+            put(segmentIndex, characterId)
+        }
+        _diarizationUiState.value = _diarizationUiState.value.copy(
+            segmentCharacterMap = updatedSegmentMap
+        )
+
+        whisperSpeechEngine.applySpeakerAssignments(mapOf(segmentIndex to characterId))
+
+        val currentTranslated = _translationUiState.value.segments
+        if (currentTranslated.isNotEmpty()) {
+            val updatedTranslated = currentTranslated.map { seg ->
+                if (seg.index == segmentIndex) seg.copy(characterId = characterId) else seg
+            }
+            _translationUiState.value = _translationUiState.value.copy(segments = updatedTranslated)
+        }
+
+        if (uri.isNotBlank()) {
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching {
+                    translationCacheRepository.updateSegmentCharacterId(
+                        videoUri = uri,
+                        segmentIndex = segmentIndex,
+                        characterId = characterId
+                    )
+                }
+            }
+        }
+    }
+
     private fun resolveDocumentDisplayName(uri: Uri): String? {
         return runCatching {
             app.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
@@ -941,6 +1312,9 @@ class PlayerViewModel(
 
     override fun onCleared() {
         activeTranslationJob?.cancel()
+        activeDiarizationModelJob?.cancel()
+        activeDiarizationJob?.cancel()
+        offlineDiarizationEngine.release()
         offlineTranslationEngine.close()
         whisperSpeechEngine.stopTranscription()
         ttsPreviewEngine.release()
@@ -948,10 +1322,17 @@ class PlayerViewModel(
         super.onCleared()
     }
 
+    private data class DiarizationPipelineSnapshot(
+        val modelState: DiarizationModelState = DiarizationModelState.NotInstalled,
+        val isDiarizing: Boolean = false
+    )
+
     private data class WhisperPipelineSnapshot(
         val isModelLoaded: Boolean = false,
         val isTranscribing: Boolean = false,
         val detail: String? = null,
+        val diarizationModelState: DiarizationModelState = DiarizationModelState.NotInstalled,
+        val isDiarizing: Boolean = false,
         val translationModelState: TranslationModelState = TranslationModelState.NotDownloaded,
         val isTranslating: Boolean = false
     )
@@ -979,7 +1360,9 @@ class PlayerViewModel(
                 whisperSpeechEngine = app.whisperSpeechEngine,
                 offlineTranslationManager = app.offlineTranslationManager,
                 offlineTranslationEngine = app.offlineTranslationEngine,
-                translationCacheRepository = app.translationCacheRepository
+                translationCacheRepository = app.translationCacheRepository,
+                diarizationModelManager = app.diarizationModelManager,
+                offlineDiarizationEngine = app.offlineDiarizationEngine
             ) as T
         }
     }

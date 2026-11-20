@@ -18,8 +18,8 @@ android {
     applicationId = "com.voxora.player"
     minSdk = 24
     targetSdk = 36
-    versionCode = 5
-    versionName = "1.4.0"
+    versionCode = 6
+    versionName = "1.5.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -90,6 +90,22 @@ android {
     includeInApk = false
     includeInBundle = true
   }
+  packaging {
+    jniLibs {
+      pickFirsts += "lib/**/libc++_shared.so"
+    }
+  }
+}
+
+val sherpaOnnxAarFile = file("libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar")
+if (!sherpaOnnxAarFile.exists()) {
+  sherpaOnnxAarFile.parentFile.mkdirs()
+  val aarUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.2/sherpa-onnx-static-link-onnxruntime-2.0.2.aar"
+  val tmpFile = file("libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar.part")
+  java.net.URI(aarUrl).toURL().openStream().use { input ->
+    tmpFile.outputStream().use { output -> input.copyTo(output) }
+  }
+  tmpFile.renameTo(sherpaOnnxAarFile)
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
@@ -147,6 +163,7 @@ dependencies {
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.kotlinx.coroutines.play.services)
   implementation(libs.mlkit.translate)
+  implementation(files("libs/sherpa-onnx-static-link-onnxruntime-2.0.2.aar"))
   // implementation(libs.logging.interceptor)
   // implementation(libs.moshi.kotlin)
   // implementation(libs.okhttp)

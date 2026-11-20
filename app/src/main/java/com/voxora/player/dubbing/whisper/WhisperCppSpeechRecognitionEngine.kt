@@ -424,6 +424,17 @@ class WhisperCppSpeechRecognitionEngine(
         _transcriptionState.value = _transcriptionState.value.copy(exportFeedback = message)
     }
 
+    fun applySpeakerAssignments(segmentIndexToCharacterId: Map<Int, String>) {
+        if (segmentIndexToCharacterId.isEmpty()) return
+        val current = _transcriptionState.value.segments
+        if (current.isEmpty()) return
+        val updated = current.mapIndexed { idx, segment ->
+            val assigned = segmentIndexToCharacterId[idx]
+            if (assigned != null) segment.copy(speakerId = assigned) else segment
+        }
+        _transcriptionState.value = _transcriptionState.value.copy(segments = updated)
+    }
+
     /**
      * Implements Phase 1/2 [SpeechRecognitionEngine] contract for WAV or audio files directly.
      */

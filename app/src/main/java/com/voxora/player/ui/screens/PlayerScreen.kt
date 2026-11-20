@@ -70,6 +70,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.ContentFrame
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
+import com.voxora.player.ai.diarization.DiarizationModelSlot
 import com.voxora.player.ai.translation.TranslationExportFormat
 import com.voxora.player.dubbing.whisper.TranscriptExportFormat
 import com.voxora.player.model.AspectRatioMode
@@ -126,6 +127,10 @@ fun PlayerScreen(
     val whisperTranscriptionState by viewModel.whisperTranscriptionState.collectAsStateWithLifecycle()
     val translationModelState by viewModel.translationModelState.collectAsStateWithLifecycle()
     val translationUiState by viewModel.translationUiState.collectAsStateWithLifecycle()
+    val diarizationModelState by viewModel.diarizationModelState.collectAsStateWithLifecycle()
+    val diarizationSlotAvailability by viewModel.diarizationSlotAvailability.collectAsStateWithLifecycle()
+    val diarizationInstalledFiles by viewModel.diarizationInstalledFiles.collectAsStateWithLifecycle()
+    val diarizationUiState by viewModel.diarizationUiState.collectAsStateWithLifecycle()
     val animationsEnabled = !batterySaving.disableAnimations
 
     var controlsVisible by remember { mutableStateOf(true) }
@@ -134,6 +139,7 @@ fun PlayerScreen(
     var gestureHudState by remember { mutableStateOf<GestureHudState>(GestureHudState.Hidden) }
     var pendingExportFormat by remember { mutableStateOf(TranscriptExportFormat.SRT) }
     var pendingTranslationExportFormat by remember { mutableStateOf(TranslationExportFormat.BENGALI_SRT) }
+    var pendingDiarizationImportSlot by remember { mutableStateOf(DiarizationModelSlot.SEGMENTATION) }
 
     val subtitlePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -148,6 +154,14 @@ fun PlayerScreen(
     ) { uri ->
         if (uri != null) {
             viewModel.importLocalWhisperModel(uri)
+        }
+    }
+
+    val diarizationModelPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importLocalDiarizationModel(pendingDiarizationImportSlot, uri)
         }
     }
 
@@ -649,6 +663,10 @@ fun PlayerScreen(
                     whisperTranscriptionState = whisperTranscriptionState,
                     translationModelState = translationModelState,
                     translationUiState = translationUiState,
+                    diarizationModelState = diarizationModelState,
+                    diarizationSlotAvailability = diarizationSlotAvailability,
+                    diarizationInstalledFiles = diarizationInstalledFiles,
+                    diarizationUiState = diarizationUiState,
                     onSetEnabled = viewModel::setDubbingEnabled,
                     onSelectSourceLanguage = viewModel::setDubbingSourceLanguage,
                     onSelectTargetLanguage = viewModel::setDubbingTargetLanguage,
@@ -696,6 +714,20 @@ fun PlayerScreen(
                             .ifBlank { "voxora_translation" }
                         translationExportLauncher.launch("${baseName}${format.fileSuffix}.${format.extension}")
                     },
+                    onCheckDiarizationModelStatus = viewModel::checkDiarizationModelStatus,
+                    onDownloadDiarizationModels = viewModel::downloadDiarizationModels,
+                    onCancelDiarizationDownload = viewModel::cancelDiarizationModelDownload,
+                    onImportLocalDiarizationModel = { slot ->
+                        pendingDiarizationImportSlot = slot
+                        diarizationModelPickerLauncher.launch(arrayOf("application/octet-stream", "*/*"))
+                    },
+                    onDeleteDiarizationModels = viewModel::deleteDiarizationModels,
+                    onSelectDiarizationClusters = viewModel::setDiarizationNumClusters,
+                    onDiarizationThresholdChange = viewModel::setDiarizationThreshold,
+                    onStartDiarization = viewModel::startSpeakerDiarization,
+                    onStopDiarization = viewModel::stopSpeakerDiarization,
+                    onReassignSpeakerToCharacter = viewModel::reassignSpeakerToCharacter,
+                    onOverrideSegmentCharacter = viewModel::overrideSegmentCharacter,
                     onSeekToTimestamp = { targetMs ->
                         viewModel.seekTo(targetMs)
                     },

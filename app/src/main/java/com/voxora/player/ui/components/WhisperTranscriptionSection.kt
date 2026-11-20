@@ -61,6 +61,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.voxora.player.dubbing.CharacterVoiceProfile
 import com.voxora.player.dubbing.whisper.TranscriptExportFormat
 import com.voxora.player.dubbing.whisper.TranscriptExporter
 import com.voxora.player.dubbing.whisper.WhisperModelCatalog
@@ -95,10 +96,14 @@ fun WhisperTranscriptionSection(
     onStartTranscription: () -> Unit,
     onStopTranscription: () -> Unit,
     onExportTranscript: (TranscriptExportFormat) -> Unit,
-    onSeekToTimestamp: (Long) -> Unit
+    onSeekToTimestamp: (Long) -> Unit,
+    characters: List<CharacterVoiceProfile> = emptyList(),
+    segmentCharacterMap: Map<Int, String> = emptyMap(),
+    onOverrideSegmentCharacter: (segmentIndex: Int, characterId: String) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     var copiedNotice by remember { mutableStateOf(false) }
+    var overrideDialogSegmentIndex by remember { mutableStateOf<Int?>(null) }
 
     val isModelLoaded = modelStatus is WhisperModelStatus.LoadedReady
     val loadedModelName = when (modelStatus) {
@@ -468,7 +473,7 @@ fun WhisperTranscriptionSection(
                     )
                     if (transcriptionState.segments.isNotEmpty()) {
                         Text(
-                            text = "Tap time to seek",
+                            text = "Tap time to seek · Tap line to set speaker",
                             style = MaterialTheme.typography.labelSmall,
                             color = VoxoraSubtleBlue
                         )
@@ -490,39 +495,85 @@ fun WhisperTranscriptionSection(
                         if (index > 0) {
                             HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
                         }
-                        Row(
+                        val resolvedCharId = segmentCharacterMap[index]
+                            ?: characters.firstOrNull {
+                                it.characterId == segment.speakerId || it.speakerId == segment.speakerId
+                            }?.characterId
+                        val assignedCharacter = characters.firstOrNull { it.characterId == resolvedCharId }
+
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .clickable { onSeekToTimestamp(segment.startTimeMs) }
+                                .clickable {
+                                    if (characters.isNotEmpty()) {
+                                        overrideDialogSegmentIndex = index
+                                    } else {
+                                        onSeekToTimestamp(segment.startTimeMs)
+                                    }
+                                }
                                 .padding(vertical = 6.dp, horizontal = 4.dp)
                                 .testTag("whisper_segment_${segment.id}"),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.Top
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
-                            Surface(
-                                color = VoxoraElectricPurple.copy(alpha = 0.22f),
-                                shape = RoundedCornerShape(8.dp),
-                                border = BorderStroke(1.dp, VoxoraElectricPurple.copy(alpha = 0.55f))
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Text(
-                                    text = "${TranscriptExporter.formatReadableTimestamp(segment.startTimeMs)} → ${TranscriptExporter.formatReadableTimestamp(segment.endTimeMs)}",
-                                    style = TabularTimeStyle,
-                                    color = VoxoraElectricPurpleBright,
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
-                                )
+                                Surface(
+                                    color = VoxoraElectricPurple.copy(alpha = 0.22f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.dp, VoxoraElectricPurple.copy(alpha = 0.55f)),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { onSeekToTimestamp(segment.startTimeMs) }
+                                ) {
+                                    Text(
+                                        text = "${TranscriptExporter.formatReadableTimestamp(segment.startTimeMs)} → ${TranscriptExporter.formatReadableTimestamp(segment.endTimeMs)}",
+                                        style = TabularTimeStyle,
+                                        color = VoxoraElectricPurpleBright,
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                                    )
+                                }
+                                if (characters.isNotEmpty()) {
+                                    DialogueCharacterBadge(
+                                        character = assignedCharacter,
+                                        characters = characters,
+                                        onClick = { overrideDialogSegmentIndex = index },
+                                        modifier = Modifier.testTag("whisper_segment_character_badge_$index")
+                                    )
+                                }
                             }
                             Text(
                                 text = segment.originalText,
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = Color.White.copy(alpha = 0.92f),
-                                modifier = Modifier.weight(1f)
+                                color = Color.White.copy(alpha = 0.92f)
                             )
                         }
                     }
                 }
             }
         }
+    }
+
+    val targetIdx = overrideDialogSegmentIndex
+    val targetSegment = targetIdx?.let { transcriptionState.segments.getOrNull(it) }
+    if (targetIdx != null && targetSegment != null) {
+        val currentCharId = segmentCharacterMap[targetIdx]
+            ?: characters.firstOrNull {
+                it.characterId == targetSegment.speakerId || it.speakerId == targetSegment.speakerId
+            }?.characterId
+        CharacterOverrideDialog(
+            segmentStartMs = targetSegment.startTimeMs,
+            dialoguePreview = targetSegment.originalText,
+            currentCharacterId = currentCharId,
+            characters = characters,
+            onSelectCharacter = { newCharId ->
+                onOverrideSegmentCharacter(targetIdx, newCharId)
+            },
+            onSeekToSegment = { onSeekToTimestamp(targetSegment.startTimeMs) },
+            onDismiss = { overrideDialogSegmentIndex = null }
+        )
     }
 }
 

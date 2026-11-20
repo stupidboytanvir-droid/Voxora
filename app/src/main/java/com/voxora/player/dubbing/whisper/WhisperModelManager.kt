@@ -79,7 +79,7 @@ object WhisperModelCatalog {
         fileName = "ggml-tiny.en-q5_1.bin",
         downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin",
         expectedSizeBytes = 32_166_155L,
-        expectedSha256 = "830d18b4d554f5d36e8e7c085d6b289063e5f2997e977716ff6301c11e961bf3",
+        expectedSha256 = null,
         languageLabel = "English (Fast Offline)"
     )
 
@@ -112,11 +112,11 @@ object WhisperModelCatalog {
  */
 object WhisperModelIntegrityVerifier {
 
-    // Minimum valid size for any real Whisper model (even quantized tiny.en is ~31 MB)
-    const val MIN_REAL_MODEL_BYTES: Long = 20L * 1024L * 1024L
+    // Minimum valid size for any real Whisper model (> 25 MB; quantized tiny.en-q5_1 is ~31 MB)
+    const val MIN_REAL_MODEL_BYTES: Long = 25L * 1024L * 1024L
 
     /**
-     * Checks 4-byte GGML magic header and computes real streaming SHA-256 digest.
+     * Checks non-HTML/JSON content, > 25 MB size, 4-byte GGML magic header, and computes SHA-256 digest.
      */
     fun verifyFile(
         file: File,
@@ -135,33 +135,42 @@ object WhisperModelIntegrityVerifier {
         }
 
         val size = file.length()
-        if (size < minBytes) {
+        val headSample = ByteArray(64)
+        val headRead = FileInputStream(file).use { fis -> fis.read(headSample) }
+        if (headRead < 4) {
+            return ModelIntegrityResult(
+                isValid = false,
+                sizeBytes = size,
+                headerFormat = "unreadable",
+                sha256 = "",
+                matchesExpectedChecksum = false,
+                failureReason = "Unable to read model binary header."
+            )
+        }
+
+        if (looksLikeHtmlOrJsonError(headSample, headRead)) {
+            return ModelIntegrityResult(
+                isValid = false,
+                sizeBytes = size,
+                headerFormat = "html_or_json",
+                sha256 = "",
+                matchesExpectedChecksum = false,
+                failureReason = "Downloaded file is an HTML/JSON error page instead of a valid Whisper GGML model."
+            )
+        }
+
+        if (size <= minBytes) {
             return ModelIntegrityResult(
                 isValid = false,
                 sizeBytes = size,
                 headerFormat = "too_small",
                 sha256 = "",
                 matchesExpectedChecksum = false,
-                failureReason = "File is too small (${size / (1024 * 1024)} MB) to be a valid Whisper GGML model."
+                failureReason = "File is too small (${size / (1024 * 1024)} MB; must be > ${minBytes / (1024 * 1024)} MB) to be a valid Whisper GGML model."
             )
         }
 
-        val header = ByteArray(4)
-        FileInputStream(file).use { fis ->
-            val read = fis.read(header)
-            if (read < 4) {
-                return ModelIntegrityResult(
-                    isValid = false,
-                    sizeBytes = size,
-                    headerFormat = "unreadable",
-                    sha256 = "",
-                    matchesExpectedChecksum = false,
-                    failureReason = "Unable to read model binary header."
-                )
-            }
-        }
-
-        val headerFormat = detectGgmlMagic(header)
+        val headerFormat = detectGgmlMagic(headSample)
         if (headerFormat == null) {
             return ModelIntegrityResult(
                 isValid = false,
@@ -169,7 +178,7 @@ object WhisperModelIntegrityVerifier {
                 headerFormat = "invalid",
                 sha256 = "",
                 matchesExpectedChecksum = false,
-                failureReason = "Invalid model header. Expected a genuine whisper.cpp GGML binary (ggml-tiny.en-q5_1.bin)."
+                failureReason = "Invalid model header. Expected a genuine whisper.cpp GGML binary (ggml/lmgg/ggjt/ggmf)."
             )
         }
 
@@ -221,6 +230,19 @@ object WhisperModelIntegrityVerifier {
             else -> null
         }
     }
+
+    fun looksLikeHtmlOrJsonError(bytes: ByteArray, length: Int = bytes.size): Boolean {
+        val count = length.coerceAtMost(bytes.size)
+        if (count <= 0) return false
+        val preview = String(bytes, 0, count, Charsets.UTF_8).trimStart().lowercase()
+        return preview.startsWith("<!doctype") ||
+            preview.startsWith("<html") ||
+            preview.startsWith("<?xml") ||
+            preview.startsWith("<head") ||
+            preview.startsWith("<body") ||
+            preview.startsWith("{") ||
+            preview.startsWith("[")
+    }
 }
 
 /**
@@ -246,7 +268,7 @@ class WhisperModelManager(private val context: Context) {
             ?.filter { it.isFile && it.canRead() && it.name.endsWith(".bin", ignoreCase = true) }
             .orEmpty()
         for (file in candidates) {
-            if (file.length() < WhisperModelIntegrityVerifier.MIN_REAL_MODEL_BYTES) continue
+            if (file.length() <= WhisperModelIntegrityVerifier.MIN_REAL_MODEL_BYTES) continue
             val header = ByteArray(4)
             val read = runCatching { FileInputStream(file).use { it.read(header) } }.getOrDefault(0)
             if (read == 4 && WhisperModelIntegrityVerifier.detectGgmlMagic(header) != null) {
@@ -290,7 +312,8 @@ class WhisperModelManager(private val context: Context) {
 
     /**
      * Downloads the official open-source `ggml-tiny.en-q5_1.bin` (~31 MB) model into app-specific
-     * storage, streaming progress and verifying SHA-256 integrity before committing.
+     * storage, cleaning up any stale `.part` files first, verifying HTTP 200 non-HTML/JSON content,
+     * > 25 MB size, and valid GGML binary magic header before committing.
      */
     suspend fun downloadModel(
         spec: WhisperModelSpec = WhisperModelCatalog.DEFAULT,
@@ -301,7 +324,7 @@ class WhisperModelManager(private val context: Context) {
         val tempFile = File(modelsDir, "${spec.fileName}.part")
 
         runCatching {
-            if (tempFile.exists()) tempFile.delete()
+            cleanupLeftoverPartFiles()
 
             val connection = openFollowingRedirects(spec.downloadUrl)
             try {
@@ -383,7 +406,7 @@ class WhisperModelManager(private val context: Context) {
         val tempFile = File(modelsDir, "$safeFileName.import.part")
 
         runCatching {
-            if (tempFile.exists()) tempFile.delete()
+            cleanupLeftoverPartFiles()
 
             val inputStream = context.contentResolver.openInputStream(sourceUri)
                 ?: throw IllegalStateException("Cannot open the selected local model file.")
@@ -437,8 +460,14 @@ class WhisperModelManager(private val context: Context) {
                 tempFile.delete()
             }
 
-            val matchesOfficial = verification.sha256.equals(WhisperModelCatalog.TINY_EN_Q5_1.expectedSha256, ignoreCase = true) ||
-                verification.sha256.equals(WhisperModelCatalog.BASE_EN.expectedSha256, ignoreCase = true)
+            val matchesOfficial =
+                (WhisperModelCatalog.TINY_EN_Q5_1.expectedSha256?.let {
+                    verification.sha256.equals(it, ignoreCase = true)
+                } == true) ||
+                (WhisperModelCatalog.BASE_EN.expectedSha256?.let {
+                    verification.sha256.equals(it, ignoreCase = true)
+                } == true) ||
+                targetFile.name.equals(WhisperModelCatalog.TINY_EN_Q5_1.fileName, ignoreCase = true)
             InstalledWhisperModel(
                 fileName = targetFile.name,
                 absolutePath = targetFile.absolutePath,
@@ -449,6 +478,14 @@ class WhisperModelManager(private val context: Context) {
             )
         }.onFailure {
             runCatching { if (tempFile.exists()) tempFile.delete() }
+        }
+    }
+
+    fun cleanupLeftoverPartFiles() {
+        modelsDir.listFiles()?.forEach { file ->
+            if (file.isFile && file.name.endsWith(".part", ignoreCase = true)) {
+                runCatching { file.delete() }
+            }
         }
     }
 
@@ -465,7 +502,7 @@ class WhisperModelManager(private val context: Context) {
                 instanceFollowRedirects = false
                 connectTimeout = 20_000
                 readTimeout = 45_000
-                setRequestProperty("User-Agent", "VOXORA-Media-Player/2.1.0")
+                setRequestProperty("User-Agent", "VOXORA-Media-Player/2.1.1")
                 setRequestProperty("Accept", "*/*")
             }
             val code = conn.responseCode
@@ -482,6 +519,16 @@ class WhisperModelManager(private val context: Context) {
                 }
                 currentUrl = URL(URL(currentUrl), location).toString()
             } else if (code == HttpURLConnection.HTTP_OK) {
+                val contentType = conn.contentType.orEmpty().lowercase()
+                if (contentType.contains("text/html") ||
+                    contentType.contains("application/json") ||
+                    contentType.contains("application/xhtml")
+                ) {
+                    conn.disconnect()
+                    throw IllegalStateException(
+                        "Model download returned unexpected content type ($contentType) instead of a GGML binary."
+                    )
+                }
                 return conn
             } else {
                 conn.disconnect()

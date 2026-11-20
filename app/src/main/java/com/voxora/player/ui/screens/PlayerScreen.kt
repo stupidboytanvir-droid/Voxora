@@ -70,6 +70,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.ContentFrame
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
+import com.voxora.player.ai.translation.TranslationExportFormat
 import com.voxora.player.dubbing.whisper.TranscriptExportFormat
 import com.voxora.player.model.AspectRatioMode
 import com.voxora.player.ui.components.AiDubbingStudioSheet
@@ -123,6 +124,8 @@ fun PlayerScreen(
     val dubbingState by viewModel.dubbingState.collectAsStateWithLifecycle()
     val whisperModelStatus by viewModel.whisperModelStatus.collectAsStateWithLifecycle()
     val whisperTranscriptionState by viewModel.whisperTranscriptionState.collectAsStateWithLifecycle()
+    val translationModelState by viewModel.translationModelState.collectAsStateWithLifecycle()
+    val translationUiState by viewModel.translationUiState.collectAsStateWithLifecycle()
     val animationsEnabled = !batterySaving.disableAnimations
 
     var controlsVisible by remember { mutableStateOf(true) }
@@ -130,6 +133,7 @@ fun PlayerScreen(
     var activeSheet by remember { mutableStateOf(ActiveSheet.NONE) }
     var gestureHudState by remember { mutableStateOf<GestureHudState>(GestureHudState.Hidden) }
     var pendingExportFormat by remember { mutableStateOf(TranscriptExportFormat.SRT) }
+    var pendingTranslationExportFormat by remember { mutableStateOf(TranslationExportFormat.BENGALI_SRT) }
 
     val subtitlePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -152,6 +156,14 @@ fun PlayerScreen(
     ) { uri ->
         if (uri != null) {
             viewModel.exportTranscriptionToUri(uri, pendingExportFormat)
+        }
+    }
+
+    val translationExportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("*/*")
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportTranslationToUri(uri, pendingTranslationExportFormat)
         }
     }
 
@@ -635,6 +647,8 @@ fun PlayerScreen(
                     state = dubbingState,
                     whisperModelStatus = whisperModelStatus,
                     whisperTranscriptionState = whisperTranscriptionState,
+                    translationModelState = translationModelState,
+                    translationUiState = translationUiState,
                     onSetEnabled = viewModel::setDubbingEnabled,
                     onSelectSourceLanguage = viewModel::setDubbingSourceLanguage,
                     onSelectTargetLanguage = viewModel::setDubbingTargetLanguage,
@@ -667,6 +681,20 @@ fun PlayerScreen(
                             .take(40)
                             .ifBlank { "voxora_transcript" }
                         transcriptExportLauncher.launch("${baseName}.${format.extension}")
+                    },
+                    onCheckTranslationModelStatus = viewModel::checkTranslationModelStatus,
+                    onDownloadTranslationModel = viewModel::downloadTranslationModel,
+                    onDeleteTranslationModel = viewModel::deleteTranslationModel,
+                    onStartTranslation = viewModel::startBengaliTranslation,
+                    onStopTranslation = viewModel::stopBengaliTranslation,
+                    onClearCachedTranslation = viewModel::clearCachedTranslation,
+                    onExportTranslation = { format ->
+                        pendingTranslationExportFormat = format
+                        val baseName = (uiState.videoTitle.ifBlank { videoTitle })
+                            .replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                            .take(40)
+                            .ifBlank { "voxora_translation" }
+                        translationExportLauncher.launch("${baseName}${format.fileSuffix}.${format.extension}")
                     },
                     onSeekToTimestamp = { targetMs ->
                         viewModel.seekTo(targetMs)

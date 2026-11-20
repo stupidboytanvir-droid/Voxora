@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -68,6 +69,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.voxora.player.ai.translation.BengaliTranslationUiState
+import com.voxora.player.ai.translation.TranslationExportFormat
+import com.voxora.player.ai.translation.TranslationModelState
 import com.voxora.player.dubbing.CharacterVoiceProfile
 import com.voxora.player.dubbing.ComponentReadiness
 import com.voxora.player.dubbing.DubbingAudioOutputMode
@@ -87,6 +91,7 @@ import com.voxora.player.util.FormatUtils
 private enum class DubbingStudioTab(val label: String) {
     CONTROLS("Controls"),
     TRANSCRIBE("Transcribe"),
+    TRANSLATE("Translate"),
     CHARACTERS("Characters"),
     PIPELINE("Pipeline")
 }
@@ -98,6 +103,8 @@ fun AiDubbingStudioSheet(
     state: PlayerDubbingUiState,
     whisperModelStatus: WhisperModelStatus,
     whisperTranscriptionState: WhisperTranscriptionState,
+    translationModelState: TranslationModelState,
+    translationUiState: BengaliTranslationUiState,
     onSetEnabled: (Boolean) -> Unit,
     onSelectSourceLanguage: (DubbingLanguage) -> Unit,
     onSelectTargetLanguage: (DubbingLanguage) -> Unit,
@@ -122,6 +129,13 @@ fun AiDubbingStudioSheet(
     onStartTranscription: () -> Unit,
     onStopTranscription: () -> Unit,
     onExportTranscription: (TranscriptExportFormat) -> Unit,
+    onCheckTranslationModelStatus: () -> Unit,
+    onDownloadTranslationModel: (Boolean) -> Unit,
+    onDeleteTranslationModel: () -> Unit,
+    onStartTranslation: () -> Unit,
+    onStopTranslation: () -> Unit,
+    onClearCachedTranslation: () -> Unit,
+    onExportTranslation: (TranslationExportFormat) -> Unit,
     onSeekToTimestamp: (Long) -> Unit,
     onInspectAudioTrack: () -> Unit,
     onRunStage1Extraction: () -> Unit,
@@ -182,7 +196,7 @@ fun AiDubbingStudioSheet(
                             border = BorderStroke(1.dp, VoxoraElectricPurple)
                         ) {
                             Text(
-                                text = "PHASE 2",
+                                text = "PHASE 3",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = VoxoraElectricPurpleBright,
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
@@ -190,7 +204,7 @@ fun AiDubbingStudioSheet(
                         }
                     }
                     Text(
-                        text = "${state.config.sourceLanguage.displayName} → ${state.config.targetLanguage.displayName} (${state.config.targetLanguage.nativeName}) · Offline whisper.cpp",
+                        text = "${state.config.sourceLanguage.displayName} → ${state.config.targetLanguage.displayName} (${state.config.targetLanguage.nativeName}) · whisper.cpp + ML Kit Offline",
                         style = MaterialTheme.typography.bodySmall,
                         color = VoxoraSubtleBlue
                     )
@@ -222,19 +236,20 @@ fun AiDubbingStudioSheet(
                         modifier = Modifier.size(18.dp)
                     )
                     Text(
-                        text = "${state.readyComponentCount}/${state.totalComponentCount} stages ready on-device. Native whisper.cpp English ASR is integrated — install & load base.en in Transcribe for offline recognition (zero paid APIs).",
+                        text = "${state.readyComponentCount}/${state.totalComponentCount} stages ready on-device. Offline English ASR (whisper.cpp) and Offline English → বাংলা Translation (ML Kit) are integrated with zero paid APIs.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.White.copy(alpha = 0.85f)
                     )
                 }
             }
 
-            // Segmented Studio Navigation Tabs
+            // Segmented Studio Navigation Tabs (horizontally scrollable for crisp labels on all widths)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(14.dp))
                     .background(Color(0xFF14151E))
+                    .horizontalScroll(rememberScrollState())
                     .padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
@@ -244,18 +259,17 @@ fun AiDubbingStudioSheet(
                         onClick = { selectedTab = tab },
                         color = if (selected) VoxoraElectricPurple else Color.Transparent,
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("dubbing_tab_${tab.name}")
+                        modifier = Modifier.testTag("dubbing_tab_${tab.name}")
                     ) {
                         Row(
-                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp),
+                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 12.dp),
                             horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             val icon = when (tab) {
                                 DubbingStudioTab.CONTROLS -> Icons.Rounded.Tune
                                 DubbingStudioTab.TRANSCRIBE -> Icons.Rounded.GraphicEq
+                                DubbingStudioTab.TRANSLATE -> Icons.Rounded.Translate
                                 DubbingStudioTab.CHARACTERS -> Icons.Rounded.People
                                 DubbingStudioTab.PIPELINE -> Icons.Rounded.Layers
                             }
@@ -265,15 +279,14 @@ fun AiDubbingStudioSheet(
                                 tint = if (selected) Color.White else Color.White.copy(alpha = 0.65f),
                                 modifier = Modifier.size(15.dp)
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Spacer(modifier = Modifier.width(5.dp))
                             Text(
                                 text = tab.label,
                                 style = MaterialTheme.typography.labelMedium.copy(
                                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
                                 ),
                                 color = if (selected) Color.White else Color.White.copy(alpha = 0.72f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                maxLines = 1
                             )
                         }
                     }
@@ -309,6 +322,23 @@ fun AiDubbingStudioSheet(
                         onStartTranscription = onStartTranscription,
                         onStopTranscription = onStopTranscription,
                         onExportTranscript = onExportTranscription,
+                        onSeekToTimestamp = onSeekToTimestamp
+                    )
+                }
+                DubbingStudioTab.TRANSLATE -> {
+                    BengaliTranslationSection(
+                        videoTitle = videoTitle,
+                        englishSegmentCount = whisperTranscriptionState.segments.size,
+                        modelState = translationModelState,
+                        translationState = translationUiState,
+                        onCheckModelStatus = onCheckTranslationModelStatus,
+                        onDownloadModel = onDownloadTranslationModel,
+                        onDeleteModel = onDeleteTranslationModel,
+                        onStartTranslation = onStartTranslation,
+                        onStopTranslation = onStopTranslation,
+                        onClearCachedTranslation = onClearCachedTranslation,
+                        onExportTranslation = onExportTranslation,
+                        onSwitchToTranscribeTab = { selectedTab = DubbingStudioTab.TRANSCRIBE },
                         onSeekToTimestamp = onSeekToTimestamp
                     )
                 }

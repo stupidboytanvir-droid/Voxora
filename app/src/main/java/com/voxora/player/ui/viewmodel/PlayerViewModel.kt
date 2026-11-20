@@ -5,10 +5,17 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.voxora.player.VoxoraApplication
+import com.voxora.player.ai.translation.BengaliTranslationUiState
+import com.voxora.player.ai.translation.OfflineTranslationEngine
+import com.voxora.player.ai.translation.OfflineTranslationManager
+import com.voxora.player.ai.translation.TranslationExportFormat
+import com.voxora.player.ai.translation.TranslationExporter
+import com.voxora.player.ai.translation.TranslationModelState
 import com.voxora.player.data.local.power.BatteryMonitor
 import com.voxora.player.data.repository.MediaRepository
 import com.voxora.player.data.repository.PlaybackHistoryRepository
 import com.voxora.player.data.repository.SettingsRepository
+import com.voxora.player.data.repository.TranslationCacheRepository
 import com.voxora.player.dubbing.AiDubbingPipeline
 import com.voxora.player.dubbing.CharacterVoiceProfile
 import com.voxora.player.dubbing.DubbingAudioOutputMode
@@ -39,6 +46,9 @@ import com.voxora.player.model.UserPreferences
 import com.voxora.player.model.VideoItem
 import com.voxora.player.player.PlayerPlaybackState
 import com.voxora.player.player.VoxoraPlayerEngine
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -49,6 +59,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class PlayerScreenUiState(
     val currentVideo: VideoItem? = null,
@@ -71,7 +82,10 @@ class PlayerViewModel(
     private val aiDubbingPipeline: AiDubbingPipeline,
     private val videoAudioExtractor: VideoAudioExtractor,
     private val dubbingPreferencesRepository: DubbingPreferencesRepository,
-    private val whisperSpeechEngine: WhisperCppSpeechRecognitionEngine
+    private val whisperSpeechEngine: WhisperCppSpeechRecognitionEngine,
+    private val offlineTranslationManager: OfflineTranslationManager,
+    private val offlineTranslationEngine: OfflineTranslationEngine,
+    private val translationCacheRepository: TranslationCacheRepository
 ) : ViewModel() {
 
     val playerEngine = VoxoraPlayerEngine(app)
@@ -133,11 +147,19 @@ class PlayerViewModel(
 
     val whisperModelStatus: StateFlow<WhisperModelStatus> = whisperSpeechEngine.modelStatus
     val whisperTranscriptionState: StateFlow<WhisperTranscriptionState> = whisperSpeechEngine.transcriptionState
+    val translationModelState: StateFlow<TranslationModelState> = offlineTranslationManager.modelState
+
+    private val _translationUiState = MutableStateFlow(BengaliTranslationUiState())
+    val translationUiState: StateFlow<BengaliTranslationUiState> = _translationUiState.asStateFlow()
+
+    private var activeTranslationJob: Job? = null
 
     private val whisperSnapshotFlow = combine(
         whisperModelStatus,
-        whisperTranscriptionState
-    ) { modelStatus, transState ->
+        whisperTranscriptionState,
+        translationModelState,
+        _translationUiState
+    ) { modelStatus, transState, translationState, translationUi ->
         WhisperPipelineSnapshot(
             isModelLoaded = modelStatus is WhisperModelStatus.LoadedReady,
             isTranscribing = transState.isRunning,
@@ -148,7 +170,9 @@ class PlayerViewModel(
                 is WhisperModelStatus.Loading -> "Loading ${modelStatus.model.fileName} into native whisper.cpp..."
                 is WhisperModelStatus.Error -> modelStatus.message
                 else -> "Native whisper.cpp compiled · Download or import ggml-base.en.bin in Transcribe tab"
-            }
+            },
+            translationModelState = translationState,
+            isTranslating = translationUi.isTranslating
         )
     }
 
@@ -182,7 +206,9 @@ class PlayerViewModel(
                 isExtractingAudio = extraction.isExtracting,
                 isWhisperModelLoaded = extraction.whisper.isModelLoaded,
                 isTranscribing = extraction.whisper.isTranscribing,
-                whisperModelDetail = extraction.whisper.detail
+                whisperModelDetail = extraction.whisper.detail,
+                translationModelState = extraction.whisper.translationModelState,
+                isTranslating = extraction.whisper.isTranslating
             ),
             movieSpeakerAssignments = movieAssignments,
             ttsPreviewState = ttsState
@@ -191,7 +217,11 @@ class PlayerViewModel(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000L),
         initialValue = PlayerDubbingUiState(
-            pipelineStages = aiDubbingPipeline.buildStageStatuses(null, false),
+            pipelineStages = aiDubbingPipeline.buildStageStatuses(
+                extractedAudioInfo = null,
+                isExtractingAudio = false,
+                translationModelState = offlineTranslationManager.modelState.value
+            ),
             ttsPreviewState = ttsPreviewEngine.state.value
         )
     )
@@ -203,6 +233,10 @@ class PlayerViewModel(
     private var lastSavedPositionMs: Long = -1L
 
     init {
+        viewModelScope.launch {
+            offlineTranslationManager.checkModelStatus()
+        }
+
         viewModelScope.launch {
             dubbingConfigFlow.collect { config ->
                 val effectiveOriginalVolume = aiDubbingPipeline.computeEffectiveOriginalVolume(
@@ -246,6 +280,7 @@ class PlayerViewModel(
         lastSavedPositionMs = -1L
         _extractedAudioInfo.value = null
         _extractionMessage.value = null
+        loadCachedTranslationForVideo(uriString, fallbackTitle)
 
         viewModelScope.launch {
             val prefs = settingsRepository.preferencesFlow.first()
@@ -699,6 +734,202 @@ class PlayerViewModel(
         }
     }
 
+    // --- Phase 3 Real Offline English -> Bengali Translation (Google ML Kit) ---
+
+    private fun loadCachedTranslationForVideo(uriString: String, fallbackTitle: String) {
+        activeTranslationJob?.cancel()
+        activeTranslationJob = null
+        _translationUiState.value = BengaliTranslationUiState(
+            activeVideoUri = uriString,
+            activeVideoTitle = fallbackTitle
+        )
+        if (uriString.isBlank()) return
+        viewModelScope.launch {
+            val cached = withContext(Dispatchers.IO) {
+                runCatching { translationCacheRepository.getCachedTranslation(uriString) }
+                    .getOrDefault(emptyList())
+            }
+            if (activeUriString == uriString && cached.isNotEmpty()) {
+                _translationUiState.value = BengaliTranslationUiState(
+                    isTranslating = false,
+                    completedSegments = cached.size,
+                    totalSegments = cached.size,
+                    activeVideoUri = uriString,
+                    activeVideoTitle = _uiState.value.videoTitle.ifBlank { fallbackTitle },
+                    segments = cached,
+                    isLoadedFromCache = true,
+                    statusMessage = "Loaded ${cached.size} cached Bengali segments offline"
+                )
+            }
+        }
+    }
+
+    fun checkTranslationModelStatus() {
+        viewModelScope.launch {
+            offlineTranslationManager.checkModelStatus()
+        }
+    }
+
+    fun downloadTranslationModel(requireWifi: Boolean = false) {
+        viewModelScope.launch {
+            offlineTranslationManager.downloadModel(requireWifi = requireWifi)
+        }
+    }
+
+    fun deleteTranslationModel() {
+        stopBengaliTranslation()
+        viewModelScope.launch {
+            offlineTranslationManager.deleteModel()
+        }
+    }
+
+    fun startBengaliTranslation() {
+        if (activeTranslationJob?.isActive == true) return
+        val uri = activeUriString.orEmpty()
+        val title = _uiState.value.videoTitle
+        val sourceSegments = whisperTranscriptionState.value.segments
+
+        if (sourceSegments.isEmpty()) {
+            _translationUiState.value = _translationUiState.value.copy(
+                errorMessage = "Generate an English transcript in the Transcribe tab first before translating to Bengali."
+            )
+            return
+        }
+
+        if (translationModelState.value !is TranslationModelState.Ready) {
+            _translationUiState.value = _translationUiState.value.copy(
+                errorMessage = "Model Required / Not Downloaded: Download the offline English → Bengali (~30 MB) ML Kit model first."
+            )
+            return
+        }
+
+        val total = sourceSegments.size
+        _translationUiState.value = BengaliTranslationUiState(
+            isTranslating = true,
+            completedSegments = 0,
+            totalSegments = total,
+            activeVideoUri = uri,
+            activeVideoTitle = title,
+            segments = emptyList(),
+            isLoadedFromCache = false,
+            statusMessage = "Translating 0 / $total segments offline via ML Kit...",
+            errorMessage = null,
+            exportFeedback = null
+        )
+
+        activeTranslationJob = viewModelScope.launch {
+            try {
+                val result = offlineTranslationEngine.translateSegments(
+                    segments = sourceSegments,
+                    onProgress = { completed, segmentTotal ->
+                        _translationUiState.value = _translationUiState.value.copy(
+                            completedSegments = completed,
+                            totalSegments = segmentTotal,
+                            statusMessage = "Translating $completed / $segmentTotal segments offline..."
+                        )
+                    }
+                )
+
+                result.fold(
+                    onSuccess = { translated ->
+                        if (uri.isNotBlank() && translated.isNotEmpty()) {
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    translationCacheRepository.saveTranslation(uri, translated)
+                                }
+                            }
+                        }
+                        _translationUiState.value = _translationUiState.value.copy(
+                            isTranslating = false,
+                            completedSegments = translated.size,
+                            totalSegments = translated.size,
+                            segments = translated,
+                            isLoadedFromCache = false,
+                            statusMessage = "Completed · ${translated.size} segments translated offline & cached locally",
+                            errorMessage = null
+                        )
+                    },
+                    onFailure = { err ->
+                        _translationUiState.value = _translationUiState.value.copy(
+                            isTranslating = false,
+                            statusMessage = "Translation failed",
+                            errorMessage = err.message ?: "Offline English → Bengali translation failed."
+                        )
+                    }
+                )
+            } catch (ce: CancellationException) {
+                _translationUiState.value = _translationUiState.value.copy(
+                    isTranslating = false,
+                    statusMessage = "Stopped by user",
+                    errorMessage = null
+                )
+                throw ce
+            }
+        }
+    }
+
+    fun stopBengaliTranslation() {
+        val job = activeTranslationJob
+        activeTranslationJob = null
+        job?.cancel()
+        if (_translationUiState.value.isTranslating) {
+            _translationUiState.value = _translationUiState.value.copy(
+                isTranslating = false,
+                statusMessage = "Stopped by user",
+                errorMessage = null
+            )
+        }
+    }
+
+    fun clearCachedTranslation() {
+        stopBengaliTranslation()
+        val uri = activeUriString.orEmpty()
+        viewModelScope.launch {
+            if (uri.isNotBlank()) {
+                withContext(Dispatchers.IO) {
+                    runCatching { translationCacheRepository.clearTranslationForVideo(uri) }
+                }
+            }
+            _translationUiState.value = BengaliTranslationUiState(
+                activeVideoUri = uri,
+                activeVideoTitle = _uiState.value.videoTitle,
+                statusMessage = "Cached translation cleared"
+            )
+        }
+    }
+
+    fun exportTranslationToUri(targetUri: Uri, format: TranslationExportFormat) {
+        val transUi = _translationUiState.value
+        if (transUi.segments.isEmpty()) return
+        val content = TranslationExporter.format(
+            format = format,
+            videoTitle = transUi.activeVideoTitle.ifBlank { _uiState.value.videoTitle },
+            segments = transUi.segments
+        )
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    app.contentResolver.openOutputStream(targetUri)?.use { out ->
+                        out.write(content.toByteArray(Charsets.UTF_8))
+                        out.flush()
+                    } ?: error("Unable to open destination file for writing.")
+                }
+            }
+            result.fold(
+                onSuccess = {
+                    _translationUiState.value = _translationUiState.value.copy(
+                        exportFeedback = "Exported ${format.label} successfully."
+                    )
+                },
+                onFailure = { err ->
+                    _translationUiState.value = _translationUiState.value.copy(
+                        exportFeedback = "Export failed: ${err.message ?: "Unknown error"}"
+                    )
+                }
+            )
+        }
+    }
+
     private fun resolveDocumentDisplayName(uri: Uri): String? {
         return runCatching {
             app.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
@@ -709,6 +940,8 @@ class PlayerViewModel(
     }
 
     override fun onCleared() {
+        activeTranslationJob?.cancel()
+        offlineTranslationEngine.close()
         whisperSpeechEngine.stopTranscription()
         ttsPreviewEngine.release()
         playerEngine.release()
@@ -718,7 +951,9 @@ class PlayerViewModel(
     private data class WhisperPipelineSnapshot(
         val isModelLoaded: Boolean = false,
         val isTranscribing: Boolean = false,
-        val detail: String? = null
+        val detail: String? = null,
+        val translationModelState: TranslationModelState = TranslationModelState.NotDownloaded,
+        val isTranslating: Boolean = false
     )
 
     private data class ExtractionUiSnapshot(
@@ -741,7 +976,10 @@ class PlayerViewModel(
                 aiDubbingPipeline = app.aiDubbingPipeline,
                 videoAudioExtractor = app.videoAudioExtractor,
                 dubbingPreferencesRepository = app.dubbingPreferencesRepository,
-                whisperSpeechEngine = app.whisperSpeechEngine
+                whisperSpeechEngine = app.whisperSpeechEngine,
+                offlineTranslationManager = app.offlineTranslationManager,
+                offlineTranslationEngine = app.offlineTranslationEngine,
+                translationCacheRepository = app.translationCacheRepository
             ) as T
         }
     }

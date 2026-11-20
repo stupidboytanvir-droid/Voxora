@@ -11,6 +11,7 @@ import com.voxora.player.data.local.storage.StorageAccessManager
 import com.voxora.player.data.repository.MediaRepository
 import com.voxora.player.data.repository.PlaybackHistoryRepository
 import com.voxora.player.data.repository.SettingsRepository
+import com.voxora.player.data.repository.TranslationCacheRepository
 import com.voxora.player.data.update.AppUpdateManager
 import com.voxora.player.data.update.UpdateNotificationHelper
 import com.voxora.player.dubbing.AiDubbingPipeline
@@ -18,6 +19,8 @@ import com.voxora.player.dubbing.AndroidVideoAudioExtractor
 import com.voxora.player.dubbing.DubbingPreferencesRepository
 import com.voxora.player.dubbing.Version1AiDubbingPipeline
 import com.voxora.player.dubbing.VideoAudioExtractor
+import com.voxora.player.ai.translation.OfflineTranslationEngine
+import com.voxora.player.ai.translation.OfflineTranslationManager
 import com.voxora.player.dubbing.whisper.WhisperCppSpeechRecognitionEngine
 
 class VoxoraApplication : Application(), ImageLoaderFactory {
@@ -46,6 +49,12 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         private set
     lateinit var whisperSpeechEngine: WhisperCppSpeechRecognitionEngine
         private set
+    lateinit var offlineTranslationManager: OfflineTranslationManager
+        private set
+    lateinit var offlineTranslationEngine: OfflineTranslationEngine
+        private set
+    lateinit var translationCacheRepository: TranslationCacheRepository
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -62,6 +71,9 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         videoAudioExtractor = AndroidVideoAudioExtractor(this)
         dubbingPreferencesRepository = DubbingPreferencesRepository(this)
         whisperSpeechEngine = WhisperCppSpeechRecognitionEngine(this)
+        offlineTranslationManager = OfflineTranslationManager()
+        offlineTranslationEngine = OfflineTranslationEngine(offlineTranslationManager)
+        translationCacheRepository = TranslationCacheRepository(database.translationDao())
     }
 
     override fun newImageLoader(): ImageLoader {

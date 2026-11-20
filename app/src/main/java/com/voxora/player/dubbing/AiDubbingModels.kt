@@ -208,7 +208,7 @@ enum class DubbingPipelineStage(
     ENGLISH_TO_BENGALI_TRANSLATION(
         order = 4,
         title = "English → Bengali Translation",
-        openSourceTarget = "OPUS-MT en-bn / NLLB-200 Distilled (Offline)"
+        openSourceTarget = "Google ML Kit On-Device Translation (Offline, Free)"
     ),
     BENGALI_SPEECH_GENERATION(
         order = 5,

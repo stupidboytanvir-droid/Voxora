@@ -1,5 +1,7 @@
 package com.voxora.player.dubbing
 
+import com.voxora.player.ai.translation.TranslationModelState
+
 /**
  * VOXORA AI Dubbing — Phase 1 Modular Processing Contracts & Speaker-Character Registry.
  *
@@ -271,7 +273,9 @@ interface AiDubbingPipeline {
         isExtractingAudio: Boolean = false,
         isWhisperModelLoaded: Boolean = false,
         isTranscribing: Boolean = false,
-        whisperModelDetail: String? = null
+        whisperModelDetail: String? = null,
+        translationModelState: TranslationModelState = TranslationModelState.NotDownloaded,
+        isTranslating: Boolean = false
     ): List<PipelineStageStatus>
 
     fun computeEffectiveOriginalVolume(
@@ -353,7 +357,9 @@ class Version1AiDubbingPipeline(
         isExtractingAudio: Boolean,
         isWhisperModelLoaded: Boolean,
         isTranscribing: Boolean,
-        whisperModelDetail: String?
+        whisperModelDetail: String?,
+        translationModelState: TranslationModelState,
+        isTranslating: Boolean
     ): List<PipelineStageStatus> {
         val extractionStatus = when {
             isExtractingAudio -> PipelineStageStatus(
@@ -398,6 +404,39 @@ class Version1AiDubbingPipeline(
             )
         }
 
+        val translationStatus = when {
+            isTranslating -> PipelineStageStatus(
+                stage = DubbingPipelineStage.ENGLISH_TO_BENGALI_TRANSLATION,
+                readiness = ComponentReadiness.RUNNING,
+                statusDetail = "Translating recognized English segments to Bengali (বাংলা) offline via ML Kit..."
+            )
+            translationModelState is TranslationModelState.Ready -> PipelineStageStatus(
+                stage = DubbingPipelineStage.ENGLISH_TO_BENGALI_TRANSLATION,
+                readiness = ComponentReadiness.READY,
+                statusDetail = "Google ML Kit offline English → বাংলা model installed & ready on-device"
+            )
+            translationModelState is TranslationModelState.Downloading -> PipelineStageStatus(
+                stage = DubbingPipelineStage.ENGLISH_TO_BENGALI_TRANSLATION,
+                readiness = ComponentReadiness.RUNNING,
+                statusDetail = "Downloading offline ML Kit English → বাংলা translation model (~30 MB)..."
+            )
+            translationModelState is TranslationModelState.Checking -> PipelineStageStatus(
+                stage = DubbingPipelineStage.ENGLISH_TO_BENGALI_TRANSLATION,
+                readiness = ComponentReadiness.RUNNING,
+                statusDetail = "Checking offline ML Kit English → বাংলা model status on-device..."
+            )
+            translationModelState is TranslationModelState.Error -> PipelineStageStatus(
+                stage = DubbingPipelineStage.ENGLISH_TO_BENGALI_TRANSLATION,
+                readiness = ComponentReadiness.ERROR,
+                statusDetail = translationModelState.message
+            )
+            else -> PipelineStageStatus(
+                stage = DubbingPipelineStage.ENGLISH_TO_BENGALI_TRANSLATION,
+                readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
+                statusDetail = "ML Kit on-device translator integrated · Model Required / Not Downloaded (~30 MB offline EN → বাংলা)"
+            )
+        }
+
         return listOf(
             extractionStatus,
             asrStatus,
@@ -406,11 +445,7 @@ class Version1AiDubbingPipeline(
                 readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
                 statusDetail = "Character registry & whole-movie speaker lock ready · Awaiting offline speaker clustering engine"
             ),
-            PipelineStageStatus(
-                stage = DubbingPipelineStage.ENGLISH_TO_BENGALI_TRANSLATION,
-                readiness = ComponentReadiness.REQUIRES_AI_ENGINE,
-                statusDetail = "EN → বাংলা language pair configured · Awaiting offline translation model (OPUS-MT / NLLB)"
-            ),
+            translationStatus,
             PipelineStageStatus(
                 stage = DubbingPipelineStage.BENGALI_SPEECH_GENERATION,
                 readiness = ComponentReadiness.REQUIRES_AI_ENGINE,

@@ -132,13 +132,19 @@ class WhisperCppSpeechRecognitionEngine(
     suspend fun ensureBaseEnModelReady(
         onProgressPercent: (Int) -> Unit = {}
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        if (isModelLoadedAndReady) {
+        val spec = WhisperModelCatalog.DEFAULT
+        if (isModelLoadedAndReady && loadedModelInfo?.fileName.equals(spec.fileName, ignoreCase = true)) {
             onProgressPercent(100)
             return@withContext Result.success(Unit)
         }
 
-        val alreadyInstalled = modelManager.findInstalledModel()
-        if (alreadyInstalled != null) {
+        val preferredFile = modelManager.getDefaultModelFile(spec)
+        val alreadyInstalled = if (preferredFile.exists() && preferredFile.isFile) {
+            modelManager.findInstalledModel(spec)
+        } else {
+            null
+        }
+        if (alreadyInstalled != null && alreadyInstalled.fileName.equals(spec.fileName, ignoreCase = true)) {
             onProgressPercent(85)
             loadInstalledModelInternal(alreadyInstalled)
             return@withContext if (isModelLoadedAndReady) {
@@ -150,8 +156,6 @@ class WhisperCppSpeechRecognitionEngine(
                 Result.failure(IllegalStateException(errMsg))
             }
         }
-
-        val spec = WhisperModelCatalog.DEFAULT
         _modelStatus.value = WhisperModelStatus.Downloading(
             progressFraction = 0f,
             downloadedBytes = 0L,
@@ -325,11 +329,17 @@ class WhisperCppSpeechRecognitionEngine(
     }
 
     /**
-     * Runs real offline Whisper inference on a single already-decoded 30-second [PcmAudioChunk]
-     * without decoding the entire video into memory. Used by Fast Live Chunk Dubbing (v2.1.0).
+     * Runs real offline Whisper inference on a single already-decoded [PcmAudioChunk]
+     * without decoding the entire video into memory.
+     *
+     * @param language Whisper language parameter: `"auto"` for automatic multi-language
+     *   transcription in original language, `"auto:translate"` to detect ANY language and
+     *   translate directly to English inside whisper.cpp (enabling 59+ ML Kit target languages),
+     *   or a specific ISO-639-1 code like `"en"`.
      */
     suspend fun transcribePcmChunkSuspending(
         chunk: PcmAudioChunk,
+        language: String = "auto",
         onProgressPercent: (Int) -> Unit = {}
     ): Result<List<RecognizedSpeechSegment>> = withContext(Dispatchers.Default) {
         if (chunk.samples16kMono.isEmpty()) {
@@ -365,7 +375,7 @@ class WhisperCppSpeechRecognitionEngine(
                             startTimeMs = startMs.coerceAtLeast(chunk.startTimeMs),
                             endTimeMs = endMs.coerceAtLeast(startMs),
                             originalText = cleaned,
-                            detectedLanguageCode = "en",
+                            detectedLanguageCode = language.substringBefore(':'),
                             speakerId = "SPEAKER_01",
                             confidence = 1.0f
                         )
@@ -379,7 +389,7 @@ class WhisperCppSpeechRecognitionEngine(
                     numThreads = threads,
                     audioData = chunk.samples16kMono,
                     chunkOffsetMs = chunk.startTimeMs,
-                    language = "en",
+                    language = language,
                     callback = callback
                 )
             }

@@ -96,7 +96,9 @@ fun VoxoraApp(
     incomingVideoUri: Uri?,
     onIncomingUriConsumed: () -> Unit,
     openUpdateDialogRequest: Boolean = false,
-    onUpdateDialogRequestConsumed: () -> Unit = {}
+    onUpdateDialogRequestConsumed: () -> Unit = {},
+    isInPipMode: Boolean = false,
+    onEnterPipMode: (videoWidth: Int, videoHeight: Int) -> Boolean = { _, _ -> false }
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as VoxoraApplication
@@ -256,9 +258,9 @@ fun VoxoraApp(
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        contentWindowInsets = if (isPlayerRoute) WindowInsets(0) else WindowInsets.statusBars,
+        contentWindowInsets = if (isPlayerRoute || isInPipMode) WindowInsets(0) else WindowInsets.statusBars,
         bottomBar = {
-            if (!isPlayerRoute) {
+            if (!isPlayerRoute && !isInPipMode) {
                 NavigationBar(
                     containerColor = voxoraColors.glassSurface,
                     tonalElevation = 0.dp
@@ -302,7 +304,7 @@ fun VoxoraApp(
             }
         }
     ) { innerPadding ->
-        val contentModifier = if (isPlayerRoute) {
+        val contentModifier = if (isPlayerRoute || isInPipMode) {
             Modifier.fillMaxSize()
         } else {
             Modifier
@@ -434,6 +436,8 @@ fun VoxoraApp(
                     videoTitle = route.title,
                     startPositionMs = route.startPositionMs,
                     viewModel = playerViewModel,
+                    isInPipMode = isInPipMode,
+                    onEnterPipMode = onEnterPipMode,
                     onBack = { navController.popBackStack() }
                 )
             }

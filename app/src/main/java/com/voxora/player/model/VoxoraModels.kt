@@ -176,9 +176,25 @@ object BatterySavingPolicy {
     }
 }
 
+enum class SubtitleTextColor(val label: String, val colorHex: Long) {
+    WHITE("White", 0xFFFFFFFFL),
+    YELLOW("Yellow", 0xFFFACC15L),
+    CYAN("Cyan", 0xFF22D3EEL)
+}
+
+enum class SleepTimerOption(val label: String, val durationMinutes: Int) {
+    OFF("Off", 0),
+    MIN_15("15 min", 15),
+    MIN_30("30 min", 30),
+    MIN_45("45 min", 45),
+    MIN_60("60 min", 60),
+    END_OF_VIDEO("End of Video", -1)
+}
+
 data class UserPreferences(
     val themeMode: ThemeMode = ThemeMode.DARK_CHARCOAL,
     val defaultPlaybackSpeed: Float = 1.0f,
+    val holdSpeedMultiplier: Float = 2.0f,
     val resumePlaybackEnabled: Boolean = true,
     val autoPlayNext: Boolean = true,
     val defaultAspectRatio: AspectRatioMode = AspectRatioMode.FIT,
@@ -187,8 +203,11 @@ data class UserPreferences(
     val doubleTapSeekSeconds: Int = 10,
     val subtitleFontSizeSp: Float = 18f,
     val subtitleBottomPaddingFraction: Float = 0.08f,
+    val subtitleVerticalPositionFraction: Float = 0.88f,
+    val subtitleTextColor: SubtitleTextColor = SubtitleTextColor.WHITE,
     val subtitleBackgroundOpacity: Float = 0.65f,
     val subtitleDefaultSyncOffsetMs: Long = 0L,
+    val autoSubtitleTargetLanguageCode: String = "en",
     val minVideoDurationSec: Int = 0,
     val showHiddenFolders: Boolean = false,
     val sortOption: SortOption = SortOption.DATE_DESC,

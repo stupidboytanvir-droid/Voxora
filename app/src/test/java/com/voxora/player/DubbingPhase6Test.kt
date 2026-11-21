@@ -22,10 +22,17 @@ import com.voxora.player.dubbing.DubbingSessionConfig
 import com.voxora.player.dubbing.Version1AiDubbingPipeline
 import com.voxora.player.dubbing.VoiceGender
 import com.voxora.player.dubbing.VoiceGenderOverrideMode
+import com.voxora.player.ai.subtitles.AutoSubtitleLanguageCatalog
+import com.voxora.player.ai.subtitles.AutoSubtitleManager
 import com.voxora.player.dubbing.whisper.WhisperModelCatalog
+import com.voxora.player.dubbing.whisper.WhisperNativeBridge
+import com.voxora.player.model.SleepTimerOption
+import com.voxora.player.model.SubtitleCue
+import com.voxora.player.model.SubtitleTextColor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.PI
@@ -164,12 +171,12 @@ class DubbingPhase6Test {
     }
 
     @Test
-    fun v210_fastMovieModeDefaultsOn_andWhisperDefaultIsTinyEnQ5() {
+    fun v210_fastMovieModeDefaultsOn_andWhisperDefaultIsMultilingualTinyQ5() {
         val defaultConfig = DubbingSessionConfig()
         assertTrue("Fast Movie Mode must default to ON in v2.1.0", defaultConfig.fastMovieModeEnabled)
-        assertEquals("ggml-tiny.en-q5_1.bin", WhisperModelCatalog.DEFAULT.fileName)
+        assertEquals("ggml-tiny-q5_1.bin", WhisperModelCatalog.DEFAULT.fileName)
         assertTrue(
-            "tiny.en-q5_1 should be compact (~31 MB)",
+            "tiny-q5_1 should be compact (~31 MB)",
             WhisperModelCatalog.DEFAULT.expectedSizeBytes in 25_000_000L..40_000_000L
         )
     }
@@ -369,5 +376,45 @@ class DubbingPhase6Test {
             BackgroundAudioPreserver.computeSmartDuckingVolume(4_500L, windows, 0.97f),
             0.001f
         )
+    }
+
+    @Test
+    fun v230_autoSubtitlesCatalogFrameSyncThreadCapAndPlayerModels() {
+        // Battery-optimized Whisper CPU thread cap (max 2 threads)
+        val threads = WhisperNativeBridge.recommendedThreadCount()
+        assertTrue("Whisper thread count must be capped to 1..2, got $threads", threads in 1..2)
+
+        // 59+ ML Kit languages + Original Spoken Language
+        val languages = AutoSubtitleLanguageCatalog.allLanguages
+        assertTrue("Expected at least 59 subtitle languages, got ${languages.size}", languages.size >= 59)
+        val codes = languages.map { it.code }.toSet()
+        assertTrue(codes.contains(AutoSubtitleLanguageCatalog.CODE_ORIGINAL))
+        assertTrue(codes.contains("en"))
+        assertTrue(codes.contains("bn"))
+        assertTrue(codes.contains("hi"))
+        assertTrue(codes.contains("es"))
+        assertTrue(codes.contains("ja"))
+        assertTrue(codes.contains("ko"))
+
+        // Exact frame-synced binary-search lookup & silence clearing
+        val cues = listOf(
+            SubtitleCue(startMs = 1_000L, endMs = 3_200L, text = "Hello world"),
+            SubtitleCue(startMs = 4_500L, endMs = 6_000L, text = "Second line")
+        )
+        assertNull(AutoSubtitleManager.findExactCueForPosition(cues, 500L))
+        assertEquals("Hello world", AutoSubtitleManager.findExactCueForPosition(cues, 2_000L))
+        assertNull(AutoSubtitleManager.findExactCueForPosition(cues, 3_800L))
+        assertEquals("Second line", AutoSubtitleManager.findExactCueForPosition(cues, 5_000L))
+        assertNull(AutoSubtitleManager.findExactCueForPosition(cues, 6_500L))
+
+        // Whisper bracketed artifact cleaning
+        assertEquals("Hello there", AutoSubtitleManager.cleanWhisperText("[MUSIC] Hello   there [BLANK_AUDIO]"))
+        assertEquals("", AutoSubtitleManager.cleanWhisperText("[BLANK_AUDIO]"))
+
+        // Subtitle text colors & sleep timer options
+        assertEquals(listOf("White", "Yellow", "Cyan"), SubtitleTextColor.entries.map { it.label })
+        assertEquals(6, SleepTimerOption.entries.size)
+        assertEquals(15, SleepTimerOption.MIN_15.durationMinutes)
+        assertEquals(60, SleepTimerOption.MIN_60.durationMinutes)
     }
 }

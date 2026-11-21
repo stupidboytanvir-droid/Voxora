@@ -13,6 +13,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.voxora.player.model.AspectRatioMode
 import com.voxora.player.model.BatterySaverMode
 import com.voxora.player.model.SortOption
+import com.voxora.player.model.SubtitleTextColor
 import com.voxora.player.model.ThemeMode
 import com.voxora.player.model.UserPreferences
 import kotlinx.coroutines.flow.Flow
@@ -25,6 +26,7 @@ class SettingsRepository(private val context: Context) {
     private object Keys {
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val DEFAULT_SPEED = floatPreferencesKey("default_playback_speed")
+        val HOLD_SPEED_MULTIPLIER = floatPreferencesKey("hold_speed_multiplier")
         val RESUME_PLAYBACK = booleanPreferencesKey("resume_playback_enabled")
         val AUTO_PLAY_NEXT = booleanPreferencesKey("auto_play_next")
         val DEFAULT_ASPECT_RATIO = stringPreferencesKey("default_aspect_ratio")
@@ -33,8 +35,11 @@ class SettingsRepository(private val context: Context) {
         val DOUBLE_TAP_SEEK_SEC = intPreferencesKey("double_tap_seek_seconds")
         val SUBTITLE_FONT_SIZE_SP = floatPreferencesKey("subtitle_font_size_sp")
         val SUBTITLE_BOTTOM_PADDING = floatPreferencesKey("subtitle_bottom_padding_fraction")
+        val SUBTITLE_VERTICAL_POSITION = floatPreferencesKey("subtitle_vertical_position_fraction")
+        val SUBTITLE_TEXT_COLOR = stringPreferencesKey("subtitle_text_color")
         val SUBTITLE_BG_OPACITY = floatPreferencesKey("subtitle_bg_opacity")
         val SUBTITLE_DEFAULT_SYNC_MS = longPreferencesKey("subtitle_default_sync_ms")
+        val AUTO_SUBTITLE_TARGET_LANG = stringPreferencesKey("auto_subtitle_target_language_code")
         val MIN_VIDEO_DURATION_SEC = intPreferencesKey("min_video_duration_sec")
         val SHOW_HIDDEN_FOLDERS = booleanPreferencesKey("show_hidden_folders")
         val SORT_OPTION = stringPreferencesKey("sort_option")
@@ -51,6 +56,7 @@ class SettingsRepository(private val context: Context) {
                 ThemeMode.entries.firstOrNull { it.name == name }
             } ?: ThemeMode.DARK_CHARCOAL,
             defaultPlaybackSpeed = prefs[Keys.DEFAULT_SPEED] ?: 1.0f,
+            holdSpeedMultiplier = (prefs[Keys.HOLD_SPEED_MULTIPLIER] ?: 2.0f).coerceIn(2.0f, 3.0f),
             resumePlaybackEnabled = prefs[Keys.RESUME_PLAYBACK] ?: true,
             autoPlayNext = prefs[Keys.AUTO_PLAY_NEXT] ?: true,
             defaultAspectRatio = prefs[Keys.DEFAULT_ASPECT_RATIO]?.let { name ->
@@ -61,8 +67,13 @@ class SettingsRepository(private val context: Context) {
             doubleTapSeekSeconds = prefs[Keys.DOUBLE_TAP_SEEK_SEC] ?: 10,
             subtitleFontSizeSp = prefs[Keys.SUBTITLE_FONT_SIZE_SP] ?: 18f,
             subtitleBottomPaddingFraction = prefs[Keys.SUBTITLE_BOTTOM_PADDING] ?: 0.08f,
+            subtitleVerticalPositionFraction = (prefs[Keys.SUBTITLE_VERTICAL_POSITION] ?: 0.88f).coerceIn(0.05f, 0.95f),
+            subtitleTextColor = prefs[Keys.SUBTITLE_TEXT_COLOR]?.let { name ->
+                SubtitleTextColor.entries.firstOrNull { it.name == name }
+            } ?: SubtitleTextColor.WHITE,
             subtitleBackgroundOpacity = prefs[Keys.SUBTITLE_BG_OPACITY] ?: 0.65f,
             subtitleDefaultSyncOffsetMs = prefs[Keys.SUBTITLE_DEFAULT_SYNC_MS] ?: 0L,
+            autoSubtitleTargetLanguageCode = prefs[Keys.AUTO_SUBTITLE_TARGET_LANG] ?: "en",
             minVideoDurationSec = prefs[Keys.MIN_VIDEO_DURATION_SEC] ?: 0,
             showHiddenFolders = prefs[Keys.SHOW_HIDDEN_FOLDERS] ?: false,
             sortOption = prefs[Keys.SORT_OPTION]?.let { name ->
@@ -158,5 +169,21 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setAutoCheckUpdates(enabled: Boolean) {
         context.voxoraDataStore.edit { it[Keys.AUTO_CHECK_UPDATES] = enabled }
+    }
+
+    suspend fun setHoldSpeedMultiplier(multiplier: Float) {
+        context.voxoraDataStore.edit { it[Keys.HOLD_SPEED_MULTIPLIER] = multiplier.coerceIn(2.0f, 3.0f) }
+    }
+
+    suspend fun setSubtitleVerticalPositionFraction(fraction: Float) {
+        context.voxoraDataStore.edit { it[Keys.SUBTITLE_VERTICAL_POSITION] = fraction.coerceIn(0.05f, 0.95f) }
+    }
+
+    suspend fun setSubtitleTextColor(color: SubtitleTextColor) {
+        context.voxoraDataStore.edit { it[Keys.SUBTITLE_TEXT_COLOR] = color.name }
+    }
+
+    suspend fun setAutoSubtitleTargetLanguageCode(code: String) {
+        context.voxoraDataStore.edit { it[Keys.AUTO_SUBTITLE_TARGET_LANG] = code }
     }
 }

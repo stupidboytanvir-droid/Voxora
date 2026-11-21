@@ -1,8 +1,12 @@
 package com.voxora.player
 
+import android.app.PictureInPictureParams
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -19,6 +23,7 @@ class MainActivity : ComponentActivity() {
 
     private var incomingVideoUri by mutableStateOf<Uri?>(null)
     private var openUpdateDialogRequest by mutableStateOf(false)
+    private var isInPipMode by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -35,7 +40,9 @@ class MainActivity : ComponentActivity() {
                     incomingVideoUri = incomingVideoUri,
                     onIncomingUriConsumed = { incomingVideoUri = null },
                     openUpdateDialogRequest = openUpdateDialogRequest,
-                    onUpdateDialogRequestConsumed = { openUpdateDialogRequest = false }
+                    onUpdateDialogRequestConsumed = { openUpdateDialogRequest = false },
+                    isInPipMode = isInPipMode,
+                    onEnterPipMode = { width, height -> enterPlayerPipMode(width, height) }
                 )
             }
         }
@@ -45,6 +52,34 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIntent(intent)
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        isInPipMode = isInPictureInPictureMode
+    }
+
+    fun enterPlayerPipMode(videoWidth: Int, videoHeight: Int): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        return runCatching {
+            val aspectRatio = computeSafePipRatio(videoWidth, videoHeight)
+            val params = PictureInPictureParams.Builder()
+                .setAspectRatio(aspectRatio)
+                .build()
+            enterPictureInPictureMode(params)
+        }.getOrDefault(false)
+    }
+
+    private fun computeSafePipRatio(videoWidth: Int, videoHeight: Int): Rational {
+        if (videoWidth <= 0 || videoHeight <= 0) return Rational(16, 9)
+        val raw = videoWidth.toFloat() / videoHeight.toFloat()
+        // Android PiP requires aspect ratio strictly within [0.418410, 2.39]
+        val clamped = raw.coerceIn(0.45f, 2.35f)
+        val scaledW = (clamped * 1000f).toInt().coerceAtLeast(450)
+        return Rational(scaledW, 1000)
     }
 
     private fun handleIntent(intent: Intent?) {

@@ -21,8 +21,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.BatterySaver
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PlayCircleOutline
@@ -55,27 +56,33 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.voxora.player.BuildConfig
+import com.voxora.player.R
 import com.voxora.player.data.update.UpdateUiState
 import com.voxora.player.model.AspectRatioMode
-import com.voxora.player.model.BatterySaverMode
+import com.voxora.player.model.SubtitleTextColor
 import com.voxora.player.model.ThemeMode
 import com.voxora.player.model.UserPreferences
 import com.voxora.player.ui.components.VoxoraBrandMark
 import com.voxora.player.ui.theme.LocalVoxoraColors
 import com.voxora.player.ui.theme.TabularTimeStyle
+import com.voxora.player.ui.theme.VoxoraCyan
+import com.voxora.player.ui.theme.VoxoraElectricPurple
 import com.voxora.player.ui.viewmodel.SettingsViewModel
 import com.voxora.player.util.FormatUtils
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -91,9 +98,9 @@ fun SettingsScreen(
     modifier: Modifier = Modifier
 ) {
     val voxoraColors = LocalVoxoraColors.current
-    val batteryEvaluation by viewModel.batterySavingEvaluation.collectAsStateWithLifecycle()
-    val batteryStatus by viewModel.batteryStatus.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val comingSoonMessage = stringResource(R.string.ai_dubbing_coming_soon_message)
     var showClearDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(statusBanner) {
@@ -253,94 +260,90 @@ fun SettingsScreen(
                 }
             }
 
-            // Battery-Saving Mode Settings
+            // Locked AI Audio Dubbing — Coming Soon Card
             item {
-                SettingsSectionCard(
-                    title = "Player Battery Saver",
-                    icon = Icons.Rounded.BatterySaver
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(18.dp))
+                        .clickable {
+                            scope.launch {
+                                snackbarHostState.currentSnackbarData?.dismiss()
+                                snackbarHostState.showSnackbar(comingSoonMessage)
+                            }
+                        }
+                        .testTag("settings_ai_dubbing_coming_soon_card"),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                    ),
+                    border = BorderStroke(
+                        width = 1.dp,
+                        brush = Brush.horizontalGradient(
+                            listOf(
+                                VoxoraElectricPurple.copy(alpha = 0.55f),
+                                VoxoraCyan.copy(alpha = 0.45f)
+                            )
+                        )
+                    )
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Text(
-                            text = "Device Battery: ${batteryStatus.batteryPercent}%${if (batteryStatus.isCharging) " (Charging)" else ""}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
                         Surface(
-                            color = if (batteryEvaluation.isActive) {
-                                voxoraColors.success.copy(alpha = 0.2f)
-                            } else {
-                                MaterialTheme.colorScheme.surfaceVariant
-                            },
-                            shape = RoundedCornerShape(10.dp)
+                            color = VoxoraElectricPurple.copy(alpha = 0.16f),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.size(44.dp)
                         ) {
-                            Text(
-                                text = if (batteryEvaluation.isActive) "Active · ${batteryEvaluation.reasonLabel}" else batteryEvaluation.reasonLabel,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (batteryEvaluation.isActive) voxoraColors.success else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        BatterySaverMode.entries.forEach { mode ->
-                            FilterChip(
-                                selected = preferences.batterySaverMode == mode,
-                                onClick = { viewModel.setBatterySaverMode(mode) },
-                                label = { Text(mode.label) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                    selectedLabelColor = Color.White
-                                ),
-                                modifier = Modifier.testTag("battery_mode_${mode.name}")
-                            )
-                        }
-                    }
-
-                    if (preferences.batterySaverMode == BatterySaverMode.AUTO) {
-                        Text("Low Battery Trigger Threshold", style = MaterialTheme.typography.titleSmall)
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            listOf(10, 15, 20, 30).forEach { threshold ->
-                                FilterChip(
-                                    selected = preferences.batterySaverThresholdPercent == threshold,
-                                    onClick = { viewModel.setBatterySaverThresholdPercent(threshold) },
-                                    label = { Text("$threshold%") },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                        selectedLabelColor = Color.White
-                                    )
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Rounded.GraphicEq,
+                                    contentDescription = null,
+                                    tint = VoxoraElectricPurple,
+                                    modifier = Modifier.size(22.dp)
                                 )
                             }
                         }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "AI Audio Dubbing",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Icon(
+                                    imageVector = Icons.Rounded.Lock,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                            Text(
+                                text = "Voice dubbing is paused while we focus on ultra-fast Live Auto AI Subtitles.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Surface(
+                            color = VoxoraCyan.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, VoxoraCyan.copy(alpha = 0.45f))
+                        ) {
+                            Text(
+                                text = "Coming Soon",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = VoxoraCyan,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
                     }
-
-                    HorizontalDivider(color = voxoraColors.cardBorder.copy(alpha = 0.5f))
-
-                    SettingsSwitchRow(
-                        title = "Cap Display Refresh Rate (60Hz)",
-                        subtitle = "Reduces high-refresh-rate display power draw during video playback",
-                        checked = preferences.batterySaverCapRefreshRate,
-                        onCheckedChange = viewModel::setBatterySaverCapRefreshRate,
-                        testTag = "settings_battery_cap_refresh_switch"
-                    )
-                    HorizontalDivider(color = voxoraColors.cardBorder.copy(alpha = 0.5f))
-                    SettingsSwitchRow(
-                        title = "Disable Non-Essential Animations",
-                        subtitle = "Disables player overlay fades and transitions to save GPU/CPU cycles",
-                        checked = preferences.batterySaverDisableAnimations,
-                        onCheckedChange = viewModel::setBatterySaverDisableAnimations,
-                        testTag = "settings_battery_disable_anims_switch"
-                    )
                 }
             }
 
@@ -384,6 +387,31 @@ fun SettingsScreen(
                             )
                         }
                     }
+                    HorizontalDivider(color = voxoraColors.cardBorder.copy(alpha = 0.5f))
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("Press & Hold Fast-Forward Speed", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = "Press and hold anywhere on the player to boost speed; slide up/down to switch between 2.0x and 3.0x",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(2.0f, 3.0f).forEach { holdSpeed ->
+                            FilterChip(
+                                selected = kotlin.math.abs(preferences.holdSpeedMultiplier - holdSpeed) < 0.05f,
+                                onClick = { viewModel.setHoldSpeedMultiplier(holdSpeed) },
+                                label = { Text("${holdSpeed}x") },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = VoxoraCyan,
+                                    selectedLabelColor = Color(0xFF061018)
+                                ),
+                                modifier = Modifier.testTag("settings_hold_speed_${holdSpeed.toInt()}x")
+                            )
+                        }
+                    }
                 }
             }
 
@@ -398,7 +426,7 @@ fun SettingsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF0A0A0F))
+                            .background(Color(0xFF0B0D12))
                             .padding(vertical = 14.dp, horizontal = 12.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -407,10 +435,29 @@ fun SettingsScreen(
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Text(
-                                text = "VOXORA Subtitle Preview",
-                                color = Color.White,
+                                text = "VOXORA Live Auto AI Subtitle Preview",
+                                color = Color(preferences.subtitleTextColor.colorHex),
                                 fontSize = preferences.subtitleFontSizeSp.sp,
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    Text("Text Color", style = MaterialTheme.typography.titleSmall)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        SubtitleTextColor.entries.forEach { textColor ->
+                            FilterChip(
+                                selected = preferences.subtitleTextColor == textColor,
+                                onClick = { viewModel.setSubtitleTextColor(textColor) },
+                                label = { Text(textColor.label) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = Color.White
+                                ),
+                                modifier = Modifier.testTag("settings_subtitle_color_${textColor.name}")
                             )
                         }
                     }
@@ -436,17 +483,17 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Vertical Position", style = MaterialTheme.typography.titleSmall)
+                        Text("Vertical Position (Top → Bottom)", style = MaterialTheme.typography.titleSmall)
                         Text(
-                            "${(preferences.subtitleBottomPaddingFraction * 100).toInt()}%",
+                            "${(preferences.subtitleVerticalPositionFraction * 100).toInt()}%",
                             style = TabularTimeStyle,
                             color = voxoraColors.blueHighlight
                         )
                     }
                     Slider(
-                        value = preferences.subtitleBottomPaddingFraction,
-                        onValueChange = viewModel::setSubtitleBottomPaddingFraction,
-                        valueRange = 0.02f..0.35f
+                        value = preferences.subtitleVerticalPositionFraction.coerceIn(0.05f, 0.95f),
+                        onValueChange = viewModel::setSubtitleVerticalPositionFraction,
+                        valueRange = 0.05f..0.95f
                     )
 
                     Row(
@@ -697,7 +744,7 @@ fun SettingsScreen(
                             }
                         }
                         Text(
-                            text = "Built on AndroidX Media3 ExoPlayer, Jetpack Compose, Room, whisper.cpp, Sherpa-ONNX, and Google ML Kit for 100% private, offline playback and Bengali dubbing.",
+                            text = "Built on AndroidX Media3 ExoPlayer, Jetpack Compose, Room, whisper.cpp, and Google ML Kit for smooth hardware-accelerated playback and 100% free on-device Auto AI Subtitles.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -716,7 +763,7 @@ fun SettingsScreen(
                                     tint = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = "VOXORA Media Player v${BuildConfig.VERSION_NAME} — Full Offline AI Bengali Dubbing Ready: One-Click Auto-Dub, Multi-Speaker Character Mapping, Smart BGM Ducking, Live Sync Playback & Offline MP4/Audio Export.",
+                                    text = "VOXORA Media Player v${BuildConfig.VERSION_NAME} — Free Live Auto AI Subtitles (59+ languages, drag-to-reposition), Press & Hold 2x/3x Speed, Picture-in-Picture, Sleep Timer & Obsidian UI. AI Audio Dubbing coming soon.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )

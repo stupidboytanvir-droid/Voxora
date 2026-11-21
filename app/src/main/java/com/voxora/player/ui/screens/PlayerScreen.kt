@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.media.AudioManager
+import android.os.Build
 import android.provider.Settings
+import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,6 +50,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,6 +62,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -70,21 +74,19 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.ContentFrame
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
-import com.voxora.player.ai.diarization.DiarizationModelSlot
-import com.voxora.player.ai.translation.TranslationExportFormat
-import com.voxora.player.ai.tts.BengaliTtsModelSlot
-import com.voxora.player.dubbing.whisper.TranscriptExportFormat
+import com.voxora.player.R
 import com.voxora.player.model.AspectRatioMode
-import com.voxora.player.ui.components.AiDubbingStudioSheet
 import com.voxora.player.ui.components.AspectRatioSheet
 import com.voxora.player.ui.components.AudioTrackSheet
-import com.voxora.player.ui.components.BatterySaverSheet
+import com.voxora.player.ui.components.AutoSubtitleSettingsSheet
+import com.voxora.player.ui.components.DraggableSubtitleOverlay
 import com.voxora.player.ui.components.GestureHudOverlay
 import com.voxora.player.ui.components.GestureHudState
+import com.voxora.player.ui.components.HoldSpeedIndicatorPill
 import com.voxora.player.ui.components.PlayerControlsOverlay
+import com.voxora.player.ui.components.SleepTimerSheet
 import com.voxora.player.ui.components.SpeedSelectorSheet
-import com.voxora.player.ui.components.SubtitleOverlay
-import com.voxora.player.ui.components.SubtitleSettingsSheet
+import com.voxora.player.ui.theme.VoxoraCyan
 import com.voxora.player.ui.theme.VoxoraElectricPurple
 import com.voxora.player.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.delay
@@ -97,8 +99,7 @@ private enum class ActiveSheet {
     AUDIO_TRACKS,
     SPEED,
     ASPECT_RATIO,
-    AI_DUBBING,
-    BATTERY_SAVER
+    SLEEP_TIMER
 }
 
 @OptIn(UnstableApi::class)
@@ -108,6 +109,8 @@ fun PlayerScreen(
     videoTitle: String,
     startPositionMs: Long,
     viewModel: PlayerViewModel,
+    isInPipMode: Boolean = false,
+    onEnterPipMode: (videoWidth: Int, videoHeight: Int) -> Boolean = { _, _ -> false },
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -121,82 +124,23 @@ fun PlayerScreen(
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val preferences by viewModel.preferences.collectAsStateWithLifecycle()
-    val batterySaving by viewModel.batterySavingState.collectAsStateWithLifecycle()
-    val batteryStatus by viewModel.batteryStatus.collectAsStateWithLifecycle()
-    val dubbingState by viewModel.dubbingState.collectAsStateWithLifecycle()
-    val whisperModelStatus by viewModel.whisperModelStatus.collectAsStateWithLifecycle()
-    val whisperTranscriptionState by viewModel.whisperTranscriptionState.collectAsStateWithLifecycle()
-    val translationModelState by viewModel.translationModelState.collectAsStateWithLifecycle()
-    val translationUiState by viewModel.translationUiState.collectAsStateWithLifecycle()
-    val diarizationModelState by viewModel.diarizationModelState.collectAsStateWithLifecycle()
-    val diarizationSlotAvailability by viewModel.diarizationSlotAvailability.collectAsStateWithLifecycle()
-    val diarizationInstalledFiles by viewModel.diarizationInstalledFiles.collectAsStateWithLifecycle()
-    val diarizationUiState by viewModel.diarizationUiState.collectAsStateWithLifecycle()
-    val bengaliTtsModelState by viewModel.bengaliTtsModelState.collectAsStateWithLifecycle()
-    val bengaliTtsSlotAvailability by viewModel.bengaliTtsSlotAvailability.collectAsStateWithLifecycle()
-    val bengaliTtsInstalledFiles by viewModel.bengaliTtsInstalledFiles.collectAsStateWithLifecycle()
-    val bengaliVoiceUiState by viewModel.bengaliVoiceUiState.collectAsStateWithLifecycle()
-    val ttsEngineDiagnostic by viewModel.ttsEngineDiagnosticState.collectAsStateWithLifecycle()
-    val oneClickAiSetupState by viewModel.oneClickAiSetupState.collectAsStateWithLifecycle()
-    val liveDubbingState by viewModel.liveDubbingState.collectAsStateWithLifecycle()
-    val autoDubPipelineState by viewModel.autoDubPipelineState.collectAsStateWithLifecycle()
-    val dubbedExportState by viewModel.dubbedExportState.collectAsStateWithLifecycle()
-    val animationsEnabled = !batterySaving.disableAnimations
+    val autoSubtitleState by viewModel.autoSubtitleState.collectAsStateWithLifecycle()
+    val sleepTimerState by viewModel.sleepTimerState.collectAsStateWithLifecycle()
+
+    val comingSoonMessage = stringResource(R.string.ai_dubbing_coming_soon_message)
+    val latestIsInPip by rememberUpdatedState(isInPipMode)
+    val latestHoldSpeedPref by rememberUpdatedState(preferences.holdSpeedMultiplier)
 
     var controlsVisible by remember { mutableStateOf(true) }
     var lastInteractionMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var activeSheet by remember { mutableStateOf(ActiveSheet.NONE) }
     var gestureHudState by remember { mutableStateOf<GestureHudState>(GestureHudState.Hidden) }
-    var pendingExportFormat by remember { mutableStateOf(TranscriptExportFormat.SRT) }
-    var pendingTranslationExportFormat by remember { mutableStateOf(TranslationExportFormat.BENGALI_SRT) }
-    var pendingDiarizationImportSlot by remember { mutableStateOf(DiarizationModelSlot.SEGMENTATION) }
-    var pendingBengaliTtsImportSlot by remember { mutableStateOf(BengaliTtsModelSlot.MODEL_ONNX) }
 
     val subtitlePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             viewModel.loadExternalSubtitle(uri)
-        }
-    }
-
-    val whisperModelPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            viewModel.importLocalWhisperModel(uri)
-        }
-    }
-
-    val diarizationModelPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            viewModel.importLocalDiarizationModel(pendingDiarizationImportSlot, uri)
-        }
-    }
-
-    val bengaliTtsFilePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            viewModel.importLocalBengaliTtsFile(pendingBengaliTtsImportSlot, uri)
-        }
-    }
-
-    val transcriptExportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("*/*")
-    ) { uri ->
-        if (uri != null) {
-            viewModel.exportTranscriptionToUri(uri, pendingExportFormat)
-        }
-    }
-
-    val translationExportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("*/*")
-    ) { uri ->
-        if (uri != null) {
-            viewModel.exportTranslationToUri(uri, pendingTranslationExportFormat)
         }
     }
 
@@ -218,27 +162,49 @@ fun PlayerScreen(
         }
     }
 
-    // Show subtitle load feedback
-    LaunchedEffect(uiState.subtitleLoadFeedback) {
-        val msg = uiState.subtitleLoadFeedback
+    // Show user feedback toasts/snackbars (subtitle load, sleep timer, AI Dubbing Coming Soon)
+    LaunchedEffect(uiState.feedbackMessage) {
+        val msg = uiState.feedbackMessage
         if (msg != null) {
             snackbarHostState.showSnackbar(msg)
-            viewModel.clearSubtitleFeedback()
+            viewModel.clearFeedbackMessage()
         }
     }
 
-    // Auto-hide controls after 3.5 seconds while playing and no sheet is open
-    LaunchedEffect(controlsVisible, playbackState.isPlaying, activeSheet, lastInteractionMs, uiState.isLocked) {
+    // Auto-hide controls smoothly after 3.0 seconds of inactivity while playing
+    LaunchedEffect(controlsVisible, playbackState.isPlaying, activeSheet, lastInteractionMs, uiState.isLocked, isInPipMode) {
+        if (isInPipMode) {
+            controlsVisible = false
+            activeSheet = ActiveSheet.NONE
+            return@LaunchedEffect
+        }
         if (controlsVisible && playbackState.isPlaying && activeSheet == ActiveSheet.NONE) {
-            delay(3_500L)
+            delay(3_000L)
             controlsVisible = false
         }
     }
 
-    // Lifecycle pause/save & clean orientation/system bar restoration
+    // Battery-safe WakeLock/Keep-Screen-On: ONLY active while video is actively playing!
+    DisposableEffect(playbackState.isPlaying, activity) {
+        val window = activity?.window
+        if (window != null) {
+            if (playbackState.isPlaying) {
+                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            } else {
+                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
+        }
+        onDispose {
+            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    // Lifecycle pause/background handling: immediately cancels polling & AI coroutines when leaving
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
+            if (event == Lifecycle.Event.ON_PAUSE) {
+                viewModel.onActivityBackgrounded(isInPipMode = latestIsInPip)
+            } else if (event == Lifecycle.Event.ON_STOP && !latestIsInPip) {
                 viewModel.pausePlayback()
             }
         }
@@ -250,11 +216,11 @@ fun PlayerScreen(
         }
     }
 
-    // Immersive fullscreen handling
-    DisposableEffect(uiState.isFullScreen, view) {
+    // Immersive fullscreen system bars handling
+    DisposableEffect(uiState.isFullScreen, view, isInPipMode) {
         val window = activity?.window
         val controller = if (window != null) WindowCompat.getInsetsController(window, view) else null
-        if (controller != null) {
+        if (controller != null && !isInPipMode) {
             controller.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             if (uiState.isFullScreen) {
@@ -265,26 +231,6 @@ fun PlayerScreen(
         }
         onDispose {
             controller?.show(WindowInsetsCompat.Type.systemBars())
-        }
-    }
-
-    // Battery-saving display refresh rate cap (60Hz when active, default 0f otherwise)
-    DisposableEffect(batterySaving.capRefreshRate, activity) {
-        val window = activity?.window
-        if (window != null) {
-            val lp = window.attributes
-            lp.preferredRefreshRate = if (batterySaving.capRefreshRate) 60f else 0f
-            window.attributes = lp
-        }
-        onDispose {
-            val win = activity?.window
-            if (win != null) {
-                val lp = win.attributes
-                if (lp.preferredRefreshRate != 0f) {
-                    lp.preferredRefreshRate = 0f
-                    win.attributes = lp
-                }
-            }
         }
     }
 
@@ -354,234 +300,289 @@ fun PlayerScreen(
             contentScale = contentScale
         )
 
-        // Gesture Capture Layer (Tap, Double-Tap Seek, Brightness, Volume, Horizontal Scrub)
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(uiState.isLocked, preferences.doubleTapSeekSeconds) {
-                    detectTapGestures(
-                        onTap = {
-                            controlsVisible = !controlsVisible
-                            if (controlsVisible) registerInteraction()
-                        },
-                        onDoubleTap = { offset ->
-                            if (uiState.isLocked) {
-                                controlsVisible = true
+        // Gesture Capture Layer: Tap, Double-Tap Seek, Press & Hold 2x/3x Speed (with slide up/down), Brightness, Volume, Seek
+        if (!isInPipMode) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(uiState.isLocked, preferences.doubleTapSeekSeconds) {
+                        detectTapGestures(
+                            onTap = {
+                                controlsVisible = !controlsVisible
+                                if (controlsVisible) registerInteraction()
+                            },
+                            onDoubleTap = { offset ->
+                                if (uiState.isLocked) {
+                                    controlsVisible = true
+                                    registerInteraction()
+                                    return@detectTapGestures
+                                }
+                                val seekSec = preferences.doubleTapSeekSeconds
+                                val isForward = offset.x >= size.width / 2f
+                                viewModel.seekBySeconds(if (isForward) seekSec else -seekSec)
                                 registerInteraction()
-                                return@detectTapGestures
-                            }
-                            val seekSec = preferences.doubleTapSeekSeconds
-                            val isForward = offset.x >= size.width / 2f
-                            viewModel.seekBySeconds(if (isForward) seekSec else -seekSec)
-                            registerInteraction()
-                            scope.launch {
-                                gestureHudState = GestureHudState.DoubleTapSeek(isForward, seekSec)
-                                delay(800L)
-                                if (gestureHudState is GestureHudState.DoubleTapSeek) {
-                                    gestureHudState = GestureHudState.Hidden
+                                scope.launch {
+                                    gestureHudState = GestureHudState.DoubleTapSeek(isForward, seekSec)
+                                    delay(750L)
+                                    if (gestureHudState is GestureHudState.DoubleTapSeek) {
+                                        gestureHudState = GestureHudState.Hidden
+                                    }
                                 }
                             }
-                        }
-                    )
-                }
-                .pointerInput(
-                    uiState.isLocked,
-                    preferences.brightnessGestureEnabled,
-                    preferences.volumeGestureEnabled,
-                    playbackState.durationMs
-                ) {
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        if (uiState.isLocked) return@awaitEachGesture
+                        )
+                    }
+                    .pointerInput(
+                        uiState.isLocked,
+                        preferences.brightnessGestureEnabled,
+                        preferences.volumeGestureEnabled,
+                        playbackState.durationMs
+                    ) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            if (uiState.isLocked) return@awaitEachGesture
 
-                        val startX = down.position.x
-                        val isLeftHalf = startX < size.width / 2f
-                        var dragMode = 0 // 0=undecided, 1=horizontal seek, 2=vertical brightness/volume
-                        var totalDx = 0f
-                        var totalDy = 0f
+                            val startX = down.position.x
+                            val isLeftHalf = startX < size.width / 2f
+                            // 0=undecided, 1=horizontal seek, 2=vertical brightness/volume, 3=hold-to-speed (2x/3x)
+                            var dragMode = 0
+                            var totalDx = 0f
+                            var totalDy = 0f
+                            var holdAnchorY = down.position.y
+                            var holdActivated = false
+                            val downTimeMs = System.currentTimeMillis()
 
-                        val initialPos = playbackState.currentPositionMs
-                        val duration = playbackState.durationMs.coerceAtLeast(1L)
-                        var seekTargetMs = initialPos
+                            val initialPos = playbackState.currentPositionMs
+                            val duration = playbackState.durationMs.coerceAtLeast(1L)
+                            var seekTargetMs = initialPos
 
-                        var currentBrightness = activity?.window?.attributes?.screenBrightness
-                            ?.takeIf { it in 0f..1f }
-                            ?: runCatching {
-                                Settings.System.getInt(
-                                    context.contentResolver,
-                                    Settings.System.SCREEN_BRIGHTNESS
-                                ) / 255f
-                            }.getOrDefault(0.5f)
+                            var currentBrightness = activity?.window?.attributes?.screenBrightness
+                                ?.takeIf { it in 0f..1f }
+                                ?: runCatching {
+                                    Settings.System.getInt(
+                                        context.contentResolver,
+                                        Settings.System.SCREEN_BRIGHTNESS
+                                    ) / 255f
+                                }.getOrDefault(0.5f)
 
-                        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-                        var volumeAccumulator = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat()
+                            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                            var volumeAccumulator = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat()
 
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull() ?: break
-                            if (!change.pressed) {
-                                if (dragMode == 1) {
-                                    viewModel.seekTo(seekTargetMs)
-                                }
-                                if (dragMode != 0) {
-                                    gestureHudState = GestureHudState.Hidden
-                                }
-                                break
-                            }
-
-                            val delta = change.position - change.previousPosition
-                            totalDx += delta.x
-                            totalDy += delta.y
-
-                            if (dragMode == 0) {
-                                if (abs(totalDx) > touchSlop && abs(totalDx) > abs(totalDy) * 1.2f) {
-                                    dragMode = 1
-                                } else if (abs(totalDy) > touchSlop && abs(totalDy) > abs(totalDx) * 1.2f) {
-                                    if ((isLeftHalf && preferences.brightnessGestureEnabled) ||
-                                        (!isLeftHalf && preferences.volumeGestureEnabled)
-                                    ) {
-                                        dragMode = 2
+                            try {
+                                while (true) {
+                                    val event = if (dragMode == 0) {
+                                        val remainingMs = (360L - (System.currentTimeMillis() - downTimeMs)).coerceAtLeast(16L)
+                                        withTimeoutOrNull(remainingMs) { awaitPointerEvent() }
                                     } else {
+                                        awaitPointerEvent()
+                                    }
+
+                                    // Long-press threshold reached without dragging -> Activate Hold-to-Speed (2x / 3x)!
+                                    if (event == null && dragMode == 0) {
+                                        dragMode = 3
+                                        holdActivated = true
+                                        holdAnchorY = down.position.y
+                                        controlsVisible = false
+                                        viewModel.beginHoldSpeed(latestHoldSpeedPref)
+                                        continue
+                                    }
+
+                                    val change = event?.changes?.firstOrNull() ?: break
+                                    if (!change.pressed) {
+                                        if (dragMode == 1) {
+                                            viewModel.seekTo(seekTargetMs)
+                                        }
+                                        if (dragMode == 1 || dragMode == 2) {
+                                            gestureHudState = GestureHudState.Hidden
+                                        }
                                         break
                                     }
-                                }
-                            }
 
-                            when (dragMode) {
-                                1 -> {
-                                    change.consume()
-                                    val seekSpanMs = minOf(duration, 120_000L).coerceAtLeast(20_000L)
-                                    val deltaMs = ((totalDx / size.width.coerceAtLeast(1)) * seekSpanMs).toLong()
-                                    seekTargetMs = (initialPos + deltaMs).coerceIn(0L, duration)
-                                    gestureHudState = GestureHudState.SeekPreview(
-                                        targetMs = seekTargetMs,
-                                        deltaMs = seekTargetMs - initialPos,
-                                        durationMs = duration
-                                    )
-                                }
-                                2 -> {
-                                    change.consume()
-                                    val verticalRatio = -delta.y / (size.height.coerceAtLeast(1) * 0.75f)
-                                    if (isLeftHalf && preferences.brightnessGestureEnabled) {
-                                        currentBrightness = (currentBrightness + verticalRatio).coerceIn(0.02f, 1.0f)
-                                        activity?.window?.let { win ->
-                                            val lp = win.attributes
-                                            lp.screenBrightness = currentBrightness
-                                            win.attributes = lp
+                                    val delta = change.position - change.previousPosition
+                                    totalDx += delta.x
+                                    totalDy += delta.y
+
+                                    if (dragMode == 0) {
+                                        if (abs(totalDx) > touchSlop && abs(totalDx) > abs(totalDy) * 1.2f) {
+                                            dragMode = 1
+                                        } else if (abs(totalDy) > touchSlop && abs(totalDy) > abs(totalDx) * 1.2f) {
+                                            if ((isLeftHalf && preferences.brightnessGestureEnabled) ||
+                                                (!isLeftHalf && preferences.volumeGestureEnabled)
+                                            ) {
+                                                dragMode = 2
+                                            } else {
+                                                break
+                                            }
                                         }
-                                        gestureHudState = GestureHudState.Brightness(currentBrightness)
-                                    } else if (!isLeftHalf && preferences.volumeGestureEnabled) {
-                                        volumeAccumulator = (volumeAccumulator + verticalRatio * maxVolume)
-                                            .coerceIn(0f, maxVolume.toFloat())
-                                        val targetVol = kotlin.math.round(volumeAccumulator).toInt().coerceIn(0, maxVolume)
-                                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
-                                        val fraction = volumeAccumulator / maxVolume.toFloat()
-                                        gestureHudState = GestureHudState.Volume(
-                                            fraction = fraction,
-                                            percent = (fraction * 100).toInt()
-                                        )
                                     }
+
+                                    when (dragMode) {
+                                        1 -> {
+                                            change.consume()
+                                            val seekSpanMs = minOf(duration, 120_000L).coerceAtLeast(20_000L)
+                                            val deltaMs = ((totalDx / size.width.coerceAtLeast(1)) * seekSpanMs).toLong()
+                                            seekTargetMs = (initialPos + deltaMs).coerceIn(0L, duration)
+                                            gestureHudState = GestureHudState.SeekPreview(
+                                                targetMs = seekTargetMs,
+                                                deltaMs = seekTargetMs - initialPos,
+                                                durationMs = duration
+                                            )
+                                        }
+                                        2 -> {
+                                            change.consume()
+                                            val verticalRatio = -delta.y / (size.height.coerceAtLeast(1) * 0.75f)
+                                            if (isLeftHalf && preferences.brightnessGestureEnabled) {
+                                                currentBrightness = (currentBrightness + verticalRatio).coerceIn(0.02f, 1.0f)
+                                                activity?.window?.let { win ->
+                                                    val lp = win.attributes
+                                                    lp.screenBrightness = currentBrightness
+                                                    win.attributes = lp
+                                                }
+                                                gestureHudState = GestureHudState.Brightness(currentBrightness)
+                                            } else if (!isLeftHalf && preferences.volumeGestureEnabled) {
+                                                volumeAccumulator = (volumeAccumulator + verticalRatio * maxVolume)
+                                                    .coerceIn(0f, maxVolume.toFloat())
+                                                val targetVol = kotlin.math.round(volumeAccumulator).toInt().coerceIn(0, maxVolume)
+                                                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
+                                                val fraction = volumeAccumulator / maxVolume.toFloat()
+                                                gestureHudState = GestureHudState.Volume(
+                                                    fraction = fraction,
+                                                    percent = (fraction * 100).toInt()
+                                                )
+                                            }
+                                        }
+                                        3 -> {
+                                            change.consume()
+                                            val dyFromAnchor = change.position.y - holdAnchorY
+                                            if (dyFromAnchor < -72f) {
+                                                viewModel.updateHoldSpeed(3.0f)
+                                            } else if (dyFromAnchor > 72f) {
+                                                viewModel.updateHoldSpeed(2.0f)
+                                            }
+                                        }
+                                    }
+                                }
+                            } finally {
+                                if (holdActivated) {
+                                    viewModel.endHoldSpeed()
                                 }
                             }
                         }
                     }
-                }
-        )
+            )
+        }
 
-        // Subtitles Overlay
-        SubtitleOverlay(
+        // Draggable, Frame-Synced Subtitles Overlay (visible in both full & PiP mode)
+        DraggableSubtitleOverlay(
             subtitleText = uiState.activeSubtitleText,
-            fontSizeSp = preferences.subtitleFontSizeSp,
-            bottomPaddingFraction = preferences.subtitleBottomPaddingFraction,
+            fontSizeSp = if (isInPipMode) (preferences.subtitleFontSizeSp * 0.65f).coerceAtLeast(11f) else preferences.subtitleFontSizeSp,
+            verticalPositionFraction = preferences.subtitleVerticalPositionFraction,
+            textColor = preferences.subtitleTextColor,
             backgroundOpacity = preferences.subtitleBackgroundOpacity,
-            animationsEnabled = animationsEnabled
+            isLocked = uiState.isLocked || isInPipMode,
+            onVerticalPositionChange = viewModel::setSubtitleVerticalPosition
         )
 
         // Buffering Indicator
         if (playbackState.isBuffering && uiState.fileMissingError == null && playbackState.errorMessage == null) {
             CircularProgressIndicator(
-                color = VoxoraElectricPurple,
+                color = VoxoraCyan,
                 modifier = Modifier.align(Alignment.Center)
             )
         }
 
-        // Gesture Feedback HUD
-        GestureHudOverlay(
-            state = gestureHudState,
-            animationsEnabled = animationsEnabled
-        )
+        // Hold-to-Speed Top Pill (⚡ 2.0x Speed >> / ⚡ 3.0x Speed >>)
+        if (!isInPipMode) {
+            HoldSpeedIndicatorPill(
+                visible = uiState.isHoldSpeedActive,
+                speed = uiState.activeHoldSpeed
+            )
 
-        // Controls Overlay
-        PlayerControlsOverlay(
-            visible = controlsVisible && uiState.fileMissingError == null && playbackState.errorMessage == null,
-            isLocked = uiState.isLocked,
-            title = uiState.videoTitle.ifBlank { videoTitle },
-            isPlaying = playbackState.isPlaying,
-            currentPositionMs = playbackState.currentPositionMs,
-            durationMs = playbackState.durationMs,
-            playbackSpeed = playbackState.playbackSpeed,
-            aspectRatioMode = uiState.aspectRatioMode,
-            isFullScreen = uiState.isFullScreen,
-            resumedFromMs = uiState.resumedFromPositionMs,
-            animationsEnabled = animationsEnabled,
-            batterySavingActive = batterySaving.isActive,
-            batteryCapRefreshRate = batterySaving.capRefreshRate,
-            batteryPercent = batteryStatus.batteryPercent,
-            aiDubbingActive = dubbingState.config.isDubbingEnabled,
-            onBack = {
-                viewModel.pausePlayback()
-                onBack()
-            },
-            onToggleLock = {
-                viewModel.toggleScreenLock()
-                controlsVisible = true
-                registerInteraction()
-            },
-            onRotateScreen = {
-                toggleOrientation()
-                registerInteraction()
-            },
-            onToggleFullScreen = {
-                viewModel.toggleFullScreen()
-                registerInteraction()
-            },
-            onTogglePlayPause = {
-                viewModel.togglePlayPause()
-                registerInteraction()
-            },
-            onSeekTo = { target ->
-                viewModel.seekTo(target)
-                registerInteraction()
-            },
-            onRewind = {
-                viewModel.seekBySeconds(-10)
-                registerInteraction()
-            },
-            onForward = {
-                viewModel.seekBySeconds(10)
-                registerInteraction()
-            },
-            onOpenSpeed = { activeSheet = ActiveSheet.SPEED },
-            onOpenSubtitles = { activeSheet = ActiveSheet.SUBTITLES },
-            onOpenAudioTracks = { activeSheet = ActiveSheet.AUDIO_TRACKS },
-            onOpenAspectRatio = { activeSheet = ActiveSheet.ASPECT_RATIO },
-            onOpenAiDubbing = {
-                activeSheet = ActiveSheet.AI_DUBBING
-                if (dubbingState.extractedAudioInfo == null) {
-                    viewModel.inspectCurrentVideoAudio()
+            // Gesture Feedback HUD
+            GestureHudOverlay(state = gestureHudState)
+
+            // Controls Overlay
+            val autoBadge = if (autoSubtitleState.isEnabled) {
+                if (autoSubtitleState.isSetupRunning) {
+                    "AI ${autoSubtitleState.setupProgressPercent}%"
+                } else {
+                    "AI · ${autoSubtitleState.targetLanguageCode.uppercase()}"
                 }
-            },
-            onOpenBatterySaver = { activeSheet = ActiveSheet.BATTERY_SAVER },
-            onStartFromBeginning = { viewModel.startFromBeginning() },
-            onDismissResumeBanner = { viewModel.dismissResumeBanner() },
-            onUserInteraction = { registerInteraction() }
-        )
+            } else {
+                "CC AI"
+            }
 
-        // Graceful Error State (Missing file, revoked permission, or unsupported codec)
+            PlayerControlsOverlay(
+                visible = controlsVisible && uiState.fileMissingError == null && playbackState.errorMessage == null && !uiState.isHoldSpeedActive,
+                isLocked = uiState.isLocked,
+                title = uiState.videoTitle.ifBlank { videoTitle },
+                isPlaying = playbackState.isPlaying,
+                currentPositionMs = playbackState.currentPositionMs,
+                durationMs = playbackState.durationMs,
+                playbackSpeed = playbackState.playbackSpeed,
+                aspectRatioMode = uiState.aspectRatioMode,
+                isFullScreen = uiState.isFullScreen,
+                resumedFromMs = uiState.resumedFromPositionMs,
+                autoSubtitleActive = autoSubtitleState.isEnabled,
+                autoSubtitleBadgeText = autoBadge,
+                sleepTimerState = sleepTimerState,
+                canEnterPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O,
+                onBack = {
+                    viewModel.pausePlayback()
+                    onBack()
+                },
+                onToggleLock = {
+                    viewModel.toggleScreenLock()
+                    controlsVisible = true
+                    registerInteraction()
+                },
+                onRotateScreen = {
+                    toggleOrientation()
+                    registerInteraction()
+                },
+                onToggleFullScreen = {
+                    viewModel.toggleFullScreen()
+                    registerInteraction()
+                },
+                onTogglePlayPause = {
+                    viewModel.togglePlayPause()
+                    registerInteraction()
+                },
+                onSeekTo = { target ->
+                    viewModel.seekTo(target)
+                    registerInteraction()
+                },
+                onRewind = {
+                    viewModel.seekBySeconds(-10)
+                    registerInteraction()
+                },
+                onForward = {
+                    viewModel.seekBySeconds(10)
+                    registerInteraction()
+                },
+                onOpenSpeed = { activeSheet = ActiveSheet.SPEED },
+                onOpenSubtitles = { activeSheet = ActiveSheet.SUBTITLES },
+                onOpenAudioTracks = { activeSheet = ActiveSheet.AUDIO_TRACKS },
+                onOpenAspectRatio = { activeSheet = ActiveSheet.ASPECT_RATIO },
+                onOpenSleepTimer = { activeSheet = ActiveSheet.SLEEP_TIMER },
+                onEnterPip = {
+                    controlsVisible = false
+                    activeSheet = ActiveSheet.NONE
+                    onEnterPipMode(playbackState.videoWidth, playbackState.videoHeight)
+                },
+                onTapAiDubbingComingSoon = {
+                    viewModel.showFeedbackMessage(comingSoonMessage)
+                },
+                onStartFromBeginning = { viewModel.startFromBeginning() },
+                onDismissResumeBanner = { viewModel.dismissResumeBanner() },
+                onUserInteraction = { registerInteraction() }
+            )
+        }
+
+        // Graceful Error State
         val activeError = uiState.fileMissingError ?: playbackState.errorMessage
-        if (activeError != null) {
+        if (activeError != null && !isInPipMode) {
             Surface(
-                color = Color(0xEE121218),
+                color = Color(0xEE11141E),
                 shape = RoundedCornerShape(22.dp),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
                 modifier = Modifier
@@ -627,216 +628,79 @@ fun PlayerScreen(
         }
 
         // Modal Sheets
-        when (activeSheet) {
-            ActiveSheet.SUBTITLES -> {
-                SubtitleSettingsSheet(
-                    tracks = playbackState.subtitleTracks,
-                    fontSizeSp = preferences.subtitleFontSizeSp,
-                    bottomPaddingFraction = preferences.subtitleBottomPaddingFraction,
-                    syncOffsetMs = playbackState.subtitleSyncOffsetMs,
-                    onSelectTrack = viewModel::selectSubtitleTrack,
-                    onDisableSubtitles = viewModel::disableSubtitles,
-                    onPickExternalSubtitle = {
-                        subtitlePickerLauncher.launch(
-                            arrayOf(
-                                "application/x-subrip",
-                                "text/vtt",
-                                "text/plain",
-                                "*/*"
+        if (!isInPipMode) {
+            when (activeSheet) {
+                ActiveSheet.SUBTITLES -> {
+                    AutoSubtitleSettingsSheet(
+                        autoSubtitleState = autoSubtitleState,
+                        tracks = playbackState.subtitleTracks,
+                        fontSizeSp = preferences.subtitleFontSizeSp,
+                        verticalPositionFraction = preferences.subtitleVerticalPositionFraction,
+                        textColor = preferences.subtitleTextColor,
+                        backgroundOpacity = preferences.subtitleBackgroundOpacity,
+                        syncOffsetMs = playbackState.subtitleSyncOffsetMs,
+                        onToggleAutoSubtitles = viewModel::toggleAutoSubtitles,
+                        onSelectAutoTargetLanguage = viewModel::setAutoSubtitleTargetLanguage,
+                        onSelectTrack = viewModel::selectSubtitleTrack,
+                        onDisableSubtitles = viewModel::disableSubtitles,
+                        onPickExternalSubtitle = {
+                            subtitlePickerLauncher.launch(
+                                arrayOf(
+                                    "application/x-subrip",
+                                    "text/vtt",
+                                    "text/plain",
+                                    "*/*"
+                                )
                             )
-                        )
-                    },
-                    onFontSizeChange = viewModel::setSubtitleFontSize,
-                    onPositionChange = viewModel::setSubtitleBottomPadding,
-                    onAdjustSync = viewModel::adjustSubtitleSync,
-                    onResetSync = { viewModel.setSubtitleSync(0L) },
-                    onDismiss = { activeSheet = ActiveSheet.NONE }
-                )
+                        },
+                        onFontSizeChange = viewModel::setSubtitleFontSize,
+                        onVerticalPositionChange = viewModel::setSubtitleVerticalPosition,
+                        onTextColorChange = viewModel::setSubtitleTextColor,
+                        onBackgroundOpacityChange = viewModel::setSubtitleBackgroundOpacity,
+                        onAdjustSync = viewModel::adjustSubtitleSync,
+                        onResetSync = { viewModel.setSubtitleSync(0L) },
+                        onDismiss = { activeSheet = ActiveSheet.NONE }
+                    )
+                }
+                ActiveSheet.AUDIO_TRACKS -> {
+                    AudioTrackSheet(
+                        tracks = playbackState.audioTracks,
+                        onSelectTrack = viewModel::selectAudioTrack,
+                        onDismiss = { activeSheet = ActiveSheet.NONE }
+                    )
+                }
+                ActiveSheet.SPEED -> {
+                    SpeedSelectorSheet(
+                        currentSpeed = playbackState.playbackSpeed,
+                        holdSpeedMultiplier = preferences.holdSpeedMultiplier,
+                        onSelectSpeed = viewModel::setPlaybackSpeed,
+                        onSelectHoldSpeed = viewModel::setHoldSpeedMultiplier,
+                        onDismiss = { activeSheet = ActiveSheet.NONE }
+                    )
+                }
+                ActiveSheet.ASPECT_RATIO -> {
+                    AspectRatioSheet(
+                        currentMode = uiState.aspectRatioMode,
+                        onSelectMode = viewModel::setAspectRatio,
+                        onDismiss = { activeSheet = ActiveSheet.NONE }
+                    )
+                }
+                ActiveSheet.SLEEP_TIMER -> {
+                    SleepTimerSheet(
+                        state = sleepTimerState,
+                        onSelectOption = viewModel::setSleepTimer,
+                        onDismiss = { activeSheet = ActiveSheet.NONE }
+                    )
+                }
+                ActiveSheet.NONE -> Unit
             }
-            ActiveSheet.AUDIO_TRACKS -> {
-                AudioTrackSheet(
-                    tracks = playbackState.audioTracks,
-                    onSelectTrack = viewModel::selectAudioTrack,
-                    onDismiss = { activeSheet = ActiveSheet.NONE }
-                )
-            }
-            ActiveSheet.SPEED -> {
-                SpeedSelectorSheet(
-                    currentSpeed = playbackState.playbackSpeed,
-                    onSelectSpeed = viewModel::setPlaybackSpeed,
-                    onDismiss = { activeSheet = ActiveSheet.NONE }
-                )
-            }
-            ActiveSheet.ASPECT_RATIO -> {
-                AspectRatioSheet(
-                    currentMode = uiState.aspectRatioMode,
-                    onSelectMode = viewModel::setAspectRatio,
-                    onDismiss = { activeSheet = ActiveSheet.NONE }
-                )
-            }
-            ActiveSheet.AI_DUBBING -> {
-                AiDubbingStudioSheet(
-                    videoTitle = uiState.videoTitle.ifBlank { videoTitle },
-                    state = dubbingState,
-                    whisperModelStatus = whisperModelStatus,
-                    whisperTranscriptionState = whisperTranscriptionState,
-                    translationModelState = translationModelState,
-                    translationUiState = translationUiState,
-                    diarizationModelState = diarizationModelState,
-                    diarizationSlotAvailability = diarizationSlotAvailability,
-                    diarizationInstalledFiles = diarizationInstalledFiles,
-                    diarizationUiState = diarizationUiState,
-                    bengaliTtsModelState = bengaliTtsModelState,
-                    bengaliTtsSlotAvailability = bengaliTtsSlotAvailability,
-                    bengaliTtsInstalledFiles = bengaliTtsInstalledFiles,
-                    bengaliVoiceUiState = bengaliVoiceUiState,
-                    oneClickAiSetupState = oneClickAiSetupState,
-                    liveDubbingState = liveDubbingState,
-                    autoDubPipelineState = autoDubPipelineState,
-                    dubbedExportState = dubbedExportState,
-                    onStartOneClickAiSetup = viewModel::startOneClickAiSetup,
-                    onCancelOneClickAiSetup = viewModel::cancelOneClickAiSetup,
-                    onStartAutoDubVideo = viewModel::startAutoDubVideo,
-                    onCancelAutoDubVideo = viewModel::cancelAutoDubVideo,
-                    onExportDubbedMedia = viewModel::startDubbedExport,
-                    onCancelDubbedExport = viewModel::cancelDubbedExport,
-                    onOpenExportedMedia = { uriStr, mimeType ->
-                        runCatching {
-                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                                setDataAndType(android.net.Uri.parse(uriStr), mimeType)
-                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            }
-                            context.startActivity(intent)
-                        }
-                    },
-                    onShareExportedMedia = { uriStr, mimeType, title ->
-                        runCatching {
-                            val shareIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                type = mimeType
-                                putExtra(android.content.Intent.EXTRA_STREAM, android.net.Uri.parse(uriStr))
-                                putExtra(android.content.Intent.EXTRA_SUBJECT, title)
-                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            }
-                            context.startActivity(
-                                android.content.Intent.createChooser(shareIntent, "Share $title")
-                            )
-                        }
-                    },
-                    onSetEnabled = viewModel::setDubbingEnabled,
-                    onSelectSourceLanguage = viewModel::setDubbingSourceLanguage,
-                    onSelectTargetLanguage = viewModel::setDubbingTargetLanguage,
-                    onSelectOutputMode = viewModel::setDubbingOutputMode,
-                    onOriginalVolumeChange = viewModel::setDubbingOriginalVolume,
-                    onDubbedVolumeChange = viewModel::setDubbingVoiceVolume,
-                    onAdjustSyncOffset = viewModel::adjustDubbingSyncOffset,
-                    onSetSyncOffsetMs = viewModel::setDubbingSyncOffsetMs,
-                    onResetSyncOffset = viewModel::resetDubbingSyncOffset,
-                    onPreserveBackgroundChange = viewModel::setPreserveBackgroundAudio,
-                    onBgmDuckingStrengthChange = viewModel::setBgmDuckingStrength,
-                    onVocalAttenuationChange = viewModel::setVocalAttenuationEnabled,
-                    onFastMovieModeChange = viewModel::setFastMovieModeEnabled,
-                    onUseSherpaVitsExperimentalChange = viewModel::setUseSherpaVitsExperimental,
-                    ttsEngineDiagnostic = ttsEngineDiagnostic,
-                    onVoiceGenderOverrideChange = viewModel::setVoiceGenderOverride,
-                    onAddCharacter = viewModel::addDubbingCharacter,
-                    onUpdateCharacter = viewModel::updateDubbingCharacter,
-                    onRemoveCharacter = viewModel::removeDubbingCharacter,
-                    onResetDefaultCharacters = viewModel::resetDefaultDubbingCharacters,
-                    onPreviewCharacterVoice = viewModel::previewCharacterVoice,
-                    onStopVoicePreview = viewModel::stopVoicePreview,
-                    onDownloadWhisperModel = viewModel::downloadWhisperBaseEnModel,
-                    onImportWhisperModel = {
-                        whisperModelPickerLauncher.launch(arrayOf("application/octet-stream", "*/*"))
-                    },
-                    onCancelWhisperModelOp = viewModel::cancelWhisperModelOperation,
-                    onLoadWhisperModel = viewModel::loadInstalledWhisperModel,
-                    onUnloadWhisperModel = viewModel::unloadWhisperModel,
-                    onDeleteWhisperModel = viewModel::deleteWhisperModel,
-                    onStartTranscription = viewModel::startVideoTranscription,
-                    onStopTranscription = viewModel::stopVideoTranscription,
-                    onExportTranscription = { format ->
-                        pendingExportFormat = format
-                        val baseName = (uiState.videoTitle.ifBlank { videoTitle })
-                            .replace(Regex("[^a-zA-Z0-9._-]"), "_")
-                            .take(40)
-                            .ifBlank { "voxora_transcript" }
-                        transcriptExportLauncher.launch("${baseName}.${format.extension}")
-                    },
-                    onCheckTranslationModelStatus = viewModel::checkTranslationModelStatus,
-                    onDownloadTranslationModel = viewModel::downloadTranslationModel,
-                    onDeleteTranslationModel = viewModel::deleteTranslationModel,
-                    onStartTranslation = viewModel::startBengaliTranslation,
-                    onStopTranslation = viewModel::stopBengaliTranslation,
-                    onClearCachedTranslation = viewModel::clearCachedTranslation,
-                    onExportTranslation = { format ->
-                        pendingTranslationExportFormat = format
-                        val baseName = (uiState.videoTitle.ifBlank { videoTitle })
-                            .replace(Regex("[^a-zA-Z0-9._-]"), "_")
-                            .take(40)
-                            .ifBlank { "voxora_translation" }
-                        translationExportLauncher.launch("${baseName}${format.fileSuffix}.${format.extension}")
-                    },
-                    onCheckDiarizationModelStatus = viewModel::checkDiarizationModelStatus,
-                    onDownloadDiarizationModels = viewModel::downloadDiarizationModels,
-                    onCancelDiarizationDownload = viewModel::cancelDiarizationModelDownload,
-                    onImportLocalDiarizationModel = { slot ->
-                        pendingDiarizationImportSlot = slot
-                        diarizationModelPickerLauncher.launch(arrayOf("application/octet-stream", "*/*"))
-                    },
-                    onDeleteDiarizationModels = viewModel::deleteDiarizationModels,
-                    onSelectDiarizationClusters = viewModel::setDiarizationNumClusters,
-                    onDiarizationThresholdChange = viewModel::setDiarizationThreshold,
-                    onStartDiarization = viewModel::startSpeakerDiarization,
-                    onStopDiarization = viewModel::stopSpeakerDiarization,
-                    onReassignSpeakerToCharacter = viewModel::reassignSpeakerToCharacter,
-                    onOverrideSegmentCharacter = viewModel::overrideSegmentCharacter,
-                    onCheckBengaliTtsModelStatus = viewModel::checkBengaliTtsModelStatus,
-                    onDownloadBengaliTtsModels = viewModel::downloadBengaliTtsModels,
-                    onCancelBengaliTtsDownload = viewModel::cancelBengaliTtsModelDownload,
-                    onImportLocalBengaliTtsFile = { slot ->
-                        pendingBengaliTtsImportSlot = slot
-                        val mimeTypes = when (slot) {
-                            BengaliTtsModelSlot.MODEL_ONNX -> arrayOf("application/octet-stream", "*/*")
-                            BengaliTtsModelSlot.TOKENS_TXT -> arrayOf("text/plain", "*/*")
-                        }
-                        bengaliTtsFilePickerLauncher.launch(mimeTypes)
-                    },
-                    onDeleteBengaliTtsModels = viewModel::deleteBengaliTtsModels,
-                    onStartBengaliVoiceGeneration = viewModel::startBengaliVoiceGeneration,
-                    onStopBengaliVoiceGeneration = viewModel::stopBengaliVoiceGeneration,
-                    onTogglePlayDubbedSegment = viewModel::togglePlayDubbedSegment,
-                    onClearSynthesizedBengaliAudio = viewModel::clearSynthesizedBengaliAudio,
-                    onSeekToTimestamp = { targetMs ->
-                        viewModel.seekTo(targetMs)
-                    },
-                    onInspectAudioTrack = viewModel::inspectCurrentVideoAudio,
-                    onRunStage1Extraction = viewModel::runStage1AudioExtraction,
-                    onDismiss = {
-                        viewModel.stopVoicePreview()
-                        viewModel.stopDubbedAudioPlayback()
-                        activeSheet = ActiveSheet.NONE
-                    }
-                )
-            }
-            ActiveSheet.BATTERY_SAVER -> {
-                BatterySaverSheet(
-                    preferences = preferences,
-                    batteryStatus = batteryStatus,
-                    evaluation = batterySaving,
-                    onSelectMode = viewModel::setBatterySaverMode,
-                    onToggleCapRefreshRate = viewModel::setBatterySaverCapRefreshRate,
-                    onToggleDisableAnimations = viewModel::setBatterySaverDisableAnimations,
-                    onDismiss = { activeSheet = ActiveSheet.NONE }
-                )
-            }
-            ActiveSheet.NONE -> Unit
-        }
 
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(20.dp)
-        )
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(20.dp)
+            )
+        }
     }
 }

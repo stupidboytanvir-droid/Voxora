@@ -70,12 +70,27 @@ sealed interface WhisperModelStatus {
 
 object WhisperModelCatalog {
     /**
-     * Fast quantized Whisper Tiny English (`ggml-tiny.en-q5_1.bin`, ~31 MB) from whisper.cpp.
-     * ~5x faster on mobile ARM64 CPUs with ~35 MB RAM footprint for real-time 30s movie chunk dubbing.
+     * Fast quantized Multilingual Whisper Tiny (`ggml-tiny-q5_1.bin`, ~31 MB) from whisper.cpp.
+     * Understands 99+ movie languages (English, Hindi, Korean, Japanese, Spanish, French, etc.)
+     * with ~35 MB RAM footprint for fast on-device live Auto AI Subtitles.
+     */
+    val TINY_MULTILINGUAL_Q5_1 = WhisperModelSpec(
+        id = "tiny-q5_1",
+        displayName = "Whisper Tiny Multilingual (ggml-tiny-q5_1 · 99+ Languages)",
+        fileName = "ggml-tiny-q5_1.bin",
+        downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin",
+        expectedSizeBytes = 32_166_155L,
+        expectedSha256 = null,
+        languageLabel = "Multilingual (99+ Languages · Offline)"
+    )
+
+    /**
+     * Fast quantized Whisper Tiny English (`ggml-tiny.en-q5_1.bin`, ~31 MB) retained for
+     * backward compatibility with existing user installations.
      */
     val TINY_EN_Q5_1 = WhisperModelSpec(
         id = "tiny.en-q5_1",
-        displayName = "Whisper Tiny Fast English (tiny.en-q5_1 · 5x Faster)",
+        displayName = "Whisper Tiny Fast English (tiny.en-q5_1)",
         fileName = "ggml-tiny.en-q5_1.bin",
         downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin",
         expectedSizeBytes = 32_166_155L,
@@ -97,9 +112,10 @@ object WhisperModelCatalog {
         languageLabel = "English (Offline)"
     )
 
-    val DEFAULT: WhisperModelSpec = TINY_EN_Q5_1
+    val DEFAULT: WhisperModelSpec = TINY_MULTILINGUAL_Q5_1
 
     fun matchingOfficialSpec(fileName: String): WhisperModelSpec? = when {
+        fileName.equals(TINY_MULTILINGUAL_Q5_1.fileName, ignoreCase = true) -> TINY_MULTILINGUAL_Q5_1
         fileName.equals(TINY_EN_Q5_1.fileName, ignoreCase = true) -> TINY_EN_Q5_1
         fileName.equals(BASE_EN.fileName, ignoreCase = true) -> BASE_EN
         else -> null
@@ -461,13 +477,11 @@ class WhisperModelManager(private val context: Context) {
             }
 
             val matchesOfficial =
-                (WhisperModelCatalog.TINY_EN_Q5_1.expectedSha256?.let {
-                    verification.sha256.equals(it, ignoreCase = true)
-                } == true) ||
+                targetFile.name.equals(WhisperModelCatalog.TINY_MULTILINGUAL_Q5_1.fileName, ignoreCase = true) ||
+                targetFile.name.equals(WhisperModelCatalog.TINY_EN_Q5_1.fileName, ignoreCase = true) ||
                 (WhisperModelCatalog.BASE_EN.expectedSha256?.let {
                     verification.sha256.equals(it, ignoreCase = true)
-                } == true) ||
-                targetFile.name.equals(WhisperModelCatalog.TINY_EN_Q5_1.fileName, ignoreCase = true)
+                } == true)
             InstalledWhisperModel(
                 fileName = targetFile.name,
                 absolutePath = targetFile.absolutePath,
@@ -502,7 +516,7 @@ class WhisperModelManager(private val context: Context) {
                 instanceFollowRedirects = false
                 connectTimeout = 20_000
                 readTimeout = 45_000
-                setRequestProperty("User-Agent", "VOXORA-Media-Player/2.1.1")
+                setRequestProperty("User-Agent", "VOXORA-Media-Player/2.3.0")
                 setRequestProperty("Accept", "*/*")
             }
             val code = conn.responseCode

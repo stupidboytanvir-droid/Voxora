@@ -24,6 +24,7 @@ import com.voxora.player.ai.diarization.OfflineDiarizationEngine
 import com.voxora.player.ai.dubbing.AutoDubPipelineOrchestrator
 import com.voxora.player.ai.dubbing.DubbedTrackAssembler
 import com.voxora.player.ai.dubbing.DubbedVideoExporter
+import com.voxora.player.ai.subtitles.AutoSubtitleManager
 import com.voxora.player.ai.translation.OfflineTranslationEngine
 import com.voxora.player.ai.translation.OfflineTranslationManager
 import com.voxora.player.ai.tts.BengaliTtsModelManager
@@ -77,6 +78,8 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         private set
     lateinit var dubbedVideoExporter: DubbedVideoExporter
         private set
+    lateinit var autoSubtitleManager: AutoSubtitleManager
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -116,6 +119,11 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
             appContext = this
         )
         dubbedVideoExporter = DubbedVideoExporter(this, dubbedTrackAssembler)
+        autoSubtitleManager = AutoSubtitleManager(
+            context = this,
+            whisperSpeechEngine = whisperSpeechEngine,
+            videoPcmAudioDecoder = VideoPcmAudioDecoder(this)
+        )
     }
 
     override fun newImageLoader(): ImageLoader {

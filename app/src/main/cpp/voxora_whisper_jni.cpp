@@ -177,9 +177,21 @@ Java_com_voxora_player_dubbing_whisper_WhisperNativeBridge_nativeTranscribeChunk
     }
 
     const char* lang_chars = language_str ? env->GetStringUTFChars(language_str, nullptr) : nullptr;
-    std::string lang = (lang_chars && std::strlen(lang_chars) > 0) ? lang_chars : "en";
+    std::string raw_lang = (lang_chars && std::strlen(lang_chars) > 0) ? lang_chars : "auto";
     if (lang_chars) {
         env->ReleaseStringUTFChars(language_str, lang_chars);
+    }
+
+    bool translate_to_english = false;
+    std::string lang = raw_lang;
+    const std::string translate_suffix = ":translate";
+    if (raw_lang.size() >= translate_suffix.size() &&
+        raw_lang.compare(raw_lang.size() - translate_suffix.size(), translate_suffix.size(), translate_suffix) == 0) {
+        translate_to_english = true;
+        lang = raw_lang.substr(0, raw_lang.size() - translate_suffix.size());
+        if (lang.empty()) {
+            lang = "auto";
+        }
     }
 
     TranscriptionCallbackState cb_state;
@@ -204,9 +216,9 @@ Java_com_voxora_player_dubbing_whisper_WhisperNativeBridge_nativeTranscribeChunk
     params.print_progress = false;
     params.print_timestamps = false;
     params.print_special = false;
-    params.translate = false;
-    params.language = lang.c_str();
-    params.n_threads = num_threads > 0 ? num_threads : 4;
+    params.translate = translate_to_english && (whisper_is_multilingual(ctx) != 0);
+    params.language = (whisper_is_multilingual(ctx) != 0) ? lang.c_str() : "en";
+    params.n_threads = (num_threads > 0) ? (num_threads > 4 ? 4 : num_threads) : 2;
     params.offset_ms = 0;
     params.no_context = true;
     params.single_segment = false;

@@ -13,6 +13,7 @@ import com.voxora.player.model.BatterySaverEvaluation
 import com.voxora.player.model.BatterySaverMode
 import com.voxora.player.model.BatterySavingPolicy
 import com.voxora.player.model.BatteryStatus
+import com.voxora.player.model.SubtitleTextColor
 import com.voxora.player.model.ThemeMode
 import com.voxora.player.model.UserPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -96,6 +97,18 @@ class SettingsViewModel(
 
     fun setSubtitleBottomPaddingFraction(fraction: Float) {
         viewModelScope.launch { settingsRepository.setSubtitleBottomPaddingFraction(fraction) }
+    }
+
+    fun setSubtitleVerticalPositionFraction(fraction: Float) {
+        viewModelScope.launch { settingsRepository.setSubtitleVerticalPositionFraction(fraction) }
+    }
+
+    fun setSubtitleTextColor(color: SubtitleTextColor) {
+        viewModelScope.launch { settingsRepository.setSubtitleTextColor(color) }
+    }
+
+    fun setHoldSpeedMultiplier(multiplier: Float) {
+        viewModelScope.launch { settingsRepository.setHoldSpeedMultiplier(multiplier) }
     }
 
     fun setSubtitleBackgroundOpacity(opacity: Float) {

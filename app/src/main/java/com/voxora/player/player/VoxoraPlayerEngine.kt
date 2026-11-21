@@ -13,6 +13,7 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import com.voxora.player.data.local.subtitles.SubtitleParser
 import com.voxora.player.model.AudioTrackInfo
@@ -43,13 +44,18 @@ data class PlayerPlaybackState(
 )
 
 /**
- * Clean Media3 ExoPlayer engine managing lifecycle, track selection, playback speed,
- * embedded cues, and external SRT/VTT subtitle rendering with sync offset support.
+ * Clean Media3 ExoPlayer engine configured for battery-efficient hardware-accelerated
+ * video decoding, clean AudioFocus management, zero lingering WakeLocks, track selection,
+ * playback speed, embedded cues, and external SRT/VTT subtitle rendering.
  */
 @OptIn(UnstableApi::class)
 class VoxoraPlayerEngine(context: Context) {
 
-    val exoPlayer: ExoPlayer = ExoPlayer.Builder(context.applicationContext)
+    private val renderersFactory = DefaultRenderersFactory(context.applicationContext)
+        .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
+        .setEnableDecoderFallback(true)
+
+    val exoPlayer: ExoPlayer = ExoPlayer.Builder(context.applicationContext, renderersFactory)
         .setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
@@ -58,6 +64,7 @@ class VoxoraPlayerEngine(context: Context) {
             true
         )
         .setHandleAudioBecomingNoisy(true)
+        .setWakeMode(C.WAKE_MODE_NONE)
         .build()
 
     private val _state = MutableStateFlow(PlayerPlaybackState())

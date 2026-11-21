@@ -67,8 +67,12 @@ object WhisperNativeBridge {
 
     external fun nativeGetSystemInfo(): String
 
+    /**
+     * Caps background Whisper inference to at most 2 CPU threads to prevent device overheating
+     * and excessive battery drain during live video playback.
+     */
     fun recommendedThreadCount(): Int {
         val cores = Runtime.getRuntime().availableProcessors()
-        return cores.coerceIn(1, 4)
+        return minOf(2, (cores / 2).coerceAtLeast(1))
     }
 }

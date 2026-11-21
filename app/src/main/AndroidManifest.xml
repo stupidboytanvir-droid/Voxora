@@ -37,6 +37,7 @@
             android:exported="true"
             android:label="@string/app_name"
             android:launchMode="singleTop"
+            android:supportsPictureInPicture="true"
             android:theme="@style/Theme.Voxora">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

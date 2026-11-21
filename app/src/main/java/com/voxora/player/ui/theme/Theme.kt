@@ -45,11 +45,11 @@ val LocalVoxoraColors = staticCompositionLocalOf {
 private val CharcoalDarkColorScheme = darkColorScheme(
     primary = VoxoraElectricPurple,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFF2D1E5F),
+    primaryContainer = Color(0xFF271D4F),
     onPrimaryContainer = VoxoraElectricPurpleBright,
-    secondary = VoxoraSubtleBlue,
-    onSecondary = Color(0xFF041F2E),
-    secondaryContainer = Color(0xFF132D42),
+    secondary = VoxoraCyan,
+    onSecondary = Color(0xFF041F29),
+    secondaryContainer = Color(0xFF102A3A),
     onSecondaryContainer = Color(0xFFBAE6FD),
     tertiary = VoxoraElectricPurpleBright,
     background = VoxoraObsidian,
@@ -71,9 +71,9 @@ private val AmoledDarkColorScheme = CharcoalDarkColorScheme.copy(
     background = VoxoraDeepBlack,
     surface = VoxoraDeepBlack,
     surfaceContainerLowest = VoxoraDeepBlack,
-    surfaceContainerLow = Color(0xFF0A0A0E),
-    surfaceContainer = Color(0xFF111117),
-    surfaceContainerHigh = Color(0xFF191922)
+    surfaceContainerLow = Color(0xFF080A0F),
+    surfaceContainer = Color(0xFF10131C),
+    surfaceContainerHigh = Color(0xFF181C28)
 )
 
 private val VoxoraLightColorScheme = lightColorScheme(
@@ -101,9 +101,9 @@ private val VoxoraLightColorScheme = lightColorScheme(
 )
 
 private val VoxoraShapes = Shapes(
-    small = RoundedCornerShape(10.dp),
-    medium = RoundedCornerShape(16.dp),
-    large = RoundedCornerShape(22.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(18.dp),
+    large = RoundedCornerShape(24.dp),
     extraLarge = RoundedCornerShape(28.dp)
 )
 
@@ -121,21 +121,21 @@ fun VoxoraTheme(
 
     val extendedColors = when (themeMode) {
         ThemeMode.DARK_CHARCOAL -> VoxoraExtendedColors(
-            blueHighlight = VoxoraSubtleBlue,
+            blueHighlight = VoxoraCyan,
             purpleGlow = VoxoraElectricPurpleBright,
             cardElevated = VoxoraElevatedCharcoal,
             cardBorder = VoxoraOutlineDark,
-            glassSurface = Color(0xE0121218),
+            glassSurface = VoxoraGlassDark,
             textMuted = VoxoraTextMuted,
             success = VoxoraSuccess,
             warning = VoxoraWarning
         )
         ThemeMode.AMOLED_BLACK -> VoxoraExtendedColors(
-            blueHighlight = VoxoraSubtleBlue,
+            blueHighlight = VoxoraCyan,
             purpleGlow = VoxoraElectricPurpleBright,
-            cardElevated = Color(0xFF15151E),
-            cardBorder = Color(0xFF232332),
-            glassSurface = Color(0xE6050508),
+            cardElevated = Color(0xFF151822),
+            cardBorder = Color(0xFF232838),
+            glassSurface = Color(0xE605070B),
             textMuted = VoxoraTextMuted,
             success = VoxoraSuccess,
             warning = VoxoraWarning

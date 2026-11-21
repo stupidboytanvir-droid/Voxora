@@ -22,6 +22,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Card
@@ -30,13 +32,18 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -56,8 +63,11 @@ import com.voxora.player.ui.components.VideoThumbnail
 import com.voxora.player.ui.components.VoxoraTopHeader
 import com.voxora.player.ui.theme.LocalVoxoraColors
 import com.voxora.player.ui.theme.TabularTimeStyle
+import com.voxora.player.ui.theme.VoxoraCyan
+import com.voxora.player.ui.theme.VoxoraElectricPurple
 import com.voxora.player.ui.viewmodel.LibraryUiState
 import com.voxora.player.util.FormatUtils
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(
@@ -78,12 +88,16 @@ fun HomeScreen(
     modifier: Modifier = Modifier
 ) {
     val historyByUri = uiState.recentlyPlayed.associateBy { it.uriString }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val comingSoonMessage = stringResource(R.string.ai_dubbing_coming_soon_message)
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)
-    ) {
+    Box(modifier = modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
         item {
             VoxoraTopHeader(
                 onSearchClick = onSearchClick,
@@ -118,6 +132,19 @@ fun HomeScreen(
                 permissionState = uiState.permissionState,
                 onRequestPermission = onRequestPermission,
                 onOpenSafVideo = onOpenSafVideo,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+        }
+
+        // Sleek Locked AI Audio Dubbing — Coming Soon Badge Card
+        item {
+            AiDubbingComingSoonCard(
+                onClick = {
+                    scope.launch {
+                        snackbarHostState.currentSnackbarData?.dismiss()
+                        snackbarHostState.showSnackbar(comingSoonMessage)
+                    }
+                },
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
         }
@@ -243,6 +270,101 @@ fun HomeScreen(
                     lastPositionMs = historyByUri[video.uriString]?.lastPositionMs,
                     onClick = { onPlayVideo(video) },
                     modifier = Modifier.padding(horizontal = 16.dp)
+                )
+            }
+        }
+        }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(16.dp)
+        )
+    }
+}
+
+@Composable
+private fun AiDubbingComingSoonCard(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .testTag("home_ai_dubbing_coming_soon_card"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        ),
+        border = BorderStroke(
+            width = 1.dp,
+            brush = Brush.horizontalGradient(
+                listOf(
+                    VoxoraElectricPurple.copy(alpha = 0.55f),
+                    VoxoraCyan.copy(alpha = 0.45f)
+                )
+            )
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Surface(
+                color = VoxoraElectricPurple.copy(alpha = 0.16f),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.size(38.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Rounded.GraphicEq,
+                        contentDescription = null,
+                        tint = VoxoraElectricPurple,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Text(
+                        text = "AI Audio Dubbing",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Icon(
+                        imageVector = Icons.Rounded.Lock,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(13.dp)
+                    )
+                }
+                Text(
+                    text = "Live Auto AI Subtitles (59+ languages) active in player",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Surface(
+                color = VoxoraCyan.copy(alpha = 0.14f),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, VoxoraCyan.copy(alpha = 0.45f))
+            ) {
+                Text(
+                    text = "Coming Soon",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = VoxoraCyan,
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
                 )
             }
         }

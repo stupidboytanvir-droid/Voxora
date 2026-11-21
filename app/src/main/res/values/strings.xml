@@ -18,10 +18,13 @@
     <string name="cd_subtitles">Subtitle settings</string>
     <string name="cd_audio_track">Audio track selection</string>
     <string name="cd_speed">Playback speed</string>
-    <string name="cd_ai_dubbing">AI Dubbing</string>
+    <string name="cd_ai_dubbing">AI Audio Dubbing coming soon</string>
+    <string name="cd_auto_subtitles">Auto AI Subtitles</string>
+    <string name="cd_pip">Picture in Picture mode</string>
+    <string name="cd_sleep_timer">Sleep timer</string>
     <string name="cd_clear_history">Clear playback history</string>
-    <string name="cd_battery_saver">Battery saver mode</string>
     <string name="cd_app_update">App update</string>
+    <string name="ai_dubbing_coming_soon_message">AI Audio Dubbing is coming soon in a future update</string>
     <string name="update_channel_name">App Updates</string>
     <string name="update_channel_description">Notifications when a new version of VOXORA is available to download and install</string>
 </resources>

@@ -223,84 +223,76 @@ class EdgeNeuralTtsEngine(
                 val targetMp3 = File(mp3Dir, "seg_${segment.index}.mp3")
                 val targetWav = File(wavDir, "seg_${segment.index}.wav")
 
-                var clipPathForPlayback: String
-                var wavPathForExport: String
-                var actualDurationMs: Long
-
-                if (consecutiveNetworkFailures < MAX_CONSECUTIVE_WS_FAILURES) {
-                    onStatusUpdate(
-                        "Edge Neural (${shortVoiceLabel(voiceName)}) · Line ${idx + 1}/$total..."
-                    )
-                    val edgeResult = runCatching {
-                        synthesizeEdgeLineToMp3AndWav(
-                            text = bengaliText,
-                            voiceName = voiceName,
-                            ratePercent = ratePercent,
-                            pitchHz = pitchHz,
-                            volume = volumeStr,
-                            outputMp3File = targetMp3,
-                            outputWavFile = targetWav
+                val (clipPathForPlayback, wavPathForExport, actualDurationMs) =
+                    if (consecutiveNetworkFailures < MAX_CONSECUTIVE_WS_FAILURES) {
+                        onStatusUpdate(
+                            "Edge Neural (${shortVoiceLabel(voiceName)}) · Line ${idx + 1}/$total..."
                         )
-                    }
-                    edgeResult.fold(
-                        onSuccess = { (durMs, hasWav) ->
-                            consecutiveNetworkFailures = 0
-                            lastFailureReason = null
-                            val activeLabel = when (voiceGenderOverride) {
-                                VoiceGenderOverrideMode.FEMALE -> "Active Voice: Edge Neural (Nabanita)"
-                                VoiceGenderOverrideMode.MALE -> "Active Voice: Edge Neural (Pradeep)"
-                                VoiceGenderOverrideMode.AUTO -> "Active Voice: Edge Neural (Nabanita / Pradeep)"
-                            }
-                            _diagnosticState.value = TtsEngineDiagnosticState(
-                                activeVoiceLabel = activeLabel,
-                                isFallback = false,
-                                fallbackReason = null
+                        val edgeResult = runCatching {
+                            synthesizeEdgeLineToMp3AndWav(
+                                text = bengaliText,
+                                voiceName = voiceName,
+                                ratePercent = ratePercent,
+                                pitchHz = pitchHz,
+                                volume = volumeStr,
+                                outputMp3File = targetMp3,
+                                outputWavFile = targetWav
                             )
-                            clipPathForPlayback = targetMp3.absolutePath
-                            wavPathForExport = if (hasWav && targetWav.exists()) {
-                                targetWav.absolutePath
-                            } else {
-                                targetMp3.absolutePath
-                            }
-                            actualDurationMs = durMs
-                        },
-                        onFailure = { err ->
-                            if (err is CancellationException) throw err
-                            consecutiveNetworkFailures++
-                            val reason = (err.message ?: err.javaClass.simpleName).take(120)
-                            lastFailureReason = reason
-                            _diagnosticState.value = TtsEngineDiagnosticState(
-                                activeVoiceLabel = "Fallback: Android TTS (Reason: $reason)",
-                                isFallback = true,
-                                fallbackReason = reason
-                            )
-                            onStatusUpdate("Fallback: Android TTS (Reason: $reason)")
-                            val fbDur = synthesizeSingleLineViaOfflineFallback(
-                                videoUri = videoUri,
-                                segment = segment,
-                                effectiveGender = effectiveGender,
-                                baseProfile = baseProfile,
-                                targetWav = targetWav
-                            )
-                            clipPathForPlayback = targetWav.absolutePath
-                            wavPathForExport = targetWav.absolutePath
-                            actualDurationMs = fbDur
                         }
-                    )
-                } else {
-                    val reason = lastFailureReason ?: "Edge WebSocket unavailable"
-                    onStatusUpdate("Fallback: Android TTS (${idx + 1}/$total · $reason)")
-                    val fbDur = synthesizeSingleLineViaOfflineFallback(
-                        videoUri = videoUri,
-                        segment = segment,
-                        effectiveGender = effectiveGender,
-                        baseProfile = baseProfile,
-                        targetWav = targetWav
-                    )
-                    clipPathForPlayback = targetWav.absolutePath
-                    wavPathForExport = targetWav.absolutePath
-                    actualDurationMs = fbDur
-                }
+                        edgeResult.fold(
+                            onSuccess = { (durMs, hasWav) ->
+                                consecutiveNetworkFailures = 0
+                                lastFailureReason = null
+                                val activeLabel = when (voiceGenderOverride) {
+                                    VoiceGenderOverrideMode.FEMALE -> "Active Voice: Edge Neural (Nabanita)"
+                                    VoiceGenderOverrideMode.MALE -> "Active Voice: Edge Neural (Pradeep)"
+                                    VoiceGenderOverrideMode.AUTO -> "Active Voice: Edge Neural (Nabanita / Pradeep)"
+                                }
+                                _diagnosticState.value = TtsEngineDiagnosticState(
+                                    activeVoiceLabel = activeLabel,
+                                    isFallback = false,
+                                    fallbackReason = null
+                                )
+                                val resolvedWavPath = if (hasWav && targetWav.exists()) {
+                                    targetWav.absolutePath
+                                } else {
+                                    targetMp3.absolutePath
+                                }
+                                Triple(targetMp3.absolutePath, resolvedWavPath, durMs)
+                            },
+                            onFailure = { err ->
+                                if (err is CancellationException) throw err
+                                consecutiveNetworkFailures++
+                                val reason = (err.message ?: err.javaClass.simpleName).take(120)
+                                lastFailureReason = reason
+                                _diagnosticState.value = TtsEngineDiagnosticState(
+                                    activeVoiceLabel = "Fallback: Android TTS (Reason: $reason)",
+                                    isFallback = true,
+                                    fallbackReason = reason
+                                )
+                                onStatusUpdate("Fallback: Android TTS (Reason: $reason)")
+                                val fbDur = synthesizeSingleLineViaOfflineFallback(
+                                    videoUri = videoUri,
+                                    segment = segment,
+                                    effectiveGender = effectiveGender,
+                                    baseProfile = baseProfile,
+                                    targetWav = targetWav
+                                )
+                                Triple(targetWav.absolutePath, targetWav.absolutePath, fbDur)
+                            }
+                        )
+                    } else {
+                        val reason = lastFailureReason ?: "Edge WebSocket unavailable"
+                        onStatusUpdate("Fallback: Android TTS (${idx + 1}/$total · $reason)")
+                        val fbDur = synthesizeSingleLineViaOfflineFallback(
+                            videoUri = videoUri,
+                            segment = segment,
+                            effectiveGender = effectiveGender,
+                            baseProfile = baseProfile,
+                            targetWav = targetWav
+                        )
+                        Triple(targetWav.absolutePath, targetWav.absolutePath, fbDur)
+                    }
 
                 val appliedSpeed = (1.0f + ratePercent / 100f).coerceIn(1.0f, 1.35f)
                 val appliedPitch = (1.0f + pitchHz / 40f).coerceIn(0.75f, 1.25f)

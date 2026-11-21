@@ -219,6 +219,10 @@ class AutoSubtitleManager(
     private var audioTrackLanguageHint: String? = null
     @Volatile
     private var windowCounter: Int = 0
+    @Volatile
+    private var lastEmittedRawNormalized: String? = null
+    @Volatile
+    private var lastEmittedRawEndMs: Long = Long.MIN_VALUE
 
     private var setupJob: Job? = null
     private var workerJob: Job? = null
@@ -417,7 +421,7 @@ class AutoSubtitleManager(
                 isEnabled = true,
                 isSetupRunning = true,
                 setupProgressPercent = 0,
-                setupStepLabel = "Checking Whisper multilingual model...",
+                setupStepLabel = "Preparing VOXORA Smart Subtitles...",
                 errorMessage = null,
                 statusMessage = "Preparing Instant AI Subtitles ($targetLabel)..."
             )
@@ -426,9 +430,9 @@ class AutoSubtitleManager(
                     _state.value = _state.value.copy(
                         setupProgressPercent = pct.coerceIn(0, 95),
                         setupStepLabel = if (pct < 90) {
-                            "Downloading ${WhisperModelCatalog.DEFAULT.fileName} ($pct%)..."
+                            "Setting up Smart Subtitles ($pct%)..."
                         } else {
-                            "Loading Whisper multilingual model..."
+                            "Activating Offline AI Engine..."
                         }
                     )
                 }
@@ -636,8 +640,12 @@ class AutoSubtitleManager(
         val actualStartMs = pcmChunk.startTimeMs
         val actualEndMs = (actualStartMs + pcmChunk.durationMs.coerceAtLeast(windowDurationMs))
 
-        if (pcmChunk.samples16kMono.isEmpty()) {
+        if (pcmChunk.samples16kMono.isEmpty() || !hasChunkSpeechActivity(pcmChunk.samples16kMono)) {
             synchronized(cuesLock) {
+                primaryCuesByWindow[windowStartMs] = emptyList()
+                if (dualEnabled) {
+                    secondaryCuesByWindow[windowStartMs] = emptyList()
+                }
                 recordCoveredInterval(windowStartMs..actualEndMs)
             }
             return
@@ -656,7 +664,7 @@ class AutoSubtitleManager(
             language = whisperLangParam
         ).getOrThrow()
 
-        // Stage 1: Sanitize + Speech-Synced VAD trim every segment
+        // Stage 1: Sanitize + Speech-Synced VAD trim + Raw Consecutive Duplicate Suppressor
         val chunkNoiseFloor = estimateChunkNoiseFloor(pcmChunk.samples16kMono)
         val vadSegments = mutableListOf<VadTimedSegment>()
         for (seg in rawSegments) {
@@ -673,6 +681,16 @@ class AutoSubtitleManager(
                 noiseFloorRms = chunkNoiseFloor,
                 wordCount = wordCount
             ) ?: continue
+
+            val normalizedRaw = normalizeForDuplicateCheck(cleaned)
+            val isConsecutiveDuplicate = normalizedRaw.isNotEmpty() &&
+                normalizedRaw == lastEmittedRawNormalized &&
+                trimmedBounds.first >= lastEmittedRawEndMs - 500L
+            if (isConsecutiveDuplicate) {
+                continue
+            }
+            lastEmittedRawNormalized = normalizedRaw
+            lastEmittedRawEndMs = trimmedBounds.second
 
             vadSegments.add(
                 VadTimedSegment(
@@ -726,13 +744,17 @@ class AutoSubtitleManager(
 
         synchronized(cuesLock) {
             primaryCuesByWindow[windowStartMs] = nonOverlappingPrimary
-            sortedPrimaryCues = enforceStrictNonOverlap(
-                primaryCuesByWindow.values.flatten().sortedBy { it.startTimeMs }
+            sortedPrimaryCues = suppressConsecutiveDuplicateCues(
+                enforceStrictNonOverlap(
+                    primaryCuesByWindow.values.flatten().sortedBy { it.startTimeMs }
+                )
             )
             if (dualEnabled) {
                 secondaryCuesByWindow[windowStartMs] = nonOverlappingSecondary
-                sortedSecondaryCues = enforceStrictNonOverlap(
-                    secondaryCuesByWindow.values.flatten().sortedBy { it.startTimeMs }
+                sortedSecondaryCues = suppressConsecutiveDuplicateCues(
+                    enforceStrictNonOverlap(
+                        secondaryCuesByWindow.values.flatten().sortedBy { it.startTimeMs }
+                    )
                 )
             } else {
                 secondaryCuesByWindow.clear()
@@ -900,6 +922,8 @@ class AutoSubtitleManager(
             sortedSecondaryCues = emptyList()
         }
         windowCounter = 0
+        lastEmittedRawNormalized = null
+        lastEmittedRawEndMs = Long.MIN_VALUE
     }
 
     private suspend fun isTargetMlKitModelReady(targetCode: String): Boolean = withContext(Dispatchers.IO) {
@@ -963,10 +987,92 @@ class AutoSubtitleManager(
         private const val VAD_FRAME_MS: Int = 50
         private const val VAD_FRAME_SAMPLES: Int = (SAMPLE_RATE_HZ * VAD_FRAME_MS) / 1000 // 800 samples (50ms)
         private const val VAD_CONSECUTIVE_ONSET_FRAMES: Int = 2 // 2 * 50ms = 100ms speech onset
+        const val PRE_WHISPER_SPEECH_RMS_THRESHOLD: Float = 0.014f
         private const val MIN_SPEECH_RMS_THRESHOLD: Float = 0.008f
         private const val LEADING_SILENCE_TRIM_MIN_GAP_MS: Long = 1_200L
 
         private val SENTENCE_END_CHARS = setOf('.', '?', '!', '।', '。', '？', '！')
+        private val DUPLICATE_NORM_STRIP_REGEX = Regex("[\\p{P}\\p{S}\\s]+")
+
+        /**
+         * Pre-Whisper Speech Gate (v2.6.1):
+         * Computes 50ms frame RMS across the 16kHz PCM chunk. Skips Whisper completely if the
+         * chunk's active energy (90th-percentile frame RMS and sustained speech frames) falls below
+         * [thresholdRms] (`0.014f`), eliminating hallucinations during silence or quiet BGM scenes.
+         */
+        fun hasChunkSpeechActivity(
+            pcm16k: FloatArray,
+            thresholdRms: Float = PRE_WHISPER_SPEECH_RMS_THRESHOLD
+        ): Boolean {
+            if (pcm16k.size < VAD_FRAME_SAMPLES) return false
+            val frameCount = pcm16k.size / VAD_FRAME_SAMPLES
+            val energies = FloatArray(frameCount)
+            var peakRms = 0f
+            var consecutiveAbove = 0
+            var hasSustainedSpeech = false
+
+            for (f in 0 until frameCount) {
+                val base = f * VAD_FRAME_SAMPLES
+                var sumSq = 0.0
+                for (i in 0 until VAD_FRAME_SAMPLES) {
+                    val s = pcm16k[base + i].toDouble()
+                    sumSq += s * s
+                }
+                val rms = sqrt(sumSq / VAD_FRAME_SAMPLES).toFloat()
+                energies[f] = rms
+                if (rms > peakRms) peakRms = rms
+                if (rms >= thresholdRms) {
+                    consecutiveAbove++
+                    if (consecutiveAbove >= 3) { // >= 150ms sustained active audio
+                        hasSustainedSpeech = true
+                    }
+                } else {
+                    consecutiveAbove = 0
+                }
+            }
+
+            if (peakRms < thresholdRms) return false
+            energies.sort()
+            val p90Index = ((frameCount - 1) * 0.90f).toInt().coerceIn(0, frameCount - 1)
+            val p90Rms = energies[p90Index]
+            return p90Rms >= thresholdRms || hasSustainedSpeech
+        }
+
+        /**
+         * Normalizes subtitle text (Unicode letters/digits only, lowercased) so repeated
+         * hallucinations such as `"আমি দুঃখিত।"`, `"আমি দুঃখিত"`, `"I'm sorry!"`, `"I'm sorry."`
+         * match reliably regardless of trailing punctuation or whitespace.
+         */
+        fun normalizeForDuplicateCheck(text: String): String {
+            return text
+                .trim()
+                .lowercase(Locale.ROOT)
+                .replace(DUPLICATE_NORM_STRIP_REGEX, "")
+        }
+
+        /**
+         * Consecutive Duplicate Suppressor (v2.6.1):
+         * Drops any subtitle cue whose normalized text repeats the immediately preceding emitted
+         * cue (2+ consecutive identical lines across adjacent segments or chunk boundaries),
+         * keeping silent/BGM scenes clean while allowing genuine lines to reappear after
+         * different spoken dialogue occurs in between.
+         */
+        fun suppressConsecutiveDuplicateCues(cues: List<SubtitleCue>): List<SubtitleCue> {
+            if (cues.size <= 1) return cues
+            val filtered = ArrayList<SubtitleCue>(cues.size)
+            var lastNormalized: String? = null
+            for (cue in cues) {
+                val norm = normalizeForDuplicateCheck(cue.text)
+                if (norm.isNotEmpty() && norm == lastNormalized) {
+                    continue
+                }
+                filtered.add(cue)
+                if (norm.isNotEmpty()) {
+                    lastNormalized = norm
+                }
+            }
+            return filtered
+        }
 
         fun needsMlKitTranslation(targetCode: String): Boolean {
             return targetCode != AutoSubtitleLanguageCatalog.CODE_ORIGINAL &&

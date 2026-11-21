@@ -722,4 +722,70 @@ class DubbingPhase6Test {
             com.voxora.player.data.local.storage.MediaStoreAudioScanner.resolveAudioFormatBadge("voice_note.opus", "audio/ogg")
         )
     }
+
+    @Test
+    fun v261_preWhisperSpeechGate_consecutiveDuplicateSuppressor_andSupportFeedbackPayload() {
+        // 1. Pre-Whisper Speech Gate skips pure silence & quiet BGM (< 0.014f RMS) and passes speech
+        val sr = AutoSubtitleManager.SAMPLE_RATE_HZ
+        val silencePcm = FloatArray(sr * 5) { 0.0004f }
+        assertFalse(
+            "Pure silence must be skipped by pre-Whisper speech gate",
+            AutoSubtitleManager.hasChunkSpeechActivity(silencePcm)
+        )
+
+        // Quiet BGM sine wave (amp 0.012 -> RMS ~0.0085 < 0.014f)
+        val quietBgmPcm = FloatArray(sr * 5) { i ->
+            (0.012 * sin(2.0 * PI * 180.0 * i / sr)).toFloat()
+        }
+        assertFalse(
+            "Quiet BGM below 0.014f RMS must be skipped by pre-Whisper speech gate",
+            AutoSubtitleManager.hasChunkSpeechActivity(quietBgmPcm)
+        )
+
+        // Short spoken utterance (0.6s at amp 0.18 -> RMS ~0.127 >= 0.014f) inside a 5s window
+        val activeSpeechPcm = FloatArray(sr * 5) { i ->
+            if (i in (sr * 2)..(sr * 2 + (sr * 0.6f).toInt())) {
+                (0.18 * sin(2.0 * PI * 240.0 * i / sr)).toFloat()
+            } else {
+                0.0005f
+            }
+        }
+        assertTrue(
+            "Spoken dialogue burst must pass pre-Whisper speech gate",
+            AutoSubtitleManager.hasChunkSpeechActivity(activeSpeechPcm)
+        )
+
+        // 2. Consecutive Duplicate Suppressor drops repeated hallucinations like "আমি দুঃখিত" across chunks
+        val repeatedCues = listOf(
+            SubtitleCue(1_000L, 2_500L, "আমি দুঃখিত।"),
+            SubtitleCue(3_000L, 4_500L, "আমি দুঃখিত"),
+            SubtitleCue(5_000L, 6_500L, "আমি দুঃখিত!"),
+            SubtitleCue(8_000L, 10_000L, "চলো এখন বের হই।"),
+            SubtitleCue(12_000L, 13_500L, "আমি দুঃখিত।"),
+            SubtitleCue(14_000L, 15_500L, "I'm sorry."),
+            SubtitleCue(16_000L, 17_500L, "I'm sorry!")
+        )
+        val deduped = AutoSubtitleManager.suppressConsecutiveDuplicateCues(repeatedCues)
+        assertEquals(4, deduped.size)
+        assertEquals("আমি দুঃখিত।", deduped[0].text)
+        assertEquals("চলো এখন বের হই।", deduped[1].text)
+        assertEquals("আমি দুঃখিত।", deduped[2].text)
+        assertEquals("I'm sorry.", deduped[3].text)
+
+        // 3. SupportFeedbackClient JSON payload schema & defaults
+        val json = com.voxora.player.data.support.SupportFeedbackClient.buildPayloadJson(
+            category = com.voxora.player.data.support.SupportCategory.SUBTITLES.label,
+            message = "Subtitles stopped syncing on MKV",
+            userName = "",
+            appVersion = "2.6.1",
+            device = "Google Pixel 9",
+            androidVersion = "Android 15"
+        )
+        assertTrue(json.contains("\"category\":\"Subtitles\""))
+        assertTrue(json.contains("\"user_name\":\"Anonymous\""))
+        assertTrue(json.contains("\"_subject\":\"VOXORA Support: Subtitles\""))
+        assertTrue(json.contains("\"app_version\":\"2.6.1\""))
+        assertTrue(json.contains("\"device\":\"Google Pixel 9\""))
+        assertTrue(json.contains("\"android\":\"Android 15\""))
+    }
 }

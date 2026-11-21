@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
@@ -40,6 +41,9 @@ class MusicPlaybackService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var cachedArtUri: String? = null
     private var cachedArtBitmap: Bitmap? = null
+    private val defaultLogoBitmap: Bitmap? by lazy {
+        runCatching { BitmapFactory.decodeResource(resources, R.drawable.ic_voxora_logo) }.getOrNull()
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -154,7 +158,7 @@ class MusicPlaybackService : Service() {
         val closePending = serviceActionPendingIntent(ACTION_CLOSE, 204)
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_voxora_notification)
+            .setSmallIcon(R.drawable.ic_voxora_notif_mono)
             .setColor(0xFFF97316.toInt())
             .setContentTitle(track?.title ?: "VOXORA Music")
             .setContentText(
@@ -187,8 +191,9 @@ class MusicPlaybackService : Service() {
                 closePending
             )
 
-        if (albumArt != null && !albumArt.isRecycled) {
-            builder.setLargeIcon(albumArt)
+        val largeIcon = albumArt?.takeIf { !it.isRecycled } ?: defaultLogoBitmap?.takeIf { !it.isRecycled }
+        if (largeIcon != null) {
+            builder.setLargeIcon(largeIcon)
         }
 
         return builder.build()

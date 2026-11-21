@@ -217,7 +217,8 @@ Java_com_voxora_player_dubbing_whisper_WhisperNativeBridge_nativeTranscribeChunk
     params.beam_search.beam_size = 1;
     params.temperature = 0.0f;
     params.temperature_inc = 0.0f;
-    params.no_speech_thold = 0.45f;
+    params.no_speech_thold = 0.55f;
+    params.logprob_thold = -0.8f;
     params.entropy_thold = 2.6f;
     params.print_realtime = false;
     params.print_progress = false;

@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -21,6 +23,12 @@ class UpdateNotificationHelper(private val context: Context) {
         const val EXTRA_OPEN_UPDATE_DIALOG = "com.voxora.player.EXTRA_OPEN_UPDATE_DIALOG"
         private const val NOTIFICATION_ID_UPDATE_AVAILABLE = 4001
         private const val NOTIFICATION_ID_READY_TO_INSTALL = 4002
+    }
+
+    private fun decodeSunsetLogoBitmap(): Bitmap? {
+        return runCatching {
+            BitmapFactory.decodeResource(context.resources, R.drawable.ic_voxora_logo)
+        }.getOrNull()
     }
 
     fun ensureChannel() {
@@ -72,8 +80,8 @@ class UpdateNotificationHelper(private val context: Context) {
             .joinToString("\n")
             .ifBlank { "A new version of VOXORA is ready to download and install." }
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_voxora_notification)
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_voxora_notif_mono)
             .setColor(0xFFF97316.toInt())
             .setContentTitle("VOXORA v${release.versionName} Update Available")
             .setContentText("Tap to download and install the latest version.")
@@ -81,7 +89,8 @@ class UpdateNotificationHelper(private val context: Context) {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
-            .build()
+        decodeSunsetLogoBitmap()?.let { builder.setLargeIcon(it) }
+        val notification = builder.build()
 
         runCatching {
             NotificationManagerCompat.from(context)
@@ -104,15 +113,16 @@ class UpdateNotificationHelper(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_voxora_notification)
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_voxora_notif_mono)
             .setColor(0xFFF97316.toInt())
             .setContentTitle("VOXORA v${release.versionName} Downloaded")
             .setContentText("Tap to install the update now.")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
-            .build()
+        decodeSunsetLogoBitmap()?.let { builder.setLargeIcon(it) }
+        val notification = builder.build()
 
         runCatching {
             NotificationManagerCompat.from(context)

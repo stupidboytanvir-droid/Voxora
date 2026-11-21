@@ -25,8 +25,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CleaningServices
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteSweep
@@ -42,6 +44,7 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material.icons.rounded.SupportAgent
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -92,6 +95,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.voxora.player.BuildConfig
 import com.voxora.player.R
 import com.voxora.player.ai.subtitles.AutoSubtitleLanguageCatalog
+import com.voxora.player.data.support.SupportCategory
+import com.voxora.player.data.support.SupportFeedbackClient
+import com.voxora.player.data.support.SupportSubmitResult
 import com.voxora.player.data.update.UpdateUiState
 import com.voxora.player.model.AspectRatioMode
 import com.voxora.player.model.AudioEqPreset
@@ -108,6 +114,8 @@ import com.voxora.player.ui.theme.VoxoraError
 import com.voxora.player.ui.theme.VoxoraHairlineBorder
 import com.voxora.player.ui.theme.VoxoraObsidian
 import com.voxora.player.ui.theme.VoxoraSuccess
+import com.voxora.player.ui.theme.VoxoraSunsetBrush
+import com.voxora.player.ui.theme.VoxoraSunsetOrange
 import com.voxora.player.ui.viewmodel.SettingsViewModel
 import com.voxora.player.util.FormatUtils
 import kotlinx.coroutines.launch
@@ -118,6 +126,7 @@ private enum class SettingsSheetType {
     AI_SUBTITLES,
     AUDIO_VISUAL,
     LIBRARY_DATA,
+    HELP_SUPPORT,
     UPDATES,
     ABOUT
 }
@@ -319,6 +328,14 @@ fun SettingsScreen(
                     )
                     SettingsGroupDivider()
                     SettingsMenuRow(
+                        icon = Icons.Rounded.SupportAgent,
+                        title = "Help & Support",
+                        subtitle = "Report an issue or share feedback directly",
+                        onClick = { activeSheet = SettingsSheetType.HELP_SUPPORT },
+                        testTag = "settings_row_help_support"
+                    )
+                    SettingsGroupDivider()
+                    SettingsMenuRow(
                         icon = Icons.Rounded.SystemUpdate,
                         title = "App Updates",
                         subtitle = "GitHub Releases in-app updater · $updateSummary",
@@ -329,7 +346,7 @@ fun SettingsScreen(
                     SettingsMenuRow(
                         icon = Icons.Rounded.Info,
                         title = "About VOXORA",
-                        subtitle = "Version ${BuildConfig.VERSION_NAME} · Media3 + whisper.cpp + ML Kit",
+                        subtitle = "Version ${BuildConfig.VERSION_NAME} · VOXORA Cinema Spatial",
                         onClick = { activeSheet = SettingsSheetType.ABOUT },
                         testTag = "settings_row_about"
                     )
@@ -374,6 +391,14 @@ fun SettingsScreen(
                     onRequestClearHistory = {
                         activeSheet = SettingsSheetType.NONE
                         showClearDialog = true
+                    }
+                )
+                SettingsSheetType.HELP_SUPPORT -> HelpSupportSheetContent(
+                    onReportSent = { confirmation ->
+                        scope.launch {
+                            snackbarHostState.currentSnackbarData?.dismiss()
+                            snackbarHostState.showSnackbar(confirmation)
+                        }
                     }
                 )
                 SettingsSheetType.UPDATES -> UpdatesSheetContent(
@@ -766,7 +791,7 @@ private fun AiSubtitlesSheetContent(
             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
         )
 
-        // Offline Model Status Pill
+        // Clean Branded Engine Status Card (no internal model/implementation details exposed)
         Surface(
             color = VoxoraElevatedCharcoal,
             shape = RoundedCornerShape(14.dp),
@@ -781,16 +806,12 @@ private fun AiSubtitlesSheetContent(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Whisper Multilingual Engine (ggml-base-q5_1)",
+                        text = "VOXORA Smart Subtitles",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
                         color = Color.White
                     )
                     Text(
-                        text = if (isWhisperInstalled) {
-                            "Installed offline (~57 MB) · High-accuracy VAD + anti-hallucination active"
-                        } else {
-                            "Auto-downloads automatically on first AI Subtitle activation (~57 MB)"
-                        },
+                        text = "Offline AI Engine · Active",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.White.copy(alpha = 0.7f)
                     )
@@ -800,7 +821,7 @@ private fun AiSubtitlesSheetContent(
                     shape = RoundedCornerShape(8.dp)
                 ) {
                     Text(
-                        text = if (isWhisperInstalled) "Ready" else "On Demand",
+                        text = if (isWhisperInstalled) "Ready" else "Setup",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                         color = if (isWhisperInstalled) VoxoraSuccess else VoxoraAmberBright,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -1246,7 +1267,7 @@ private fun AboutVoxoraSheetContent() {
             }
         }
         Text(
-            text = "Built on AndroidX Media3 ExoPlayer, Jetpack Compose, Room, whisper.cpp, and Google ML Kit for flagship local cinema playback and 100% free on-device Auto AI Subtitles.",
+            text = "Flagship local cinema & music player crafted for ultra-smooth playback, smart audio tools, customizable folder views, and offline VOXORA Smart Subtitles.",
             style = MaterialTheme.typography.bodyMedium,
             color = Color.White.copy(alpha = 0.78f)
         )
@@ -1262,7 +1283,7 @@ private fun AboutVoxoraSheetContent() {
             ) {
                 Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = VoxoraAmber)
                 Text(
-                    text = "v${BuildConfig.VERSION_NAME} — VOXORA Cinema Spatial UI, Floating Glass Dock, MX-Style Slide-Out Player Drawer, Smart Episode Title Formatting, and Speech-Locked VAD Subtitles.",
+                    text = "v${BuildConfig.VERSION_NAME} — VOXORA Cinema Spatial UI, Dedicated Local Music Player, Sunset Play-Wave Theme, and VOXORA Smart Subtitles.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.White.copy(alpha = 0.88f)
                 )
@@ -1273,6 +1294,241 @@ private fun AboutVoxoraSheetContent() {
             style = TabularTimeStyle,
             color = Color.White.copy(alpha = 0.45f)
         )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun HelpSupportSheetContent(
+    onReportSent: (String) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val client = remember { SupportFeedbackClient() }
+    var selectedCategory by remember { mutableStateOf(SupportCategory.BUG_CRASH) }
+    var userName by remember { mutableStateOf("") }
+    var message by remember { mutableStateOf("") }
+    var isSending by remember { mutableStateOf(false) }
+    var errorText by remember { mutableStateOf<String?>(null) }
+    var sentConfirmation by remember { mutableStateOf<String?>(null) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 34.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(VoxoraSunsetBrush),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.SupportAgent,
+                    contentDescription = stringResource(R.string.cd_help_support),
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Column {
+                Text(
+                    text = "Help & Support",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White
+                )
+                Text(
+                    text = "Send feedback directly to the VOXORA team",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.68f)
+                )
+            }
+        }
+
+        if (sentConfirmation != null) {
+            Surface(
+                color = VoxoraSuccess.copy(alpha = 0.14f),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(0.8.dp, VoxoraSuccess.copy(alpha = 0.55f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("support_sent_confirmation")
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.CheckCircle,
+                        contentDescription = null,
+                        tint = VoxoraSuccess,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Text(
+                        text = sentConfirmation ?: "",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                        color = Color.White
+                    )
+                }
+            }
+        }
+
+        Text(
+            text = "Category",
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+            color = Color.White
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            SupportCategory.entries.forEach { category ->
+                AmberFilterChip(
+                    selected = selectedCategory == category,
+                    label = category.label,
+                    onClick = {
+                        selectedCategory = category
+                        errorText = null
+                    },
+                    modifier = Modifier.testTag("support_category_${category.name}")
+                )
+            }
+        }
+
+        OutlinedTextField(
+            value = userName,
+            onValueChange = { userName = it },
+            label = { Text("Your Name (optional)") },
+            placeholder = { Text("How should we address you?") },
+            singleLine = true,
+            enabled = !isSending,
+            shape = RoundedCornerShape(14.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = VoxoraElevatedCharcoal,
+                unfocusedContainerColor = VoxoraElevatedCharcoal,
+                focusedBorderColor = VoxoraSunsetOrange,
+                unfocusedBorderColor = VoxoraHairlineBorder
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("support_name_input")
+        )
+
+        OutlinedTextField(
+            value = message,
+            onValueChange = {
+                message = it
+                if (errorText != null) errorText = null
+                if (sentConfirmation != null) sentConfirmation = null
+            },
+            label = { Text("Message *") },
+            placeholder = { Text("Describe the bug, subtitle issue, or feature idea...") },
+            minLines = 4,
+            maxLines = 7,
+            enabled = !isSending,
+            shape = RoundedCornerShape(14.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = VoxoraElevatedCharcoal,
+                unfocusedContainerColor = VoxoraElevatedCharcoal,
+                focusedBorderColor = VoxoraSunsetOrange,
+                unfocusedBorderColor = VoxoraHairlineBorder
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("support_message_input")
+        )
+
+        if (errorText != null) {
+            Surface(
+                color = VoxoraError.copy(alpha = 0.14f),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(0.8.dp, VoxoraError.copy(alpha = 0.5f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = errorText ?: "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFFFB4AB),
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+        }
+
+        Text(
+            text = "Device model, Android version, and app version (v${BuildConfig.VERSION_NAME}) are attached automatically to help diagnose issues faster.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.White.copy(alpha = 0.52f)
+        )
+
+        val canSend = message.isNotBlank() && !isSending
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(
+                    if (canSend) VoxoraSunsetBrush
+                    else androidx.compose.ui.graphics.SolidColor(VoxoraElevatedCharcoal)
+                )
+                .clickable(enabled = canSend) {
+                    isSending = true
+                    errorText = null
+                    sentConfirmation = null
+                    scope.launch {
+                        when (val result = client.submitReport(selectedCategory, message, userName)) {
+                            SupportSubmitResult.Success -> {
+                                isSending = false
+                                message = ""
+                                sentConfirmation = SupportFeedbackClient.SUCCESS_CONFIRMATION_MESSAGE
+                                onReportSent(SupportFeedbackClient.SUCCESS_CONFIRMATION_MESSAGE)
+                            }
+                            is SupportSubmitResult.Error -> {
+                                isSending = false
+                                errorText = result.userMessage
+                            }
+                        }
+                    }
+                }
+                .padding(vertical = 14.dp)
+                .testTag("support_send_report_button"),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (isSending) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = Color.White
+                    )
+                    Text(
+                        text = "Sending Report...",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.Send,
+                        contentDescription = null,
+                        tint = if (canSend) Color.White else Color.White.copy(alpha = 0.4f),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "Send Report",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = if (canSend) Color.White else Color.White.copy(alpha = 0.4f)
+                    )
+                }
+            }
+        }
     }
 }
 

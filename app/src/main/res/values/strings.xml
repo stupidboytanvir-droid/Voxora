@@ -53,4 +53,5 @@
     <string name="cd_layout_toggle">Toggle folder layout view</string>
     <string name="music_playback_channel_name">VOXORA Music Player</string>
     <string name="music_playback_channel_description">Playback controls for local songs and audio files</string>
+    <string name="cd_help_support">Help and support</string>
 </resources>

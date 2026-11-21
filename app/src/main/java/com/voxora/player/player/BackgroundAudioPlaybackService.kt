@@ -8,6 +8,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -33,6 +35,10 @@ object BackgroundPlaybackBridge {
  * with notification Play/Pause & Stop actions when Background Play mode is activated.
  */
 class BackgroundAudioPlaybackService : Service() {
+
+    private val logoBitmap: Bitmap? by lazy {
+        runCatching { BitmapFactory.decodeResource(resources, R.drawable.ic_voxora_logo) }.getOrNull()
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -117,8 +123,8 @@ class BackgroundAudioPlaybackService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_voxora_notification)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_voxora_notif_mono)
             .setColor(0xFFF97316.toInt())
             .setContentTitle(BackgroundPlaybackBridge.activeTitle)
             .setContentText(if (isPlaying) "Playing audio in background" else "Background audio paused")
@@ -136,7 +142,8 @@ class BackgroundAudioPlaybackService : Service() {
                 "Stop",
                 stopPending
             )
-            .build()
+        logoBitmap?.takeIf { !it.isRecycled }?.let { builder.setLargeIcon(it) }
+        return builder.build()
     }
 
     private fun ensureChannel() {

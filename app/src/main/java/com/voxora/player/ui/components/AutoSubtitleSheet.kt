@@ -440,9 +440,9 @@ fun AutoSubtitleSettingsSheet(
                                 Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
                             }
                             Column {
-                                Text("Auto AI Subtitles", style = MaterialTheme.typography.titleMedium, color = Color.White)
+                                Text("VOXORA Smart Subtitles", style = MaterialTheme.typography.titleMedium, color = Color.White)
                                 Text(
-                                    text = "100% Free On-Device · VAD Speech-Synced",
+                                    text = "Offline AI Engine · Active",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = VoxoraCyan
                                 )

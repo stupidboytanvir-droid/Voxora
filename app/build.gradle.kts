@@ -25,13 +25,13 @@ android {
     applicationId = "com.voxora.player"
     minSdk = 24
     targetSdk = 36
-    versionCode = 19
-    versionName = "2.5.1"
+    versionCode = 20
+    versionName = "2.5.2"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
     ndk {
-      abiFilters += listOf("arm64-v8a", "x86_64")
+      abiFilters += listOf("arm64-v8a")
     }
 
     if (enableNativeWhisperBuild) {

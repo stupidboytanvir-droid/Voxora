@@ -48,13 +48,23 @@ enum class ThemeMode(val label: String, val description: String) {
     LIGHT("Light", "Clean studio light appearance")
 }
 
-enum class AspectRatioMode(val label: String) {
-    FIT("Fit"),
-    FILL("Fill"),
-    ZOOM("Zoom"),
-    RATIO_16_9("16:9"),
-    RATIO_4_3("4:3"),
-    STRETCH("Stretch")
+enum class AspectRatioMode(val label: String, val indicatorLabel: String) {
+    FILL("Full", "Full Screen"),
+    STRETCH("Stretch", "Stretch"),
+    FIT("Fit", "Fit"),
+    RATIO_16_9("16:9", "16:9"),
+    ZOOM("Zoom", "Zoom 1.25x"),
+    RATIO_4_3("4:3", "4:3");
+
+    /**
+     * 1-tap direct aspect ratio cycle order: Full -> Stretch -> Fit -> 16:9 -> Full.
+     */
+    fun nextCycleMode(): AspectRatioMode = when (this) {
+        FILL -> STRETCH
+        STRETCH -> FIT
+        FIT -> RATIO_16_9
+        RATIO_16_9, ZOOM, RATIO_4_3 -> FILL
+    }
 }
 
 data class AudioTrackInfo(
@@ -267,7 +277,7 @@ data class UserPreferences(
     val holdSpeedMultiplier: Float = 2.0f,
     val resumePlaybackEnabled: Boolean = true,
     val autoPlayNext: Boolean = true,
-    val defaultAspectRatio: AspectRatioMode = AspectRatioMode.FIT,
+    val defaultAspectRatio: AspectRatioMode = AspectRatioMode.FILL,
     val brightnessGestureEnabled: Boolean = true,
     val volumeGestureEnabled: Boolean = true,
     val doubleTapSeekSeconds: Int = 10,

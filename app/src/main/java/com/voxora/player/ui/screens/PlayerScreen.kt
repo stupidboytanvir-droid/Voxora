@@ -160,6 +160,8 @@ fun PlayerScreen(
     var lastInteractionMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var activeSheet by remember { mutableStateOf(ActiveSheet.NONE) }
     var gestureHudState by remember { mutableStateOf<GestureHudState>(GestureHudState.Hidden) }
+    var aspectIndicatorLabel by remember { mutableStateOf<String?>(null) }
+    var aspectIndicatorNonce by remember { mutableLongStateOf(0L) }
 
     // Smart Auto-Orientation state (resets per video URI, respects manual Rotate button override)
     var userManualOrientation by remember(uriString) { mutableStateOf(false) }
@@ -201,6 +203,24 @@ fun PlayerScreen(
             } else {
                 ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             }
+        }
+    }
+
+    // Auto-dismiss "Resumed from XX:XX | Start Over" pill smoothly after 4 seconds
+    LaunchedEffect(uiState.resumedFromPositionMs) {
+        if (uiState.resumedFromPositionMs != null) {
+            delay(4_000L)
+            viewModel.dismissResumeBanner()
+        }
+    }
+
+    // Brief 1-second center pill indicator when cycling Aspect Ratio directly
+    LaunchedEffect(aspectIndicatorNonce) {
+        val label = aspectIndicatorLabel ?: return@LaunchedEffect
+        gestureHudState = GestureHudState.AspectRatio(label)
+        delay(1_000L)
+        if (gestureHudState is GestureHudState.AspectRatio) {
+            gestureHudState = GestureHudState.Hidden
         }
     }
 
@@ -755,7 +775,12 @@ fun PlayerScreen(
                         registerInteraction()
                     },
                     onOpenSpeed = { activeSheet = ActiveSheet.SPEED },
-                    onOpenAspectRatio = { activeSheet = ActiveSheet.ASPECT_RATIO },
+                    onOpenAspectRatio = {
+                        val nextMode = viewModel.cycleAspectRatio()
+                        aspectIndicatorLabel = nextMode.indicatorLabel
+                        aspectIndicatorNonce += 1L
+                        registerInteraction()
+                    },
                     onEnterPip = {
                         controlsVisible = false
                         isSettingsDrawerOpen = false

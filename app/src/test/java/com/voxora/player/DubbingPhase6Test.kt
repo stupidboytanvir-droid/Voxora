@@ -537,7 +537,7 @@ class DubbingPhase6Test {
 
     @Test
     fun v251_subtitleSanitizerAndAudioLanguageSync() {
-        // 1. SubtitleSanitizer drops Whisper hallucinations, music notes, fillers, and loops
+        // 1. SubtitleSanitizer drops obvious Whisper hallucinations, music notes, and 3x loops
         assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("[Music]"))
         assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("(Music playing)"))
         assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("♪ La la la ♪"))
@@ -546,12 +546,14 @@ class DubbingPhase6Test {
         assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("Subscribe"))
         assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("you you you"))
         assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("I am I am I am"))
-        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("Uh..."))
-        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("Hmm"))
         assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("..."))
         assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("A."))
 
-        // 2. Real dialogue passes cleanly with whitespace and tags normalized
+        // 2. Short genuine 1-2 word replies and real dialogue ALWAYS pass cleanly
+        assertEquals("Yes", com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("Yes"))
+        assertEquals("No", com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("No"))
+        assertEquals("Wait!", com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("Wait!"))
+        assertEquals("Why?", com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("Why?"))
         assertEquals(
             "We have to leave before sunrise.",
             com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("  [Music]  We have to leave before sunrise.  ")
@@ -575,5 +577,55 @@ class DubbingPhase6Test {
         assertEquals("ko", AutoSubtitleManager.buildWhisperLanguageParam("ko", translateToEnglish = false))
         assertEquals("en", AutoSubtitleManager.buildWhisperLanguageParam("en", translateToEnglish = true))
         assertEquals("auto:translate", AutoSubtitleManager.buildWhisperLanguageParam(null, translateToEnglish = true))
+    }
+
+    @Test
+    fun v252_defaultFullScreenAspectCycle_andGentle1200msVadTrim() {
+        // 1. Default playback aspect ratio is Full Screen (FILL) with 1-tap 4-mode cycle
+        val defaultPrefs = com.voxora.player.model.UserPreferences()
+        assertEquals(com.voxora.player.model.AspectRatioMode.FILL, defaultPrefs.defaultAspectRatio)
+        assertEquals("Full", com.voxora.player.model.AspectRatioMode.FILL.label)
+        assertEquals("Full Screen", com.voxora.player.model.AspectRatioMode.FILL.indicatorLabel)
+        assertEquals(
+            com.voxora.player.model.AspectRatioMode.STRETCH,
+            com.voxora.player.model.AspectRatioMode.FILL.nextCycleMode()
+        )
+        assertEquals(
+            com.voxora.player.model.AspectRatioMode.FIT,
+            com.voxora.player.model.AspectRatioMode.STRETCH.nextCycleMode()
+        )
+        assertEquals(
+            com.voxora.player.model.AspectRatioMode.RATIO_16_9,
+            com.voxora.player.model.AspectRatioMode.FIT.nextCycleMode()
+        )
+        assertEquals(
+            com.voxora.player.model.AspectRatioMode.FILL,
+            com.voxora.player.model.AspectRatioMode.RATIO_16_9.nextCycleMode()
+        )
+
+        // 2. Leading silence <= 1200ms is NOT clipped so the first spoken word starts right on time
+        val sr = 16_000
+        val shortLeadPcm = FloatArray(sr * 3) { i ->
+            // 600ms quiet intro, then clear speech from 600ms..2600ms
+            if (i in (sr * 0.6f).toInt()..(sr * 2.6f).toInt()) {
+                (0.20 * sin(2.0 * PI * 220.0 * i / sr)).toFloat()
+            } else {
+                0.002f
+            }
+        }
+        val trimmedShort = AutoSubtitleManager.trimSegmentWithVad(
+            pcm16k = shortLeadPcm,
+            chunkStartMs = 10_000L,
+            segmentStartMs = 10_000L,
+            segmentEndMs = 13_000L,
+            noiseFloorRms = 0.004f,
+            wordCount = 5
+        )
+        assertNotNull(trimmedShort)
+        assertEquals(
+            "Leading silence <= 1200ms must preserve exact segmentStartMs",
+            10_000L,
+            trimmedShort!!.first
+        )
     }
 }

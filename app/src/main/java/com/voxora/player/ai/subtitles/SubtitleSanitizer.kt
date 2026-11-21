@@ -3,11 +3,11 @@ package com.voxora.player.ai.subtitles
 import java.util.Locale
 
 /**
- * Strict anti-hallucination post-filter applied to raw Whisper segments BEFORE ML Kit translation.
+ * Focused anti-hallucination post-filter applied to raw Whisper segments BEFORE ML Kit translation.
  *
- * Eliminates common whisper.cpp non-speech hallucinations, YouTube-style outros, musical note
- * placeholders, repeated-word loops, standalone filler sounds, and punctuation-only artifacts so
- * only crisp, genuine movie dialogue reaches the translator and on-screen subtitle overlay.
+ * Eliminates obvious non-speech hallucinations (`[Music]`, `(Music)`, `♪`, `Thank you for watching`,
+ * `Subscribe`, URLs, and 3x repeated-word loops) while strictly preserving short genuine 1–2 word
+ * movie replies (such as "Yes", "No", "Wait", "Why", "Go", "Ok").
  */
 object SubtitleSanitizer {
 
@@ -43,7 +43,6 @@ object SubtitleSanitizer {
         "hit the subscribe",
         "click the subscribe",
         "see you in the next video",
-        "see you next time",
         "subtitles by",
         "subtitle by",
         "captioned by",
@@ -52,23 +51,7 @@ object SubtitleSanitizer {
         "transcribed by",
         "amara.org",
         "all rights reserved",
-        "copyright",
-        "mbc news",
-        "sbs news",
-        "kbs news"
-    )
-
-    private val STANDALONE_FILLERS = setOf(
-        "uh", "uhh", "uhhh",
-        "um", "umm", "ummm",
-        "ah", "ahh", "ahhh", "aah", "aaah",
-        "eh", "ehh",
-        "oh", "ohh", "ohhh", "ooh", "oooh",
-        "hm", "hmm", "hmmm", "hmmmm",
-        "mm", "mmm", "mmmm", "mhm",
-        "ha", "hah", "haha", "huh",
-        "uh-huh", "uh huh", "mm-hmm", "mm hmm",
-        "erm", "er", "shh", "shhh", "psst", "ugh", "tsk", "phew"
+        "copyright"
     )
 
     private val WORD_TOKEN_REGEX = Regex("""[\p{L}\p{N}']+""")
@@ -76,8 +59,9 @@ object SubtitleSanitizer {
     /**
      * Cleans and validates a raw Whisper segment string.
      *
-     * @return Clean dialogue text ready for ML Kit translation, or `null` if the segment should be
-     *   dropped as noise, hallucination, filler, or repetition loop.
+     * @return Clean dialogue text ready for ML Kit translation, or `null` ONLY if the segment is
+     *   an obvious non-speech hallucination, musical placeholder, outro, repetition loop, or
+     *   punctuation-only artifact. Short valid replies ("Yes", "No", "Wait", "Why") always pass.
      */
     fun sanitize(rawText: String?): String? {
         if (rawText.isNullOrBlank()) return null
@@ -95,7 +79,7 @@ object SubtitleSanitizer {
             .replace(Regex("""\s+"""), " ")
             .trim()
 
-        // Strip leading/trailing stray dashes, bullets, ellipsis noise, or redundant punctuation
+        // Strip leading/trailing stray dashes, bullets, or redundant punctuation spacing
         cleaned = cleaned
             .replace(Regex("""^[•·\-–—,:;|\s]+"""), "")
             .replace(Regex("""\s+([,.;:!?])"""), "$1")
@@ -104,7 +88,7 @@ object SubtitleSanitizer {
 
         if (cleaned.isEmpty()) return null
 
-        // Must contain at least 2 meaningful alphabetic/ideographic letters (supports Latin, Bengali, CJK, Hindi, Arabic, etc.)
+        // Must contain at least 2 meaningful alphabetic/ideographic letters (preserves "No", "Ok", "Go", "Hi", "Why", "Yes", "Wait")
         val letterCount = cleaned.count { Character.isLetter(it) }
         if (letterCount < 2) return null
 
@@ -115,11 +99,6 @@ object SubtitleSanitizer {
             .trim()
 
         if (lowerNormalized.isEmpty()) return null
-
-        // Drop standalone filler sounds ("uh", "um", "ah", "hmm", "oh", etc.)
-        if (lowerNormalized in STANDALONE_FILLERS) {
-            return null
-        }
 
         // Drop known Whisper YouTube/outro/credits hallucination phrases
         if (HALLUCINATION_PHRASES.any { phrase -> lowerNormalized.contains(phrase) }) {
@@ -139,7 +118,7 @@ object SubtitleSanitizer {
             return null
         }
 
-        // Drop repeated-word / repeated-phrase hallucination loops
+        // Drop 3x repeated-word / repeated-phrase hallucination loops
         val tokens = WORD_TOKEN_REGEX.findAll(lowerNormalized).map { it.value }.toList()
         if (hasRepetitionLoop(tokens)) {
             return null
@@ -172,14 +151,6 @@ object SubtitleSanitizer {
                 ) {
                     return true
                 }
-            }
-        }
-
-        // 3. Single token dominating >= 75% of a 4+ word segment (e.g., "oh, oh, oh, oh!")
-        if (tokens.size >= 4) {
-            val maxFreq = tokens.groupingBy { it }.eachCount().values.maxOrNull() ?: 0
-            if (maxFreq * 4 >= tokens.size * 3) {
-                return true
             }
         }
 

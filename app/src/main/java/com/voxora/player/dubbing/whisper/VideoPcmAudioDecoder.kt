@@ -386,6 +386,7 @@ class VideoPcmAudioDecoder(private val context: Context) {
 
                 val accumulator = FloatArray(maxSamples)
                 var accumulatedCount = 0
+                var firstEmittedSampleMs = -1L
                 val bufferInfo = MediaCodec.BufferInfo()
                 var sawInputEos = false
                 var sawOutputEos = false
@@ -459,6 +460,10 @@ class VideoPcmAudioDecoder(private val context: Context) {
                                         val spaceLeft = maxSamples - accumulatedCount
                                         val copyCount = minOf(available, spaceLeft)
                                         if (copyCount > 0) {
+                                            if (firstEmittedSampleMs < 0L) {
+                                                firstEmittedSampleMs = frameStartMs +
+                                                    ((skipSamples.toLong() * 1_000L) / PcmResampler.WHISPER_SAMPLE_RATE)
+                                            }
                                             System.arraycopy(resampled, skipSamples, accumulator, accumulatedCount, copyCount)
                                             accumulatedCount += copyCount
                                         }
@@ -483,9 +488,10 @@ class VideoPcmAudioDecoder(private val context: Context) {
                     accumulator.copyOf(accumulatedCount)
                 }
                 val actualDurationMs = (samplesOut.size.toLong() * 1_000L) / PcmResampler.WHISPER_SAMPLE_RATE
+                val exactAnchorStartMs = if (firstEmittedSampleMs >= 0L) firstEmittedSampleMs else safeStartMs
                 PcmAudioChunk(
                     chunkIndex = chunkIndex,
-                    startTimeMs = safeStartMs,
+                    startTimeMs = exactAnchorStartMs,
                     durationMs = actualDurationMs,
                     samples16kMono = samplesOut
                 )

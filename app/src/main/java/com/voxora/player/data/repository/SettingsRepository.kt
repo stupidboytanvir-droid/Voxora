@@ -71,7 +71,7 @@ class SettingsRepository(private val context: Context) {
             autoPlayNext = prefs[Keys.AUTO_PLAY_NEXT] ?: true,
             defaultAspectRatio = prefs[Keys.DEFAULT_ASPECT_RATIO]?.let { name ->
                 AspectRatioMode.entries.firstOrNull { it.name == name }
-            } ?: AspectRatioMode.FIT,
+            } ?: AspectRatioMode.FILL,
             brightnessGestureEnabled = prefs[Keys.BRIGHTNESS_GESTURE] ?: true,
             volumeGestureEnabled = prefs[Keys.VOLUME_GESTURE] ?: true,
             doubleTapSeekSeconds = prefs[Keys.DOUBLE_TAP_SEEK_SEC] ?: 10,

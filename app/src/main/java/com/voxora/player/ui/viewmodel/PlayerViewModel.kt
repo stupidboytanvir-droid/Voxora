@@ -71,7 +71,7 @@ data class PlayerScreenUiState(
     val currentVideo: VideoItem? = null,
     val videoTitle: String = "",
     val isNetworkStream: Boolean = false,
-    val aspectRatioMode: AspectRatioMode = AspectRatioMode.FIT,
+    val aspectRatioMode: AspectRatioMode = AspectRatioMode.FILL,
     val isLocked: Boolean = false,
     val isKidsLockActive: Boolean = false,
     val isFullScreen: Boolean = true,
@@ -912,6 +912,12 @@ class PlayerViewModel(
 
     fun setAspectRatio(mode: AspectRatioMode) {
         _uiState.value = _uiState.value.copy(aspectRatioMode = mode)
+    }
+
+    fun cycleAspectRatio(): AspectRatioMode {
+        val next = _uiState.value.aspectRatioMode.nextCycleMode()
+        _uiState.value = _uiState.value.copy(aspectRatioMode = next)
+        return next
     }
 
     fun toggleScreenLock() {

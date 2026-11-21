@@ -311,6 +311,7 @@ sealed interface GestureHudState {
     data class Volume(val fraction: Float, val percent: Int) : GestureHudState
     data class SeekPreview(val targetMs: Long, val deltaMs: Long, val durationMs: Long) : GestureHudState
     data class DoubleTapSeek(val isForward: Boolean, val seconds: Int) : GestureHudState
+    data class AspectRatio(val label: String) : GestureHudState
 }
 
 @Composable
@@ -387,6 +388,32 @@ fun BoxScope.GestureHudOverlay(
                         )
                         Text(
                             text = if (state.isForward) "+${state.seconds}s" else "-${state.seconds}s",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+            is GestureHudState.AspectRatio -> {
+                Surface(
+                    color = VoxoraGlassDark,
+                    shape = RoundedCornerShape(24.dp),
+                    border = BorderStroke(0.9.dp, VoxoraAmber.copy(alpha = 0.7f)),
+                    modifier = Modifier.testTag("player_aspect_indicator_pill")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.AspectRatio,
+                            contentDescription = null,
+                            tint = VoxoraAmberBright,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = state.label,
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             color = Color.White
                         )
@@ -841,12 +868,22 @@ fun PlayerControlsOverlay(
                     }
                 }
 
-                if (resumedFromMs != null) {
+                val rememberedResumeMs = remember(resumedFromMs) { resumedFromMs }
+                var lastNonNullResumeMs by remember { mutableStateOf(resumedFromMs ?: 0L) }
+                if (rememberedResumeMs != null) {
+                    lastNonNullResumeMs = rememberedResumeMs
+                }
+                AnimatedVisibility(
+                    visible = resumedFromMs != null,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                ) {
                     Surface(
                         color = VoxoraGlassDark,
                         shape = RoundedCornerShape(16.dp),
                         border = BorderStroke(0.8.dp, VoxoraAmber.copy(alpha = 0.45f)),
-                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                        modifier = Modifier.testTag("player_resume_banner")
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 3.dp),
@@ -854,7 +891,7 @@ fun PlayerControlsOverlay(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
-                                text = "Resumed from ${FormatUtils.formatDuration(resumedFromMs)}",
+                                text = "Resumed from ${FormatUtils.formatDuration(lastNonNullResumeMs)}",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = Color.White
                             )
@@ -1104,7 +1141,7 @@ fun PlayerControlsOverlay(
                                 icon = Icons.Rounded.AspectRatio,
                                 label = aspectRatioMode.label,
                                 contentDescription = stringResource(R.string.cd_aspect_ratio),
-                                isActive = aspectRatioMode != AspectRatioMode.FIT,
+                                isActive = aspectRatioMode != AspectRatioMode.FILL,
                                 onClick = { onUserInteraction(); onOpenAspectRatio() },
                                 testTag = "player_aspect_button"
                             )

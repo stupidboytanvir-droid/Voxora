@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://stupidboytanvir-droid.github.io/Voxora/sitemap.xml

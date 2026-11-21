@@ -456,17 +456,12 @@ class AutoSubtitleManager(
                     setupProgressPercent = 100,
                     setupStepLabel = "",
                     isTargetLanguagePackReady = true,
-                    statusMessage = if (isPlaybackActive) {
-                        "Fast-Start Subtitles ($modeLabel) · Syncing speech..."
-                    } else {
-                        "Auto Subtitles Ready ($modeLabel) · Play video to start"
-                    },
+                    statusMessage = "Fast-Start Subtitles ($modeLabel) · Syncing speech...",
                     errorMessage = null
                 )
 
-                if (isPlaybackActive) {
-                    scheduleRollingGeneration(lastPlaybackPositionMs)
-                }
+                // Immediately kick off the fast 6-second first chunk right at currentPosMs
+                scheduleRollingGeneration(lastPlaybackPositionMs, forceFirstChunkWhilePaused = !isPlaybackActive)
             } catch (ce: CancellationException) {
                 _state.value = _state.value.copy(isSetupRunning = false, setupStepLabel = "")
                 throw ce
@@ -556,22 +551,31 @@ class AutoSubtitleManager(
         }
     }
 
-    private fun scheduleRollingGeneration(anchorPositionMs: Long) {
+    private fun scheduleRollingGeneration(
+        anchorPositionMs: Long,
+        forceFirstChunkWhilePaused: Boolean = false
+    ) {
         val uri = activeMediaUri
-        if (uri.isBlank() || !_state.value.isEnabled || !isPlaybackActive) return
+        if (uri.isBlank() || !_state.value.isEnabled) return
+        if (!isPlaybackActive && !forceFirstChunkWhilePaused) return
         if (workerJob?.isActive == true) return
 
+        lastPlaybackPositionMs = anchorPositionMs.coerceAtLeast(0L)
         workerJob = scope.launch {
             try {
-                while (_state.value.isEnabled && isPlaybackActive) {
+                var didSinglePausedFastStart = false
+                while (_state.value.isEnabled && (isPlaybackActive || (forceFirstChunkWhilePaused && !didSinglePausedFastStart))) {
                     ensureActive()
-                    val pos = lastPlaybackPositionMs.coerceAtLeast(anchorPositionMs)
+                    val pos = lastPlaybackPositionMs
                     val nextWindow = synchronized(cuesLock) {
                         planNextWindow(pos, coveredIntervals, activeMediaDurationMs)
                     } ?: break
 
                     val (windowStartMs, windowDurationMs) = nextWindow
                     processSingleWindow(uri, windowStartMs, windowDurationMs)
+                    if (!isPlaybackActive) {
+                        didSinglePausedFastStart = true
+                    }
                 }
             } catch (ce: CancellationException) {
                 throw ce
@@ -715,27 +719,31 @@ class AutoSubtitleManager(
         val generatedPrimary = mutableListOf<SubtitleCue>()
         val generatedSecondary = mutableListOf<SubtitleCue>()
 
-        // Stage 3: Online Neural Translation Primary + Offline ML Kit Fallback
-        for (block in mergedSentences) {
-            coroutineContext.ensureActive()
-            val translatedPrimary = translateSentenceWithNeuralPrimary(
-                text = block.mergedText,
-                targetCode = targetCode,
-                mlKitFallback = primaryFallbackTranslator
-            )
-            generatedPrimary.addAll(mapTranslatedSentenceToCues(block, translatedPrimary))
+        // Stage 3: Single-Request Batched Online Neural Translation Primary + Offline ML Kit Fallback
+        val translatedPrimaryList = translateBlocksBatched(
+            blocks = mergedSentences,
+            targetCode = targetCode,
+            mlKitFallback = primaryFallbackTranslator
+        )
+        val translatedSecondaryList = if (dualEnabled) {
+            if (secondaryCode.equals(targetCode, ignoreCase = true)) {
+                translatedPrimaryList
+            } else {
+                translateBlocksBatched(
+                    blocks = mergedSentences,
+                    targetCode = secondaryCode,
+                    mlKitFallback = secondaryFallbackTranslator
+                )
+            }
+        } else {
+            emptyList()
+        }
 
-            if (dualEnabled) {
-                val translatedSecondary = if (secondaryCode.equals(targetCode, ignoreCase = true)) {
-                    translatedPrimary
-                } else {
-                    translateSentenceWithNeuralPrimary(
-                        text = block.mergedText,
-                        targetCode = secondaryCode,
-                        mlKitFallback = secondaryFallbackTranslator
-                    )
-                }
-                generatedSecondary.addAll(mapTranslatedSentenceToCues(block, translatedSecondary))
+        for (i in mergedSentences.indices) {
+            val block = mergedSentences[i]
+            generatedPrimary.addAll(mapTranslatedSentenceToCues(block, translatedPrimaryList[i]))
+            if (dualEnabled && i < translatedSecondaryList.size) {
+                generatedSecondary.addAll(mapTranslatedSentenceToCues(block, translatedSecondaryList[i]))
             }
         }
 
@@ -763,12 +771,49 @@ class AutoSubtitleManager(
             recordCoveredInterval(windowStartMs..actualEndMs)
         }
 
+        // Immediately publish translated chunk to UI state flow
         val modeLabel = if (dualEnabled) "$targetLabel + ${snapshot.secondaryLanguageLabel}" else targetLabel
         _state.value = _state.value.copy(
             completedChunksCount = primaryCuesByWindow.size,
             generatedCueCount = sortedPrimaryCues.size,
             statusMessage = "Live Auto Subtitles ($modeLabel) · ${sortedPrimaryCues.size} lines synced"
         )
+    }
+
+    private suspend fun translateBlocksBatched(
+        blocks: List<MergedSentenceBlock>,
+        targetCode: String,
+        mlKitFallback: Translator?
+    ): List<String> {
+        if (blocks.isEmpty()) return emptyList()
+        if (targetCode == AutoSubtitleLanguageCatalog.CODE_ORIGINAL ||
+            targetCode.equals(AutoSubtitleLanguageCatalog.CODE_ENGLISH, ignoreCase = true)
+        ) {
+            return blocks.map { it.mergedText }
+        }
+
+        // 1. Single-request batched Online Neural Translation (2.5s timeout + memory cache)
+        val rawLines = blocks.map { it.mergedText }
+        val batchResults = neuralTranslator.translateBatch(rawLines, targetCode)
+
+        // 2. Fallback per-line ONLY if batch split mismatched or timed out
+        val resolved = ArrayList<String>(blocks.size)
+        for (i in blocks.indices) {
+            coroutineContext.ensureActive()
+            val batchHit = batchResults.getOrNull(i)
+            if (!batchHit.isNullOrBlank()) {
+                resolved.add(batchHit)
+            } else {
+                resolved.add(
+                    translateSentenceWithNeuralPrimary(
+                        text = rawLines[i],
+                        targetCode = targetCode,
+                        mlKitFallback = mlKitFallback
+                    )
+                )
+            }
+        }
+        return resolved
     }
 
     private suspend fun translateSentenceWithNeuralPrimary(
@@ -978,8 +1023,8 @@ class AutoSubtitleManager(
     }
 
     companion object {
-        const val FAST_START_CHUNK_DURATION_MS: Long = 7_000L
-        const val ROLLING_CHUNK_DURATION_MS: Long = 20_000L
+        const val FAST_START_CHUNK_DURATION_MS: Long = 6_000L
+        const val ROLLING_CHUNK_DURATION_MS: Long = 18_000L
         const val CHUNK_DURATION_MS: Long = ROLLING_CHUNK_DURATION_MS
         const val SAMPLE_RATE_HZ: Int = 16_000
         private const val MAX_MERGED_SENTENCE_WORDS: Int = 18

@@ -199,6 +199,16 @@ class PlayerViewModel(
                 }
         }
 
+        // Immediately publish newly translated chunks onto the video overlay with zero polling lag
+        viewModelScope.launch {
+            autoSubtitleState
+                .map { Triple(it.isEnabled, it.completedChunksCount, it.generatedCueCount) }
+                .distinctUntilChanged()
+                .collect {
+                    refreshSubtitleCueNow()
+                }
+        }
+
         // Handle Sleep Timer "End of Video" and 5-second cancelable "Up Next" auto-play
         viewModelScope.launch {
             playbackState

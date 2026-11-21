@@ -49,6 +49,28 @@ data class WhisperTranscriptionState(
  * - Processes local videos in 30-second 16 kHz mono PCM chunks on background coroutines so
  *   the UI thread and Media3 video playback remain smooth.
  */
+/**
+ * Process-wide singleton holder for the initialized native `whisper_context*` pointer.
+ * Keeps `ggml-base-q5_1.bin` warm in memory across CC toggles, seeks, and player sessions so
+ * enabling subtitles never pays a disk reload penalty.
+ */
+object WhisperNativeContextHolder {
+    val mutex = Mutex()
+
+    @Volatile
+    var contextPtr: Long = 0L
+
+    @Volatile
+    var loadedModel: InstalledWhisperModel? = null
+
+    @Volatile
+    var nativeSystemInfo: String = "whisper.cpp v1.9.5 CPU"
+
+    fun isLoadedForPath(absolutePath: String): Boolean {
+        return contextPtr != 0L && loadedModel?.absolutePath == absolutePath
+    }
+}
+
 class WhisperCppSpeechRecognitionEngine(
     context: Context,
     private val modelManager: WhisperModelManager = WhisperModelManager(context),
@@ -56,18 +78,29 @@ class WhisperCppSpeechRecognitionEngine(
 ) : SpeechRecognitionEngine {
 
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val nativeContextMutex = Mutex()
+    private val nativeContextMutex: Mutex
+        get() = WhisperNativeContextHolder.mutex
 
-    @Volatile
-    private var nativeContextPtr: Long = 0L
+    private var nativeContextPtr: Long
+        get() = WhisperNativeContextHolder.contextPtr
+        set(value) {
+            WhisperNativeContextHolder.contextPtr = value
+        }
 
-    @Volatile
-    private var loadedModelInfo: InstalledWhisperModel? = null
+    private var loadedModelInfo: InstalledWhisperModel?
+        get() = WhisperNativeContextHolder.loadedModel
+        set(value) {
+            WhisperNativeContextHolder.loadedModel = value
+        }
 
     private var activeModelJob: Job? = null
     private var activeTranscriptionJob: Job? = null
 
-    private val _modelStatus = MutableStateFlow<WhisperModelStatus>(WhisperModelStatus.NotInstalled)
+    private val _modelStatus = MutableStateFlow<WhisperModelStatus>(
+        WhisperNativeContextHolder.loadedModel?.takeIf { WhisperNativeContextHolder.contextPtr != 0L }?.let {
+            WhisperModelStatus.LoadedReady(it, WhisperNativeContextHolder.nativeSystemInfo)
+        } ?: WhisperModelStatus.NotInstalled
+    )
     val modelStatus: StateFlow<WhisperModelStatus> = _modelStatus.asStateFlow()
 
     private val _transcriptionState = MutableStateFlow(WhisperTranscriptionState())
@@ -92,7 +125,7 @@ class WhisperCppSpeechRecognitionEngine(
     fun isModelInstalledOnDisk(): Boolean = isModelInstalled || modelManager.hasInstalledModelOnDisk()
 
     val isModelLoadedAndReady: Boolean
-        get() = nativeContextPtr != 0L && _modelStatus.value is WhisperModelStatus.LoadedReady
+        get() = nativeContextPtr != 0L && loadedModelInfo != null
 
     init {
         engineScope.launch {
@@ -438,9 +471,25 @@ class WhisperCppSpeechRecognitionEngine(
             return
         }
 
+        // Fast-path: reuse already-loaded native context from WhisperNativeContextHolder (0ms)
+        if (WhisperNativeContextHolder.isLoadedForPath(model.absolutePath)) {
+            _modelStatus.value = WhisperModelStatus.LoadedReady(
+                model = model,
+                nativeSystemInfo = WhisperNativeContextHolder.nativeSystemInfo
+            )
+            return
+        }
+
         _modelStatus.value = WhisperModelStatus.Loading(model)
 
         nativeContextMutex.withLock {
+            if (WhisperNativeContextHolder.isLoadedForPath(model.absolutePath)) {
+                _modelStatus.value = WhisperModelStatus.LoadedReady(
+                    model = model,
+                    nativeSystemInfo = WhisperNativeContextHolder.nativeSystemInfo
+                )
+                return@withLock
+            }
             withContext(Dispatchers.Default) {
                 if (nativeContextPtr != 0L) {
                     WhisperNativeBridge.nativeFreeContext(nativeContextPtr)
@@ -468,6 +517,7 @@ class WhisperCppSpeechRecognitionEngine(
                     loadedModelInfo = model
                     val sysInfo = runCatching { WhisperNativeBridge.nativeGetSystemInfo() }
                         .getOrDefault("whisper.cpp v1.9.5 CPU")
+                    WhisperNativeContextHolder.nativeSystemInfo = sysInfo
                     _modelStatus.value = WhisperModelStatus.LoadedReady(
                         model = model,
                         nativeSystemInfo = sysInfo

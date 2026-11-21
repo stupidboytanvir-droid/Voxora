@@ -213,6 +213,7 @@ Java_com_voxora_player_dubbing_whisper_WhisperNativeBridge_nativeTranscribeChunk
     }
 
     struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+    params.strategy = WHISPER_SAMPLING_GREEDY;
     params.greedy.best_of = 1;
     params.beam_search.beam_size = 1;
     params.temperature = 0.0f;
@@ -226,7 +227,7 @@ Java_com_voxora_player_dubbing_whisper_WhisperNativeBridge_nativeTranscribeChunk
     params.print_special = false;
     params.translate = translate_to_english && (whisper_is_multilingual(ctx) != 0);
     params.language = (whisper_is_multilingual(ctx) != 0) ? lang.c_str() : "en";
-    params.n_threads = (num_threads > 0) ? (num_threads > 4 ? 4 : num_threads) : 2;
+    params.n_threads = (num_threads > 0) ? (num_threads > 4 ? 4 : num_threads) : 4;
     params.offset_ms = 0;
     params.no_context = true;
     params.single_segment = false;

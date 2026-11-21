@@ -340,8 +340,10 @@ class VideoPcmAudioDecoder(private val context: Context) {
     ): Result<PcmAudioChunk> = withContext(Dispatchers.IO) {
         runCatching {
             val safeStartMs = startMs.coerceAtLeast(0L)
-            val safeWindowMs = windowDurationMs.coerceIn(5_000L, 60_000L)
+            val safeWindowMs = windowDurationMs.coerceIn(2_000L, 60_000L)
             val endMs = safeStartMs + safeWindowMs
+            val chunkStartUs = safeStartMs * 1_000L
+            val chunkEndUs = endMs * 1_000L
             val maxSamples = ((safeWindowMs * PcmResampler.WHISPER_SAMPLE_RATE) / 1_000L).toInt()
                 .coerceAtLeast(PcmResampler.WHISPER_SAMPLE_RATE)
 
@@ -376,9 +378,8 @@ class VideoPcmAudioDecoder(private val context: Context) {
                 }.getOrDefault(2)
 
                 extractor.selectTrack(audioTrackIndex)
-                if (safeStartMs > 0L) {
-                    extractor.seekTo(safeStartMs * 1_000L, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-                }
+                // Always jump directly to the sync point at/before chunkStartUs so we NEVER scan linearly from 00:00
+                extractor.seekTo(chunkStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
 
                 codec = MediaCodec.createDecoderByType(mimeType)
                 codec.configure(inputFormat, null, null, 0)
@@ -391,20 +392,19 @@ class VideoPcmAudioDecoder(private val context: Context) {
                 var sawInputEos = false
                 var sawOutputEos = false
                 var scratchBytes = ByteArray(64 * 1024)
-                val endUs = endMs * 1_000L
 
-                while (!sawOutputEos && accumulatedCount < maxSamples) {
+                decodeLoop@ while (!sawOutputEos && accumulatedCount < maxSamples) {
                     coroutineContext.ensureActive()
 
                     if (!sawInputEos) {
-                        val inIndex = codec.dequeueInputBuffer(10_000L)
+                        val inIndex = codec.dequeueInputBuffer(2_000L)
                         if (inIndex >= 0) {
                             val inputBuffer = codec.getInputBuffer(inIndex)
                             if (inputBuffer != null) {
                                 val sampleTimeUs = extractor.sampleTime
                                 val sampleSize = extractor.readSampleData(inputBuffer, 0)
-                                // Stop feeding input once we are safely past the end of the 30s window
-                                if (sampleSize < 0 || (sampleTimeUs >= 0L && sampleTimeUs > endUs + 500_000L)) {
+                                // Stop feeding compressed frames as soon as we pass chunkEndUs
+                                if (sampleSize < 0 || (sampleTimeUs >= 0L && sampleTimeUs > chunkEndUs + 150_000L)) {
                                     codec.queueInputBuffer(
                                         inIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM
                                     )
@@ -417,7 +417,7 @@ class VideoPcmAudioDecoder(private val context: Context) {
                         }
                     }
 
-                    val outIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000L)
+                    val outIndex = codec.dequeueOutputBuffer(bufferInfo, 2_000L)
                     when {
                         outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                             val outFmt = codec.outputFormat
@@ -429,29 +429,42 @@ class VideoPcmAudioDecoder(private val context: Context) {
                             }.getOrDefault(currentChannels)
                         }
                         outIndex >= 0 -> {
+                            val ptsUs = bufferInfo.presentationTimeUs
+                            if (ptsUs >= chunkEndUs) {
+                                // Hard early exit the moment decoded audio reaches chunkEndUs
+                                codec.releaseOutputBuffer(outIndex, false)
+                                break@decodeLoop
+                            }
+
                             val outBuffer = codec.getOutputBuffer(outIndex)
                             if (outBuffer != null && bufferInfo.size > 0) {
-                                val frameStartMs = (bufferInfo.presentationTimeUs / 1_000L).coerceAtLeast(0L)
-                                if (scratchBytes.size < bufferInfo.size) {
-                                    scratchBytes = ByteArray(bufferInfo.size)
+                                val bytesPerFrame = currentChannels.coerceAtLeast(1) * 2
+                                val srcFrames = bufferInfo.size / bytesPerFrame
+                                val frameDurUs = if (srcFrames > 0 && currentSampleRate > 0) {
+                                    (srcFrames.toLong() * 1_000_000L) / currentSampleRate.toLong()
+                                } else {
+                                    0L
                                 }
-                                outBuffer.position(bufferInfo.offset)
-                                outBuffer.limit(bufferInfo.offset + bufferInfo.size)
-                                outBuffer.get(scratchBytes, 0, bufferInfo.size)
+                                val frameEndUs = ptsUs + frameDurUs
 
-                                val resampled = PcmResampler.pcm16LeTo16kMonoFloat(
-                                    pcmBytes = scratchBytes,
-                                    byteLength = bufferInfo.size,
-                                    sourceSampleRate = currentSampleRate,
-                                    channelCount = currentChannels
-                                )
+                                // Fast-skip pre-roll PCM frames strictly before chunkStartUs with ZERO copy/resampling
+                                if (frameEndUs > chunkStartUs) {
+                                    val frameStartMs = (ptsUs / 1_000L).coerceAtLeast(0L)
+                                    if (scratchBytes.size < bufferInfo.size) {
+                                        scratchBytes = ByteArray(bufferInfo.size)
+                                    }
+                                    outBuffer.position(bufferInfo.offset)
+                                    outBuffer.limit(bufferInfo.offset + bufferInfo.size)
+                                    outBuffer.get(scratchBytes, 0, bufferInfo.size)
 
-                                if (resampled.isNotEmpty()) {
-                                    val frameDurMs = (resampled.size.toLong() * 1_000L) / PcmResampler.WHISPER_SAMPLE_RATE
-                                    val frameEndMs = frameStartMs + frameDurMs
+                                    val resampled = PcmResampler.pcm16LeTo16kMonoFloat(
+                                        pcmBytes = scratchBytes,
+                                        byteLength = bufferInfo.size,
+                                        sourceSampleRate = currentSampleRate,
+                                        channelCount = currentChannels
+                                    )
 
-                                    // Discard pre-roll frames prior to safeStartMs after SEEK_TO_PREVIOUS_SYNC
-                                    if (frameEndMs > safeStartMs && frameStartMs < endMs) {
+                                    if (resampled.isNotEmpty()) {
                                         val skipMs = (safeStartMs - frameStartMs).coerceAtLeast(0L)
                                         val skipSamples = ((skipMs * PcmResampler.WHISPER_SAMPLE_RATE) / 1_000L)
                                             .toInt()
@@ -467,9 +480,6 @@ class VideoPcmAudioDecoder(private val context: Context) {
                                             System.arraycopy(resampled, skipSamples, accumulator, accumulatedCount, copyCount)
                                             accumulatedCount += copyCount
                                         }
-                                    }
-                                    if (frameStartMs >= endMs) {
-                                        sawOutputEos = true
                                     }
                                 }
                             }

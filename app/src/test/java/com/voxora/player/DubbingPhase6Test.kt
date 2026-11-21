@@ -387,9 +387,9 @@ class DubbingPhase6Test {
 
     @Test
     fun v230_autoSubtitlesCatalogFrameSyncThreadCapAndPlayerModels() {
-        // Battery-optimized Whisper CPU thread cap (max 2 threads)
+        // Fast mobile Whisper CPU thread cap (2..4 threads for ~2x faster inference)
         val threads = WhisperNativeBridge.recommendedThreadCount()
-        assertTrue("Whisper thread count must be capped to 1..2, got $threads", threads in 1..2)
+        assertTrue("Whisper thread count must be in 2..4, got $threads", threads in 2..4)
 
         // 59+ ML Kit languages + Original Spoken Language
         val languages = AutoSubtitleLanguageCatalog.allLanguages
@@ -631,30 +631,30 @@ class DubbingPhase6Test {
 
     @Test
     fun v260_fastStartChunking_sentenceMerging_neuralTranslatorAndMusicLibraryHelpers() {
-        // 1. Progressive Fast-Start Chunking: 7s first chunk on enable/seek, then 20s rolling look-ahead
-        assertEquals(7_000L, AutoSubtitleManager.FAST_START_CHUNK_DURATION_MS)
-        assertEquals(20_000L, AutoSubtitleManager.ROLLING_CHUNK_DURATION_MS)
+        // 1. Progressive Fast-Start Chunking: 6s first chunk on enable/seek, then 18s rolling look-ahead
+        assertEquals(6_000L, AutoSubtitleManager.FAST_START_CHUNK_DURATION_MS)
+        assertEquals(18_000L, AutoSubtitleManager.ROLLING_CHUNK_DURATION_MS)
 
         val firstWin = AutoSubtitleManager.planNextWindow(
             currentPositionMs = 0L,
             covered = emptyList(),
             durationMs = 120_000L
         )
-        assertEquals(0L to 7_000L, firstWin)
+        assertEquals(0L to 6_000L, firstWin)
 
         val rollingWin = AutoSubtitleManager.planNextWindow(
             currentPositionMs = 1_500L,
-            covered = listOf(0L..7_000L),
+            covered = listOf(0L..6_000L),
             durationMs = 120_000L
         )
-        assertEquals(7_000L to 20_000L, rollingWin)
+        assertEquals(6_000L to 18_000L, rollingWin)
 
         val seekFastWin = AutoSubtitleManager.planNextWindow(
             currentPositionMs = 90_000L,
-            covered = listOf(0L..27_000L),
+            covered = listOf(0L..24_000L),
             durationMs = 120_000L
         )
-        assertEquals(90_000L to 7_000L, seekFastWin)
+        assertEquals(90_000L to 6_000L, seekFastWin)
 
         // 2. Smart Sentence Merging before translation (<600ms gap, non-terminated, <=18 words)
         val segments = listOf(
@@ -787,5 +787,41 @@ class DubbingPhase6Test {
         assertTrue(json.contains("\"app_version\":\"2.6.1\""))
         assertTrue(json.contains("\"device\":\"Google Pixel 9\""))
         assertTrue(json.contains("\"android\":\"Android 15\""))
+    }
+
+    @Test
+    fun v262_ultraFastStartup_6sSeekAtMinute50_andSingleRequestBatchedTranslation() {
+        // 1. Seek to minute 50 of a 2-hour movie plans ONLY a 6-second fast-start slice
+        val minute50Ms = 50L * 60L * 1_000L
+        val twoHoursMs = 120L * 60L * 1_000L
+        val winAt50 = AutoSubtitleManager.planNextWindow(
+            currentPositionMs = minute50Ms,
+            covered = emptyList(),
+            durationMs = twoHoursMs
+        )
+        assertEquals(minute50Ms to 6_000L, winAt50)
+
+        // Next rolling look-ahead window immediately after is 18 seconds
+        val nextRolling = AutoSubtitleManager.planNextWindow(
+            currentPositionMs = minute50Ms + 2_000L,
+            covered = listOf(minute50Ms..(minute50Ms + 6_000L)),
+            durationMs = twoHoursMs
+        )
+        assertEquals((minute50Ms + 6_000L) to 18_000L, nextRolling)
+
+        // 2. Single-request batched translation delimiter parsing preserves newlines & splits cleanly
+        val batchJson = """[[["হ্যালো বন্ধু।\n|||\n","Hello friend.\n|||\n",null,null,10],["তুমি কেমন আছো?\n|||\n","How are you?\n|||\n",null,null,10],["চলো যাই।","Let's go.",null,null,10]],null,"en"]"""
+        val rawParsed = com.voxora.player.ai.subtitles.NeuralSubtitleTranslator
+            .parseGoogleTranslateResponsePreserveNewlines(batchJson)
+        assertNotNull(rawParsed)
+        val split = com.voxora.player.ai.subtitles.NeuralSubtitleTranslator
+            .splitBatchedTranslation(rawParsed!!, expectedCount = 3)
+        assertEquals(listOf("হ্যালো বন্ধু।", "তুমি কেমন আছো?", "চলো যাই।"), split)
+
+        // Mismatched split count returns null so caller falls back cleanly
+        assertNull(
+            com.voxora.player.ai.subtitles.NeuralSubtitleTranslator
+                .splitBatchedTranslation("Only one line", expectedCount = 2)
+        )
     }
 }

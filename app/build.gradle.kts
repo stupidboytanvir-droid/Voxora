@@ -25,8 +25,8 @@ android {
     applicationId = "com.voxora.player"
     minSdk = 24
     targetSdk = 36
-    versionCode = 22
-    versionName = "2.6.1"
+    versionCode = 23
+    versionName = "2.6.2"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

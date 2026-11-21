@@ -178,13 +178,13 @@ class DubbingPhase6Test {
     }
 
     @Test
-    fun v210_fastMovieModeDefaultsOn_andWhisperDefaultIsMultilingualTinyQ5() {
+    fun v210_fastMovieModeDefaultsOn_andWhisperDefaultIsMultilingualBaseQ5() {
         val defaultConfig = DubbingSessionConfig()
         assertTrue("Fast Movie Mode must default to ON in v2.1.0", defaultConfig.fastMovieModeEnabled)
-        assertEquals("ggml-tiny-q5_1.bin", WhisperModelCatalog.DEFAULT.fileName)
+        assertEquals("ggml-base-q5_1.bin", WhisperModelCatalog.DEFAULT.fileName)
         assertTrue(
-            "tiny-q5_1 should be compact (~31 MB)",
-            WhisperModelCatalog.DEFAULT.expectedSizeBytes in 25_000_000L..40_000_000L
+            "base-q5_1 should be ~57 MB (> 40 MB)",
+            WhisperModelCatalog.DEFAULT.expectedSizeBytes in 45_000_000L..70_000_000L
         )
     }
 
@@ -533,5 +533,47 @@ class DubbingPhase6Test {
             guardedStartMs >= 8_000L
         )
         assertTrue("Expected end near 10000ms (got $guardedEndMs)", guardedEndMs <= 10_000L)
+    }
+
+    @Test
+    fun v251_subtitleSanitizerAndAudioLanguageSync() {
+        // 1. SubtitleSanitizer drops Whisper hallucinations, music notes, fillers, and loops
+        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("[Music]"))
+        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("(Music playing)"))
+        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("♪ La la la ♪"))
+        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("Thank you for watching!"))
+        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("Please subscribe to my channel"))
+        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("Subscribe"))
+        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("you you you"))
+        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("I am I am I am"))
+        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("Uh..."))
+        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("Hmm"))
+        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("..."))
+        assertNull(com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("A."))
+
+        // 2. Real dialogue passes cleanly with whitespace and tags normalized
+        assertEquals(
+            "We have to leave before sunrise.",
+            com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("  [Music]  We have to leave before sunrise.  ")
+        )
+        assertEquals(
+            "আমি এখনই আসছি।",
+            com.voxora.player.ai.subtitles.SubtitleSanitizer.sanitize("  আমি এখনই আসছি। ")
+        )
+
+        // 3. Audio track ISO normalization and Whisper language parameter routing
+        assertEquals("en", VoxoraPlayerEngine.normalizeWhisperLanguageCode("eng"))
+        assertEquals("ko", VoxoraPlayerEngine.normalizeWhisperLanguageCode("kor"))
+        assertEquals("zh", VoxoraPlayerEngine.normalizeWhisperLanguageCode("zho"))
+        assertEquals("hi", VoxoraPlayerEngine.normalizeWhisperLanguageCode("hin"))
+        assertEquals("ja", VoxoraPlayerEngine.normalizeWhisperLanguageCode("jpn"))
+        assertEquals("en", VoxoraPlayerEngine.normalizeWhisperLanguageCode("en-US"))
+        assertNull(VoxoraPlayerEngine.normalizeWhisperLanguageCode("und"))
+        assertNull(VoxoraPlayerEngine.normalizeWhisperLanguageCode(null))
+
+        assertEquals("ko:translate", AutoSubtitleManager.buildWhisperLanguageParam("ko", translateToEnglish = true))
+        assertEquals("ko", AutoSubtitleManager.buildWhisperLanguageParam("ko", translateToEnglish = false))
+        assertEquals("en", AutoSubtitleManager.buildWhisperLanguageParam("en", translateToEnglish = true))
+        assertEquals("auto:translate", AutoSubtitleManager.buildWhisperLanguageParam(null, translateToEnglish = true))
     }
 }

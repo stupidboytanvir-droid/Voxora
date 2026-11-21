@@ -143,6 +143,7 @@ fun PlayerScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
+    val activeExoPlayer by viewModel.playerEngine.activePlayer.collectAsStateWithLifecycle()
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val preferences by viewModel.preferences.collectAsStateWithLifecycle()
@@ -383,7 +384,7 @@ fun PlayerScreen(
 
         // TextureView ensures smooth Compose graphicsLayer zoom, pan, mirror, 90° rotate & RenderEffect filters
         ContentFrame(
-            player = viewModel.playerEngine.exoPlayer,
+            player = activeExoPlayer,
             modifier = videoSurfaceModifier,
             surfaceType = SURFACE_TYPE_TEXTURE_VIEW,
             contentScale = contentScale
@@ -628,7 +629,16 @@ fun PlayerScreen(
             )
         }
 
-        // Draggable, Speech-Synced Dual Subtitles Overlay (15sp default, hidden in silence)
+        val hudActuallyVisible = !isInPipMode &&
+            !uiState.isKidsLockActive &&
+            !uiState.isLocked &&
+            controlsVisible &&
+            !isSettingsDrawerOpen &&
+            uiState.fileMissingError == null &&
+            playbackState.errorMessage == null &&
+            !uiState.isHoldSpeedActive
+
+        // Draggable, Speech-Synced Dual Subtitles Overlay (15sp default, hidden in silence, auto-lifts above HUD)
         DraggableSubtitleOverlay(
             subtitleText = uiState.activeSubtitleText,
             secondarySubtitleText = uiState.activeSecondarySubtitleText,
@@ -639,6 +649,7 @@ fun PlayerScreen(
             secondaryTextColor = preferences.secondarySubtitleTextColor,
             backgroundOpacity = preferences.subtitleBackgroundOpacity,
             isLocked = uiState.isLocked || uiState.isKidsLockActive || isInPipMode,
+            controlsVisible = hudActuallyVisible,
             onVerticalPositionChange = viewModel::setSubtitleVerticalPosition
         )
 
@@ -663,7 +674,7 @@ fun PlayerScreen(
                 // Gesture Feedback HUD
                 GestureHudOverlay(state = gestureHudState)
 
-                // Ultra-Clean VOXORA Cinema Spatial Controls Overlay
+                // Pro-Level VOXORA Cinema Spatial Controls Overlay
                 val autoBadge = if (autoSubtitleState.isEnabled) {
                     if (autoSubtitleState.isSetupRunning) {
                         "AI ${autoSubtitleState.setupProgressPercent}%"
@@ -687,7 +698,12 @@ fun PlayerScreen(
                     isPlaying = playbackState.isPlaying,
                     currentPositionMs = playbackState.currentPositionMs,
                     durationMs = playbackState.durationMs,
+                    playbackSpeed = playbackState.playbackSpeed,
                     aspectRatioMode = uiState.aspectRatioMode,
+                    isSoftwareDecoder = playbackState.isSoftwareDecoder,
+                    volumeBoostPercent = preferences.volumeBoostPercent,
+                    eqPreset = preferences.audioEqPreset,
+                    canEnterPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O,
                     abLoop = uiState.abLoop,
                     bookmarks = bookmarks,
                     zoomScale = zoomScale,
@@ -726,13 +742,29 @@ fun PlayerScreen(
                         viewModel.seekBySeconds(10)
                         registerInteraction()
                     },
+                    onOpenAudioTracks = { activeSheet = ActiveSheet.AUDIO_TRACKS },
+                    onToggleDecoderMode = {
+                        viewModel.toggleDecoderMode()
+                        registerInteraction()
+                    },
+                    onOpenAudioFx = { activeSheet = ActiveSheet.AUDIO_FX },
                     onOpenSubtitles = { activeSheet = ActiveSheet.SUBTITLES },
                     onOpenSettingsDrawer = {
                         controlsVisible = false
                         isSettingsDrawerOpen = true
                         registerInteraction()
                     },
+                    onOpenSpeed = { activeSheet = ActiveSheet.SPEED },
                     onOpenAspectRatio = { activeSheet = ActiveSheet.ASPECT_RATIO },
+                    onEnterPip = {
+                        controlsVisible = false
+                        isSettingsDrawerOpen = false
+                        activeSheet = ActiveSheet.NONE
+                        onEnterPipMode(
+                            playbackState.effectiveVideoWidth.takeIf { it > 0 } ?: playbackState.videoWidth,
+                            playbackState.effectiveVideoHeight.takeIf { it > 0 } ?: playbackState.videoHeight
+                        )
+                    },
                     onOpenABLoop = { activeSheet = ActiveSheet.AB_LOOP },
                     onOpenSleepTimer = { activeSheet = ActiveSheet.SLEEP_TIMER },
                     onResetZoom = {

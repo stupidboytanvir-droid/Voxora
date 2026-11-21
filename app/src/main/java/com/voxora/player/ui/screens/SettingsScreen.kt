@@ -781,15 +781,15 @@ private fun AiSubtitlesSheetContent(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Whisper Multilingual Engine (ggml-tiny-q5_1)",
+                        text = "Whisper Multilingual Engine (ggml-base-q5_1)",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
                         color = Color.White
                     )
                     Text(
                         text = if (isWhisperInstalled) {
-                            "Installed offline (~31 MB) · Strict VAD speech-sync active"
+                            "Installed offline (~57 MB) · High-accuracy VAD + anti-hallucination active"
                         } else {
-                            "Auto-downloads automatically on first AI Subtitle activation (~31 MB)"
+                            "Auto-downloads automatically on first AI Subtitle activation (~57 MB)"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.White.copy(alpha = 0.7f)

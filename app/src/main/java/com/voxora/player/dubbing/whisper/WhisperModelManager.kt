@@ -70,9 +70,23 @@ sealed interface WhisperModelStatus {
 
 object WhisperModelCatalog {
     /**
-     * Fast quantized Multilingual Whisper Tiny (`ggml-tiny-q5_1.bin`, ~31 MB) from whisper.cpp.
-     * Understands 99+ movie languages (English, Hindi, Korean, Japanese, Spanish, French, etc.)
-     * with ~35 MB RAM footprint for fast on-device live Auto AI Subtitles.
+     * High-accuracy quantized Multilingual Whisper Base (`ggml-base-q5_1.bin`, ~57 MB) from whisper.cpp.
+     * Delivers dramatically stronger speech recognition accuracy across 99+ movie languages
+     * (English, Korean, Chinese, Hindi, Japanese, Spanish, French, etc.) with minimal hallucinations.
+     */
+    val BASE_MULTILINGUAL_Q5_1 = WhisperModelSpec(
+        id = "base-q5_1",
+        displayName = "Whisper Base Multilingual (ggml-base-q5_1 · High Accuracy)",
+        fileName = "ggml-base-q5_1.bin",
+        downloadUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin",
+        expectedSizeBytes = 59_700_000L,
+        expectedSha256 = null,
+        languageLabel = "Multilingual (99+ Languages · High Accuracy Offline)"
+    )
+
+    /**
+     * Legacy quantized Multilingual Whisper Tiny (`ggml-tiny-q5_1.bin`, ~31 MB) retained for
+     * backward compatibility with existing user installations.
      */
     val TINY_MULTILINGUAL_Q5_1 = WhisperModelSpec(
         id = "tiny-q5_1",
@@ -112,9 +126,10 @@ object WhisperModelCatalog {
         languageLabel = "English (Offline)"
     )
 
-    val DEFAULT: WhisperModelSpec = TINY_MULTILINGUAL_Q5_1
+    val DEFAULT: WhisperModelSpec = BASE_MULTILINGUAL_Q5_1
 
     fun matchingOfficialSpec(fileName: String): WhisperModelSpec? = when {
+        fileName.equals(BASE_MULTILINGUAL_Q5_1.fileName, ignoreCase = true) -> BASE_MULTILINGUAL_Q5_1
         fileName.equals(TINY_MULTILINGUAL_Q5_1.fileName, ignoreCase = true) -> TINY_MULTILINGUAL_Q5_1
         fileName.equals(TINY_EN_Q5_1.fileName, ignoreCase = true) -> TINY_EN_Q5_1
         fileName.equals(BASE_EN.fileName, ignoreCase = true) -> BASE_EN
@@ -128,8 +143,14 @@ object WhisperModelCatalog {
  */
 object WhisperModelIntegrityVerifier {
 
-    // Minimum valid size for any real Whisper model (> 25 MB; quantized tiny.en-q5_1 is ~31 MB)
+    // Minimum valid size for legacy tiny Whisper models (> 25 MB)
     const val MIN_REAL_MODEL_BYTES: Long = 25L * 1024L * 1024L
+
+    // Minimum valid size for quantized Whisper Base (`ggml-base-q5_1.bin`, ~57 MB -> must be > 40 MB)
+    const val MIN_BASE_MODEL_BYTES: Long = 40L * 1024L * 1024L
+
+    fun minimumBytesForModel(fileName: String): Long =
+        if (fileName.contains("base", ignoreCase = true)) MIN_BASE_MODEL_BYTES else MIN_REAL_MODEL_BYTES
 
     /**
      * Checks non-HTML/JSON content, > 25 MB size, 4-byte GGML magic header, and computes SHA-256 digest.
@@ -312,7 +333,8 @@ class WhisperModelManager(private val context: Context) {
         val matchedSpec = WhisperModelCatalog.matchingOfficialSpec(candidate.name)
         val verification = WhisperModelIntegrityVerifier.verifyFile(
             file = candidate,
-            expectedSha256 = matchedSpec?.expectedSha256
+            expectedSha256 = matchedSpec?.expectedSha256,
+            minBytes = WhisperModelIntegrityVerifier.minimumBytesForModel(candidate.name)
         )
         if (!verification.isValid) return@withContext null
 
@@ -376,7 +398,8 @@ class WhisperModelManager(private val context: Context) {
 
             val verification = WhisperModelIntegrityVerifier.verifyFile(
                 file = tempFile,
-                expectedSha256 = spec.expectedSha256
+                expectedSha256 = spec.expectedSha256,
+                minBytes = WhisperModelIntegrityVerifier.minimumBytesForModel(spec.fileName)
             )
             if (!verification.isValid) {
                 tempFile.delete()
@@ -389,6 +412,14 @@ class WhisperModelManager(private val context: Context) {
             if (!tempFile.renameTo(targetFile)) {
                 tempFile.copyTo(targetFile, overwrite = true)
                 tempFile.delete()
+            }
+
+            // Reclaim ~31 MB storage from superseded tiny model once upgraded base model is safely installed
+            if (spec.fileName.equals(WhisperModelCatalog.BASE_MULTILINGUAL_Q5_1.fileName, ignoreCase = true)) {
+                val legacyTiny = File(modelsDir, WhisperModelCatalog.TINY_MULTILINGUAL_Q5_1.fileName)
+                if (legacyTiny.exists() && legacyTiny != targetFile) {
+                    runCatching { legacyTiny.delete() }
+                }
             }
 
             InstalledWhisperModel(
@@ -477,6 +508,7 @@ class WhisperModelManager(private val context: Context) {
             }
 
             val matchesOfficial =
+                targetFile.name.equals(WhisperModelCatalog.BASE_MULTILINGUAL_Q5_1.fileName, ignoreCase = true) ||
                 targetFile.name.equals(WhisperModelCatalog.TINY_MULTILINGUAL_Q5_1.fileName, ignoreCase = true) ||
                 targetFile.name.equals(WhisperModelCatalog.TINY_EN_Q5_1.fileName, ignoreCase = true) ||
                 (WhisperModelCatalog.BASE_EN.expectedSha256?.let {
@@ -516,7 +548,7 @@ class WhisperModelManager(private val context: Context) {
                 instanceFollowRedirects = false
                 connectTimeout = 20_000
                 readTimeout = 45_000
-                setRequestProperty("User-Agent", "VOXORA-Media-Player/2.3.0")
+                setRequestProperty("User-Agent", "VOXORA-Media-Player/2.5.1")
                 setRequestProperty("Accept", "*/*")
             }
             val code = conn.responseCode

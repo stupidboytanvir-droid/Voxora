@@ -13,6 +13,7 @@ import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -31,6 +32,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -47,14 +49,17 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FastRewind
 import androidx.compose.material.icons.rounded.Forward10
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.ZoomOutMap
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -99,6 +104,7 @@ import androidx.compose.ui.unit.sp
 import com.voxora.player.R
 import com.voxora.player.model.ABLoopState
 import com.voxora.player.model.AspectRatioMode
+import com.voxora.player.model.AudioEqPreset
 import com.voxora.player.model.AudioTrackInfo
 import com.voxora.player.model.SceneBookmark
 import com.voxora.player.model.SleepTimerOption
@@ -119,7 +125,8 @@ import kotlin.math.roundToInt
 
 /**
  * Draggable, customizable Dual-Language Subtitle Overlay positioned dynamically from 5% (Top) to 95% (Bottom).
- * Strictly hides completely during silence gaps when both primary and secondary cues are null/blank.
+ * Strictly hides completely during silence gaps when both primary and secondary cues are null/blank,
+ * and smoothly lifts above the seekbar & bottom control dock whenever [controlsVisible] is true.
  */
 @Composable
 fun DraggableSubtitleOverlay(
@@ -132,6 +139,7 @@ fun DraggableSubtitleOverlay(
     secondaryTextColor: SubtitleTextColor = SubtitleTextColor.YELLOW,
     backgroundOpacity: Float,
     isLocked: Boolean,
+    controlsVisible: Boolean = false,
     onVerticalPositionChange: (Float) -> Unit
 ) {
     val hasPrimary = !subtitleText.isNullOrBlank()
@@ -145,11 +153,27 @@ fun DraggableSubtitleOverlay(
     val currentOnPositionChange by rememberUpdatedState(onVerticalPositionChange)
     val density = LocalDensity.current
 
+    val baseFraction = verticalPositionFraction.coerceIn(0.05f, 0.95f)
+    val hudClearanceCap = if (hasSecondary) 0.56f else 0.62f
+    val targetFraction = if (!isDragging && controlsVisible && baseFraction > hudClearanceCap) {
+        hudClearanceCap
+    } else {
+        baseFraction
+    }
+    val animatedFraction by animateFloatAsState(
+        targetValue = targetFraction,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "subtitle_hud_clearance"
+    )
+
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val totalHeightPx = with(density) { maxHeight.toPx() }.coerceAtLeast(1f)
         val estimatedBoxHeightPx = with(density) { if (hasSecondary) 108.dp.toPx() else 72.dp.toPx() }
         val usableHeightPx = (totalHeightPx - estimatedBoxHeightPx).coerceAtLeast(1f)
-        val displayFraction = if (isDragging) liveFraction else verticalPositionFraction.coerceIn(0.05f, 0.95f)
+        val displayFraction = if (isDragging) liveFraction else animatedFraction
         val offsetYPx = (usableHeightPx * displayFraction).roundToInt()
 
         Column(
@@ -424,11 +448,12 @@ private fun VerticalLevelHud(
 }
 
 /**
- * Ultra-Clean VOXORA Cinema Spatial Player HUD:
- * - Top Bar: Back + Smart Marquee formatted title + Amber Episode Badge + single CC (AI Subtitles) + single Settings/Tools drawer button.
+ * Pro-Level VOXORA Cinema Spatial Player HUD (v2.5.1):
+ * - Top Bar: Back + Smart Marquee formatted title + Amber Episode Badge + MX-Style Quick Controls
+ *   (Audio Tracks, HW/SW Decoder Pill, 200% Volume Booster/EQ, CC · Lang Pill, Settings Drawer).
  * - Center: -10s, scale-animated Play/Pause, +10s.
- * - Bottom: Floating scrubbing timestamp preview pill + edge-to-edge Amber seekbar + ONLY 3 clean buttons (Lock, Aspect Ratio, Rotate).
- * - ZERO floating "AI Dubbing · Soon" badge and ZERO crowded 10+ pill bottom strip.
+ * - Bottom: Floating scrubbing timestamp preview pill + edge-to-edge Amber seekbar + single centered
+ *   compact Frosted Glass Pill Dock (Lock · Speed · Fit · Rotate · PiP).
  */
 @Composable
 fun PlayerControlsOverlay(
@@ -438,7 +463,12 @@ fun PlayerControlsOverlay(
     isPlaying: Boolean,
     currentPositionMs: Long,
     durationMs: Long,
+    playbackSpeed: Float,
     aspectRatioMode: AspectRatioMode,
+    isSoftwareDecoder: Boolean,
+    volumeBoostPercent: Int,
+    eqPreset: AudioEqPreset,
+    canEnterPip: Boolean,
     abLoop: ABLoopState,
     bookmarks: List<SceneBookmark>,
     zoomScale: Float,
@@ -453,9 +483,14 @@ fun PlayerControlsOverlay(
     onSeekTo: (Long) -> Unit,
     onRewind: () -> Unit,
     onForward: () -> Unit,
+    onOpenAudioTracks: () -> Unit,
+    onToggleDecoderMode: () -> Unit,
+    onOpenAudioFx: () -> Unit,
     onOpenSubtitles: () -> Unit,
     onOpenSettingsDrawer: () -> Unit,
+    onOpenSpeed: () -> Unit,
     onOpenAspectRatio: () -> Unit,
+    onEnterPip: () -> Unit,
     onOpenABLoop: () -> Unit,
     onOpenSleepTimer: () -> Unit,
     onResetZoom: () -> Unit,
@@ -585,40 +620,126 @@ fun PlayerControlsOverlay(
                         )
                     }
 
-                    // Single Clean CC (AI Subtitles) Pill
+                    // Top-Right MX-Style Quick Controls Cluster: Audio Tracks, HW/SW, Booster, CC, Settings
+                    val audioFxActive = volumeBoostPercent > 0 || eqPreset != AudioEqPreset.NORMAL
+
+                    // 1. Audio Track Quick-Picker Button
+                    Surface(
+                        onClick = {
+                            onUserInteraction()
+                            onOpenAudioTracks()
+                        },
+                        color = VoxoraGlassDark,
+                        shape = CircleShape,
+                        border = BorderStroke(0.85.dp, VoxoraGlassBorder),
+                        modifier = Modifier
+                            .size(38.dp)
+                            .testTag("player_top_audio_tracks_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.Audiotrack,
+                                contentDescription = "Switch audio track",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
+                    // 2. HW / SW Decoder Toggle Pill
+                    Surface(
+                        onClick = {
+                            onUserInteraction()
+                            onToggleDecoderMode()
+                        },
+                        color = if (isSoftwareDecoder) VoxoraAmber.copy(alpha = 0.24f) else VoxoraGlassDark,
+                        shape = RoundedCornerShape(18.dp),
+                        border = BorderStroke(
+                            width = 0.85.dp,
+                            color = if (isSoftwareDecoder) VoxoraAmber else VoxoraGlassBorder
+                        ),
+                        modifier = Modifier
+                            .height(38.dp)
+                            .testTag("player_top_decoder_toggle")
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(horizontal = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (isSoftwareDecoder) "SW" else "HW",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.4.sp
+                                ),
+                                color = if (isSoftwareDecoder) VoxoraAmberBright else Color.White
+                            )
+                        }
+                    }
+
+                    // 3. 200% Volume Booster & Equalizer Quick Button
+                    Surface(
+                        onClick = {
+                            onUserInteraction()
+                            onOpenAudioFx()
+                        },
+                        color = if (audioFxActive) VoxoraAmber.copy(alpha = 0.24f) else VoxoraGlassDark,
+                        shape = CircleShape,
+                        border = BorderStroke(
+                            width = 0.85.dp,
+                            color = if (audioFxActive) VoxoraAmber else VoxoraGlassBorder
+                        ),
+                        modifier = Modifier
+                            .size(38.dp)
+                            .testTag("player_top_audio_boost_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.GraphicEq,
+                                contentDescription = "Volume booster and equalizer",
+                                tint = if (audioFxActive) VoxoraAmberBright else Color.White,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
+                    }
+
+                    // 4. CC (AI Subtitles) Pill
                     Surface(
                         onClick = {
                             onUserInteraction()
                             onOpenSubtitles()
                         },
                         color = if (autoSubtitleActive) VoxoraAmber.copy(alpha = 0.24f) else VoxoraGlassDark,
-                        shape = RoundedCornerShape(20.dp),
+                        shape = RoundedCornerShape(19.dp),
                         border = BorderStroke(
-                            width = 0.9.dp,
+                            width = 0.85.dp,
                             color = if (autoSubtitleActive) VoxoraAmber else VoxoraGlassBorder
                         ),
-                        modifier = Modifier.testTag("player_subtitles_button")
+                        modifier = Modifier
+                            .height(38.dp)
+                            .testTag("player_subtitles_button")
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(
                                 imageVector = if (autoSubtitleActive) Icons.Rounded.AutoAwesome else Icons.Rounded.Subtitles,
                                 contentDescription = stringResource(R.string.cd_auto_subtitles),
                                 tint = if (autoSubtitleActive) VoxoraAmberBright else Color.White,
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(15.dp)
                             )
                             Text(
                                 text = autoSubtitleBadgeText,
                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = Color.White
+                                color = Color.White,
+                                maxLines = 1
                             )
                         }
                     }
 
-                    // Single Top-Right Settings / Tools Drawer Button
+                    // 5. Settings / Tools Drawer Button
                     Surface(
                         onClick = {
                             onUserInteraction()
@@ -626,9 +747,9 @@ fun PlayerControlsOverlay(
                         },
                         color = VoxoraGlassDark,
                         shape = CircleShape,
-                        border = BorderStroke(0.9.dp, VoxoraGlassBorder),
+                        border = BorderStroke(0.85.dp, VoxoraGlassBorder),
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(38.dp)
                             .testTag("player_settings_drawer_button")
                     ) {
                         Box(contentAlignment = Alignment.Center) {
@@ -636,7 +757,7 @@ fun PlayerControlsOverlay(
                                 imageVector = Icons.Rounded.Settings,
                                 contentDescription = "Player settings and tools",
                                 tint = Color.White,
-                                modifier = Modifier.size(21.dp)
+                                modifier = Modifier.size(19.dp)
                             )
                         }
                     }
@@ -943,33 +1064,68 @@ fun PlayerControlsOverlay(
                     )
                 }
 
-                // ONLY 3 Clean Bottom Icon Buttons: Lock, Aspect Ratio, Rotate
-                Row(
+                // Centered, Compact Frosted Glass Pill Dock (Lock · Speed · Fit · Rotate · PiP)
+                val speedText = "${String.format(java.util.Locale.US, "%.2f", playbackSpeed).trimEnd('0').trimEnd('.')}x"
+                val speedModified = kotlin.math.abs(playbackSpeed - 1.0f) > 0.02f
+
+                Box(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
+                    contentAlignment = Alignment.Center
                 ) {
-                    BottomHudIconButton(
-                        icon = Icons.Rounded.LockOpen,
-                        label = "Lock",
-                        contentDescription = stringResource(R.string.cd_lock_screen),
-                        onClick = { onUserInteraction(); onToggleLock() },
-                        testTag = "player_lock_button"
-                    )
-                    BottomHudIconButton(
-                        icon = Icons.Rounded.AspectRatio,
-                        label = aspectRatioMode.label,
-                        contentDescription = stringResource(R.string.cd_aspect_ratio),
-                        onClick = { onUserInteraction(); onOpenAspectRatio() },
-                        testTag = "player_aspect_button"
-                    )
-                    BottomHudIconButton(
-                        icon = Icons.Rounded.ScreenRotation,
-                        label = "Rotate",
-                        contentDescription = stringResource(R.string.cd_rotate_screen),
-                        onClick = { onUserInteraction(); onRotateScreen() },
-                        testTag = "player_rotate_button"
-                    )
+                    Surface(
+                        color = Color(0xCC11131B),
+                        shape = RoundedCornerShape(26.dp),
+                        border = BorderStroke(0.8.dp, VoxoraHairlineBorder),
+                        modifier = Modifier.testTag("player_bottom_glass_dock")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            BottomDockPillItem(
+                                icon = Icons.Rounded.LockOpen,
+                                label = "Lock",
+                                contentDescription = stringResource(R.string.cd_lock_screen),
+                                onClick = { onUserInteraction(); onToggleLock() },
+                                testTag = "player_lock_button"
+                            )
+                            BottomDockPillItem(
+                                icon = Icons.Rounded.Speed,
+                                label = speedText,
+                                contentDescription = "Playback speed",
+                                isActive = speedModified,
+                                onClick = { onUserInteraction(); onOpenSpeed() },
+                                testTag = "player_speed_button"
+                            )
+                            BottomDockPillItem(
+                                icon = Icons.Rounded.AspectRatio,
+                                label = aspectRatioMode.label,
+                                contentDescription = stringResource(R.string.cd_aspect_ratio),
+                                isActive = aspectRatioMode != AspectRatioMode.FIT,
+                                onClick = { onUserInteraction(); onOpenAspectRatio() },
+                                testTag = "player_aspect_button"
+                            )
+                            BottomDockPillItem(
+                                icon = Icons.Rounded.ScreenRotation,
+                                label = "Rotate",
+                                contentDescription = stringResource(R.string.cd_rotate_screen),
+                                onClick = { onUserInteraction(); onRotateScreen() },
+                                testTag = "player_rotate_button"
+                            )
+                            if (canEnterPip) {
+                                BottomDockPillItem(
+                                    icon = Icons.Rounded.PictureInPictureAlt,
+                                    label = "PiP",
+                                    contentDescription = "Picture in Picture",
+                                    onClick = { onUserInteraction(); onEnterPip() },
+                                    testTag = "player_pip_button"
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -977,35 +1133,37 @@ fun PlayerControlsOverlay(
 }
 
 @Composable
-private fun BottomHudIconButton(
+private fun BottomDockPillItem(
     icon: ImageVector,
     label: String,
     contentDescription: String,
+    isActive: Boolean = false,
     onClick: () -> Unit,
     testTag: String
 ) {
     Surface(
         onClick = onClick,
-        color = VoxoraGlassDark,
+        color = if (isActive) VoxoraAmber.copy(alpha = 0.2f) else Color.Transparent,
         shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(0.8.dp, VoxoraGlassBorder),
         modifier = Modifier.testTag(testTag)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp)
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = contentDescription,
-                tint = Color.White,
-                modifier = Modifier.size(18.dp)
+                tint = if (isActive) VoxoraAmberBright else Color.White,
+                modifier = Modifier.size(17.dp)
             )
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
-                color = Color.White,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium
+                ),
+                color = if (isActive) VoxoraAmberBright else Color.White.copy(alpha = 0.92f),
                 maxLines = 1
             )
         }

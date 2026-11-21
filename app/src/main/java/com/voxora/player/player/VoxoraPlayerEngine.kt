@@ -16,6 +16,8 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import com.voxora.player.data.local.subtitles.SubtitleParser
 import com.voxora.player.model.AudioEqPreset
 import com.voxora.player.model.AudioTrackInfo
@@ -47,13 +49,16 @@ data class PlayerPlaybackState(
     val externalSubtitleUri: String? = null,
     val useExternalSubtitle: Boolean = false,
     val subtitleSyncOffsetMs: Long = 0L,
+    val isSoftwareDecoder: Boolean = false,
+    val activeAudioLanguageCode: String? = null,
     val errorMessage: String? = null
 )
 
 /**
- * Flagship Media3 ExoPlayer engine for VOXORA v2.4.0:
- * - Hardware-preferred MediaCodec decoding & clean AudioFocus management
+ * Flagship Media3 ExoPlayer engine for VOXORA v2.5.1:
+ * - Instant HW (Hardware MediaCodec) / SW (Software fallback) decoder switching without losing playback position
  * - Smart effective video dimension computation (accounting for `unappliedRotationDegrees`)
+ * - Normalized active audio track ISO-639-1 language exposure for synced Whisper AI Subtitles
  * - Audio FX integration (`LoudnessEnhancer` 0-200% boost + 5-band `Equalizer`)
  * - Direct local files + network streams (MP4, MKV, HLS `.m3u8`, DASH `.mpd`)
  * - Frame-by-frame stepping (`-1 Frame` / `+1 Frame`) when paused
@@ -61,30 +66,66 @@ data class PlayerPlaybackState(
 @OptIn(UnstableApi::class)
 class VoxoraPlayerEngine(context: Context) {
 
-    private val renderersFactory = DefaultRenderersFactory(context.applicationContext)
-        .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
-        .setEnableDecoderFallback(true)
+    private val appContext = context.applicationContext
 
-    val exoPlayer: ExoPlayer = ExoPlayer.Builder(context.applicationContext, renderersFactory)
-        .setAudioAttributes(
-            AudioAttributes.Builder()
-                .setUsage(C.USAGE_MEDIA)
-                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-                .build(),
-            true
-        )
-        .setHandleAudioBecomingNoisy(true)
-        .setWakeMode(C.WAKE_MODE_NONE)
-        .build()
+    private val _activePlayer = MutableStateFlow(buildExoPlayer(useSoftwareDecoder = false))
+    val activePlayer: StateFlow<ExoPlayer> = _activePlayer.asStateFlow()
+
+    val exoPlayer: ExoPlayer
+        get() = _activePlayer.value
 
     val audioFxController = AudioFxController()
 
     private val _state = MutableStateFlow(PlayerPlaybackState())
     val state: StateFlow<PlayerPlaybackState> = _state.asStateFlow()
 
+    private var currentMediaUriString: String? = null
     private var externalCues: List<SubtitleCue> = emptyList()
     private var currentTracks: Tracks = Tracks.EMPTY
     private var isReleased = false
+
+    private fun buildExoPlayer(useSoftwareDecoder: Boolean): ExoPlayer {
+        val renderersFactory = DefaultRenderersFactory(appContext)
+            .setExtensionRendererMode(
+                if (useSoftwareDecoder) {
+                    DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+                } else {
+                    DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
+                }
+            )
+            .setEnableDecoderFallback(true)
+            .apply {
+                if (useSoftwareDecoder) {
+                    setMediaCodecSelector(
+                        MediaCodecSelector { mimeType, requiresSecureDecoder, requiresTunnelingDecoder ->
+                            val allDecoders = MediaCodecUtil.getDecoderInfos(
+                                mimeType,
+                                requiresSecureDecoder,
+                                requiresTunnelingDecoder
+                            )
+                            val softwareDecoders = allDecoders.filter { info ->
+                                info.softwareOnly ||
+                                    info.name.startsWith("c2.android.", ignoreCase = true) ||
+                                    info.name.startsWith("OMX.google.", ignoreCase = true)
+                            }
+                            if (softwareDecoders.isNotEmpty()) softwareDecoders else allDecoders
+                        }
+                    )
+                }
+            }
+
+        return ExoPlayer.Builder(appContext, renderersFactory)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .build(),
+                true
+            )
+            .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_NONE)
+            .build()
+    }
 
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -187,15 +228,64 @@ class VoxoraPlayerEngine(context: Context) {
         autoPlay: Boolean = true
     ) {
         if (isReleased) return
+        currentMediaUriString = uriString
         _state.value = PlayerPlaybackState(
             playbackSpeed = playbackSpeed,
-            subtitleSyncOffsetMs = _state.value.subtitleSyncOffsetMs
+            subtitleSyncOffsetMs = _state.value.subtitleSyncOffsetMs,
+            isSoftwareDecoder = _state.value.isSoftwareDecoder
         )
         val mediaItem = MediaItem.fromUri(Uri.parse(uriString))
         exoPlayer.setMediaItem(mediaItem, startPositionMs.coerceAtLeast(0L))
         exoPlayer.setPlaybackSpeed(playbackSpeed.coerceIn(0.25f, 3.0f))
         exoPlayer.prepare()
         exoPlayer.playWhenReady = autoPlay
+    }
+
+    /**
+     * Smoothly switches between HW (Hardware MediaCodec) and SW (Software/Extension fallback)
+     * decoders while preserving exact playback position, play/pause state, speed, and volume.
+     *
+     * @return `true` if now using SW (Software) decoder, `false` if HW (Hardware).
+     */
+    fun toggleDecoderMode(): Boolean {
+        if (isReleased) return _state.value.isSoftwareDecoder
+        val nextUseSoftware = !_state.value.isSoftwareDecoder
+        val oldPlayer = _activePlayer.value
+        val savedPositionMs = oldPlayer.currentPosition.coerceAtLeast(0L)
+        val wasPlaying = oldPlayer.playWhenReady || oldPlayer.isPlaying
+        val savedSpeed = _state.value.playbackSpeed.coerceIn(0.25f, 3.0f)
+        val savedVolume = oldPlayer.volume
+        val useExternalSub = _state.value.useExternalSubtitle
+
+        val newPlayer = buildExoPlayer(useSoftwareDecoder = nextUseSoftware)
+        newPlayer.addListener(listener)
+
+        runCatching {
+            oldPlayer.removeListener(listener)
+            oldPlayer.release()
+        }
+
+        _activePlayer.value = newPlayer
+        _state.value = _state.value.copy(
+            isSoftwareDecoder = nextUseSoftware,
+            errorMessage = null
+        )
+
+        val uri = currentMediaUriString
+        if (!uri.isNullOrBlank()) {
+            if (useExternalSub) {
+                newPlayer.trackSelectionParameters = newPlayer.trackSelectionParameters.buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                    .build()
+            }
+            newPlayer.setMediaItem(MediaItem.fromUri(Uri.parse(uri)), savedPositionMs)
+            newPlayer.setPlaybackSpeed(savedSpeed)
+            newPlayer.volume = savedVolume
+            newPlayer.prepare()
+            newPlayer.playWhenReady = wasPlaying
+        }
+
+        return nextUseSoftware
     }
 
     fun pollPosition() {
@@ -392,6 +482,7 @@ class VoxoraPlayerEngine(context: Context) {
         val audioList = mutableListOf<AudioTrackInfo>()
         val subList = mutableListOf<SubtitleTrackInfo>()
         val s = _state.value
+        var selectedAudioLangCode: String? = null
 
         tracks.groups.forEachIndexed { groupIndex, group ->
             when (group.type) {
@@ -400,6 +491,10 @@ class VoxoraPlayerEngine(context: Context) {
                         val format = group.getTrackFormat(i)
                         val langCode = format.language ?: "und"
                         val langName = formatLanguageName(langCode)
+                        val isTrackSelected = group.isTrackSelected(i)
+                        if (isTrackSelected) {
+                            selectedAudioLangCode = normalizeWhisperLanguageCode(langCode)
+                        }
                         val label = format.label?.takeIf { it.isNotBlank() }
                             ?: if (format.channelCount > 0) "$langName (${format.channelCount}ch)" else langName
                         audioList.add(
@@ -409,7 +504,7 @@ class VoxoraPlayerEngine(context: Context) {
                                 label = label,
                                 language = langName,
                                 channelCount = format.channelCount.coerceAtLeast(0),
-                                isSelected = group.isTrackSelected(i)
+                                isSelected = isTrackSelected
                             )
                         )
                     }
@@ -453,7 +548,8 @@ class VoxoraPlayerEngine(context: Context) {
 
         _state.value = _state.value.copy(
             audioTracks = audioList,
-            subtitleTracks = subList
+            subtitleTracks = subList,
+            activeAudioLanguageCode = selectedAudioLangCode
         )
     }
 
@@ -490,6 +586,85 @@ class VoxoraPlayerEngine(context: Context) {
             return lower.startsWith("http://") ||
                 lower.startsWith("https://") ||
                 lower.startsWith("rtsp://")
+        }
+
+        private val ISO3_TO_WHISPER_ISO2 = mapOf(
+            "eng" to "en",
+            "kor" to "ko",
+            "zho" to "zh",
+            "chi" to "zh",
+            "cmn" to "zh",
+            "yue" to "zh",
+            "hin" to "hi",
+            "jpn" to "ja",
+            "ben" to "bn",
+            "spa" to "es",
+            "fra" to "fr",
+            "fre" to "fr",
+            "deu" to "de",
+            "ger" to "de",
+            "rus" to "ru",
+            "ara" to "ar",
+            "por" to "pt",
+            "ita" to "it",
+            "tur" to "tr",
+            "ind" to "id",
+            "vie" to "vi",
+            "tha" to "th",
+            "urd" to "ur",
+            "tam" to "ta",
+            "tel" to "te",
+            "msa" to "ms",
+            "may" to "ms",
+            "fas" to "fa",
+            "per" to "fa",
+            "nld" to "nl",
+            "dut" to "nl",
+            "pol" to "pl",
+            "ukr" to "uk",
+            "swe" to "sv",
+            "nor" to "no",
+            "dan" to "da",
+            "fin" to "fi",
+            "ell" to "el",
+            "gre" to "el",
+            "heb" to "he",
+            "ces" to "cs",
+            "cze" to "cs",
+            "ron" to "ro",
+            "rum" to "ro",
+            "hun" to "hu",
+            "fil" to "tl",
+            "tgl" to "tl",
+            "mar" to "mr",
+            "guj" to "gu",
+            "pan" to "pa",
+            "kan" to "kn",
+            "mal" to "ml"
+        )
+
+        /**
+         * Normalizes ExoPlayer track language tags (BCP-47 or MKV 3-letter ISO-639-2 like
+         * `"eng"`, `"kor"`, `"zho"`, `"en-US"`) into 2-letter Whisper ISO-639-1 codes (`"en"`,
+         * `"ko"`, `"zh"`), returning `null` when unknown/`"und"` so Whisper uses `"auto"`.
+         */
+        fun normalizeWhisperLanguageCode(rawCode: String?): String? {
+            val cleaned = rawCode?.trim()?.lowercase(Locale.ROOT) ?: return null
+            if (cleaned.isBlank() || cleaned == "und" || cleaned == "unknown" || cleaned == "mul" || cleaned == "zxx") {
+                return null
+            }
+            val primary = cleaned.substringBefore('-').substringBefore('_')
+            if (primary.isBlank() || primary == "und") return null
+            ISO3_TO_WHISPER_ISO2[primary]?.let { return it }
+            if (primary.length == 2 && primary.all { it in 'a'..'z' }) {
+                return primary
+            }
+            val localeLang = Locale.forLanguageTag(cleaned).language.lowercase(Locale.ROOT)
+            return if (localeLang.length == 2 && localeLang != "un" && localeLang.all { it in 'a'..'z' }) {
+                localeLang
+            } else {
+                null
+            }
         }
     }
 }

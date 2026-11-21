@@ -195,6 +195,8 @@ class AutoSubtitleManager(
     private var lastPlaybackPositionMs: Long = 0L
     @Volatile
     private var isPlaybackActive: Boolean = false
+    @Volatile
+    private var audioTrackLanguageHint: String? = null
 
     private var setupJob: Job? = null
     private var workerJob: Job? = null
@@ -260,6 +262,33 @@ class AutoSubtitleManager(
     fun updateDuration(durationMs: Long) {
         if (durationMs > 0L) {
             activeMediaDurationMs = durationMs
+        }
+    }
+
+    /**
+     * Syncs Whisper's spoken language hint with the active ExoPlayer embedded audio track
+     * (e.g. `"en"`, `"ko"`, `"zh"`, `"hi"`, `"ja"`), falling back to `"auto"` when unknown/und.
+     * When the user switches audio tracks mid-playback while live AI Subtitles are running,
+     * cues are refreshed from the current position using the new spoken language hint.
+     */
+    fun setAudioTrackLanguageHint(isoLanguageCode: String?) {
+        val normalized = isoLanguageCode
+            ?.trim()
+            ?.lowercase(Locale.ROOT)
+            ?.takeIf { it.isNotBlank() && it != "und" && it != "auto" }
+        val previous = audioTrackLanguageHint
+        if (previous == normalized) return
+        audioTrackLanguageHint = normalized
+
+        val cur = _state.value
+        if (cur.isEnabled && !cur.isSetupRunning && !cur.loadedFromSavedSrt &&
+            completedChunks.isNotEmpty() && activeMediaUri.isNotBlank()
+        ) {
+            pauseProcessing()
+            clearGeneratedCues()
+            if (isPlaybackActive) {
+                scheduleRollingGeneration(lastPlaybackPositionMs)
+            }
         }
     }
 
@@ -335,9 +364,9 @@ class AutoSubtitleManager(
     }
 
     /**
-     * One-Click Setup & Activation: downloads `ggml-tiny-q5_1.bin` (~31 MB) if missing,
+     * One-Click Setup & Activation: downloads `ggml-base-q5_1.bin` (~57 MB) if missing,
      * downloads primary (and optional dual secondary) ML Kit language packs, and starts
-     * rolling 25s VAD-trimmed subtitle generation synced to playback.
+     * rolling 25s VAD-trimmed, hallucination-filtered subtitle generation synced to playback.
      */
     fun enableAndPrepare(currentPositionMs: Long, isPlayingNow: Boolean) {
         if (activeMediaUri.isBlank()) {
@@ -596,7 +625,10 @@ class AutoSubtitleManager(
         val needsEnglishBridge = targetCode != AutoSubtitleLanguageCatalog.CODE_ORIGINAL ||
             (dualEnabled && secondaryCode != AutoSubtitleLanguageCatalog.CODE_ORIGINAL)
 
-        val whisperLangParam = if (needsEnglishBridge) "auto:translate" else "auto"
+        val whisperLangParam = buildWhisperLanguageParam(
+            sourceLanguageHint = audioTrackLanguageHint,
+            translateToEnglish = needsEnglishBridge
+        )
 
         val segments = whisperSpeechEngine.transcribePcmChunkSuspending(
             chunk = pcmChunk,
@@ -619,8 +651,7 @@ class AutoSubtitleManager(
 
         for (seg in segments) {
             coroutineContext.ensureActive()
-            val cleaned = cleanWhisperText(seg.originalText)
-            if (cleaned.isEmpty()) continue
+            val cleaned = SubtitleSanitizer.sanitize(seg.originalText) ?: continue
 
             val rawStart = seg.startTimeMs.coerceAtLeast(startMs)
             val rawEnd = seg.endTimeMs.coerceAtLeast(rawStart + 350L)
@@ -1076,13 +1107,24 @@ class AutoSubtitleManager(
             return String.format(Locale.US, "%02d:%02d:%02d,%03d", hours, minutes, seconds, millis)
         }
 
+        fun buildWhisperLanguageParam(
+            sourceLanguageHint: String?,
+            translateToEnglish: Boolean
+        ): String {
+            val baseLang = sourceLanguageHint
+                ?.trim()
+                ?.lowercase(Locale.ROOT)
+                ?.takeIf { it.isNotBlank() && it != "und" }
+                ?: "auto"
+            return if (translateToEnglish && baseLang != "en") {
+                "$baseLang:translate"
+            } else {
+                baseLang
+            }
+        }
+
         fun cleanWhisperText(raw: String): String {
-            val stripped = raw
-                .replace(Regex("\\[(?:BLANK_AUDIO|MUSIC|APPLAUSE|LAUGHTER|SILENCE|INAUDIBLE|SOUND|NOISE)[^\\]]*]", RegexOption.IGNORE_CASE), "")
-                .replace(Regex("\\((?:music|applause|laughter|silence|sighs|groans)[^)]*\\)", RegexOption.IGNORE_CASE), "")
-                .replace(Regex("\\s+"), " ")
-                .trim()
-            return if (stripped.length <= 1 && !stripped.any { it.isLetterOrDigit() }) "" else stripped
+            return SubtitleSanitizer.sanitize(raw).orEmpty()
         }
 
         /**

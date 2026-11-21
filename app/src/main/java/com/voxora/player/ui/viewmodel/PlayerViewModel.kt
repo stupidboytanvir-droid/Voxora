@@ -189,6 +189,16 @@ class PlayerViewModel(
                 }
         }
 
+        // Sync active embedded audio track ISO language code to Whisper for higher accuracy
+        viewModelScope.launch {
+            playbackState
+                .map { it.activeAudioLanguageCode }
+                .distinctUntilChanged()
+                .collect { langCode ->
+                    autoSubtitleManager.setAudioTrackLanguageHint(langCode)
+                }
+        }
+
         // Handle Sleep Timer "End of Video" and 5-second cancelable "Up Next" auto-play
         viewModelScope.launch {
             playbackState
@@ -466,6 +476,20 @@ class PlayerViewModel(
         playerEngine.setPlaybackSpeed(clamped)
         val uri = activeUriString ?: return
         viewModelScope.launch { historyRepository.savePreferredSpeed(uri, clamped) }
+    }
+
+    fun toggleDecoderMode() {
+        val isSw = playerEngine.toggleDecoderMode()
+        val prefs = preferences.value
+        playerEngine.applyVolumeBoost(prefs.volumeBoostPercent)
+        playerEngine.applyEqPreset(prefs.audioEqPreset)
+        _uiState.value = _uiState.value.copy(
+            feedbackMessage = if (isSw) {
+                "Decoder switched to SW (Software)"
+            } else {
+                "Decoder switched to HW (Hardware)"
+            }
+        )
     }
 
     // --- Press & Hold Fast-Forward (2.0x / 3.0x) ---

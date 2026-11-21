@@ -194,6 +194,11 @@ Java_com_voxora_player_dubbing_whisper_WhisperNativeBridge_nativeTranscribeChunk
         }
     }
 
+    if (lang != "auto" && whisper_lang_id(lang.c_str()) < 0) {
+        LOGW("Unsupported Whisper language hint '%s'; falling back to auto", lang.c_str());
+        lang = "auto";
+    }
+
     TranscriptionCallbackState cb_state;
     cb_state.env = env;
     cb_state.callback_obj = callback_obj;
@@ -212,6 +217,8 @@ Java_com_voxora_player_dubbing_whisper_WhisperNativeBridge_nativeTranscribeChunk
     params.beam_search.beam_size = 1;
     params.temperature = 0.0f;
     params.temperature_inc = 0.0f;
+    params.no_speech_thold = 0.65f;
+    params.entropy_thold = 2.2f;
     params.print_realtime = false;
     params.print_progress = false;
     params.print_timestamps = false;

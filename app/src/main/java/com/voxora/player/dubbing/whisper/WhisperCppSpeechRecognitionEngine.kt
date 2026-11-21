@@ -8,6 +8,7 @@ import com.voxora.player.dubbing.SpeechRecognitionEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
@@ -55,7 +56,12 @@ data class WhisperTranscriptionState(
  * enabling subtitles never pays a disk reload penalty.
  */
 object WhisperNativeContextHolder {
-    val mutex = Mutex()
+    val whisperMutex = Mutex()
+    val mutex: Mutex
+        get() = whisperMutex
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val whisperDispatcher = Dispatchers.Default.limitedParallelism(1)
 
     @Volatile
     var contextPtr: Long = 0L
@@ -79,7 +85,7 @@ class WhisperCppSpeechRecognitionEngine(
 
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val nativeContextMutex: Mutex
-        get() = WhisperNativeContextHolder.mutex
+        get() = WhisperNativeContextHolder.whisperMutex
 
     private var nativeContextPtr: Long
         get() = WhisperNativeContextHolder.contextPtr
@@ -374,7 +380,7 @@ class WhisperCppSpeechRecognitionEngine(
         chunk: PcmAudioChunk,
         language: String = "auto",
         onProgressPercent: (Int) -> Unit = {}
-    ): Result<List<RecognizedSpeechSegment>> = withContext(Dispatchers.Default) {
+    ): Result<List<RecognizedSpeechSegment>> = withContext(WhisperNativeContextHolder.whisperDispatcher) {
         if (chunk.samples16kMono.isEmpty()) {
             return@withContext Result.success(emptyList())
         }
@@ -385,15 +391,18 @@ class WhisperCppSpeechRecognitionEngine(
             )
         }
 
-        WhisperNativeBridge.nativeResetAbort()
         val chunkSegments = mutableListOf<RecognizedSpeechSegment>()
         val counter = AtomicInteger(chunk.chunkIndex * 1000)
 
         try {
             coroutineContext.ensureActive()
             val rc = nativeContextMutex.withLock {
+                coroutineContext.ensureActive()
                 val ptr = nativeContextPtr
                 if (ptr == 0L) return@withLock -1
+                // Reset abort strictly INSIDE whisperMutex so a queued call can NEVER clear
+                // an in-flight abort signal from an earlier cancelled seek/CC toggle.
+                WhisperNativeBridge.nativeResetAbort()
                 val threads = WhisperNativeBridge.recommendedThreadCount()
                 val callback = object : WhisperNativeCallback {
                     override fun onProgress(progressPercent: Int) {
@@ -490,7 +499,7 @@ class WhisperCppSpeechRecognitionEngine(
                 )
                 return@withLock
             }
-            withContext(Dispatchers.Default) {
+            withContext(WhisperNativeContextHolder.whisperDispatcher) {
                 if (nativeContextPtr != 0L) {
                     WhisperNativeBridge.nativeFreeContext(nativeContextPtr)
                     nativeContextPtr = 0L
@@ -528,12 +537,14 @@ class WhisperCppSpeechRecognitionEngine(
     }
 
     private suspend fun unloadModelInternal() {
-        nativeContextMutex.withLock {
-            if (nativeContextPtr != 0L) {
-                WhisperNativeBridge.nativeFreeContext(nativeContextPtr)
-                nativeContextPtr = 0L
+        withContext(WhisperNativeContextHolder.whisperDispatcher) {
+            nativeContextMutex.withLock {
+                if (nativeContextPtr != 0L) {
+                    WhisperNativeBridge.nativeFreeContext(nativeContextPtr)
+                    nativeContextPtr = 0L
+                }
+                loadedModelInfo = null
             }
-            loadedModelInfo = null
         }
     }
 
@@ -731,66 +742,69 @@ class WhisperCppSpeechRecognitionEngine(
         knownTotalDurationMs: Long,
         segmentCounter: AtomicInteger,
         accumulatedSegments: MutableList<RecognizedSpeechSegment>
-    ): Int = nativeContextMutex.withLock {
-        val ptr = nativeContextPtr
-        if (ptr == 0L) return@withLock -1
+    ): Int = withContext(WhisperNativeContextHolder.whisperDispatcher) {
+        nativeContextMutex.withLock {
+            coroutineContext.ensureActive()
+            val ptr = nativeContextPtr
+            if (ptr == 0L) return@withLock -1
+            WhisperNativeBridge.nativeResetAbort()
 
-        val threads = WhisperNativeBridge.recommendedThreadCount()
-        val callback = object : WhisperNativeCallback {
-            override fun onProgress(progressPercent: Int) {
-                val chunkFraction = (progressPercent.coerceIn(0, 100)) / 100f
-                val overall = if (knownTotalDurationMs > 0L) {
-                    val estMs = chunk.startTimeMs + (chunk.durationMs * chunkFraction).toLong()
-                    (estMs.toFloat() / knownTotalDurationMs.toFloat()).coerceIn(0.01f, 0.99f)
-                } else {
-                    chunkFraction.coerceIn(0.01f, 0.99f)
-                }
-                _transcriptionState.value = _transcriptionState.value.copy(
-                    progressFraction = overall
-                )
-            }
-
-            override fun onNewSegment(startMs: Long, endMs: Long, text: String) {
-                val cleaned = text.trim()
-                if (cleaned.isEmpty()) return
-                val seg = RecognizedSpeechSegment(
-                    id = "SEG_${segmentCounter.incrementAndGet().toString().padStart(4, '0')}",
-                    startTimeMs = startMs.coerceAtLeast(0L),
-                    endTimeMs = endMs.coerceAtLeast(startMs),
-                    originalText = cleaned,
-                    detectedLanguageCode = "en",
-                    speakerId = "SPEAKER_01",
-                    confidence = 1.0f
-                )
-                synchronized(accumulatedSegments) {
-                    accumulatedSegments.add(seg)
-                    val snapshot = accumulatedSegments.toList()
-                    val combinedText = snapshot.joinToString(" ") { it.originalText }
+            val threads = WhisperNativeBridge.recommendedThreadCount()
+            val callback = object : WhisperNativeCallback {
+                override fun onProgress(progressPercent: Int) {
+                    val chunkFraction = (progressPercent.coerceIn(0, 100)) / 100f
+                    val overall = if (knownTotalDurationMs > 0L) {
+                        val estMs = chunk.startTimeMs + (chunk.durationMs * chunkFraction).toLong()
+                        (estMs.toFloat() / knownTotalDurationMs.toFloat()).coerceIn(0.01f, 0.99f)
+                    } else {
+                        chunkFraction.coerceIn(0.01f, 0.99f)
+                    }
                     _transcriptionState.value = _transcriptionState.value.copy(
-                        segments = snapshot,
-                        fullTranscriptText = combinedText
+                        progressFraction = overall
                     )
                 }
-            }
-        }
 
-        WhisperNativeBridge.nativeTranscribeChunk(
-            contextPtr = ptr,
-            numThreads = threads,
-            audioData = chunk.samples16kMono,
-            chunkOffsetMs = chunk.startTimeMs,
-            language = "en",
-            callback = callback
-        )
+                override fun onNewSegment(startMs: Long, endMs: Long, text: String) {
+                    val cleaned = text.trim()
+                    if (cleaned.isEmpty()) return
+                    val seg = RecognizedSpeechSegment(
+                        id = "SEG_${segmentCounter.incrementAndGet().toString().padStart(4, '0')}",
+                        startTimeMs = startMs.coerceAtLeast(0L),
+                        endTimeMs = endMs.coerceAtLeast(startMs),
+                        originalText = cleaned,
+                        detectedLanguageCode = "en",
+                        speakerId = "SPEAKER_01",
+                        confidence = 1.0f
+                    )
+                    synchronized(accumulatedSegments) {
+                        accumulatedSegments.add(seg)
+                        val snapshot = accumulatedSegments.toList()
+                        val combinedText = snapshot.joinToString(" ") { it.originalText }
+                        _transcriptionState.value = _transcriptionState.value.copy(
+                            segments = snapshot,
+                            fullTranscriptText = combinedText
+                        )
+                    }
+                }
+            }
+
+            WhisperNativeBridge.nativeTranscribeChunk(
+                contextPtr = ptr,
+                numThreads = threads,
+                audioData = chunk.samples16kMono,
+                chunkOffsetMs = chunk.startTimeMs,
+                language = "en",
+                callback = callback
+            )
+        }
     }
 
     fun release() {
         WhisperNativeBridge.nativeRequestAbort()
         activeTranscriptionJob?.cancel()
         activeModelJob?.cancel()
-        if (nativeContextPtr != 0L) {
-            runCatching { WhisperNativeBridge.nativeFreeContext(nativeContextPtr) }
-            nativeContextPtr = 0L
+        engineScope.launch(WhisperNativeContextHolder.whisperDispatcher) {
+            unloadModelInternal()
         }
     }
 }

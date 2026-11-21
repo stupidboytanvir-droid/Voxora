@@ -23,13 +23,17 @@ import com.voxora.player.model.AudioEqPreset
 import com.voxora.player.model.AudioTrackInfo
 import com.voxora.player.model.SubtitleCue
 import com.voxora.player.model.SubtitleTrackInfo
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
 
 data class PlayerPlaybackState(
     val isPlaying: Boolean = false,
+    val playWhenReady: Boolean = false,
     val isBuffering: Boolean = false,
     val isEnded: Boolean = false,
     val currentPositionMs: Long = 0L,
@@ -50,6 +54,7 @@ data class PlayerPlaybackState(
     val useExternalSubtitle: Boolean = false,
     val subtitleSyncOffsetMs: Long = 0L,
     val isSoftwareDecoder: Boolean = false,
+    val activeAudioTrackIndex: Int = 0,
     val activeAudioLanguageCode: String? = null,
     val errorMessage: String? = null
 )
@@ -78,6 +83,9 @@ class VoxoraPlayerEngine(context: Context) {
 
     private val _state = MutableStateFlow(PlayerPlaybackState())
     val state: StateFlow<PlayerPlaybackState> = _state.asStateFlow()
+
+    private val _seekDiscontinuityEvents = MutableSharedFlow<Long>(extraBufferCapacity = 16)
+    val seekDiscontinuityEvents: SharedFlow<Long> = _seekDiscontinuityEvents.asSharedFlow()
 
     private var currentMediaUriString: String? = null
     private var externalCues: List<SubtitleCue> = emptyList()
@@ -129,7 +137,26 @@ class VoxoraPlayerEngine(context: Context) {
 
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            _state.value = _state.value.copy(isPlaying = isPlaying)
+            _state.value = _state.value.copy(
+                isPlaying = isPlaying,
+                playWhenReady = exoPlayer.playWhenReady
+            )
+        }
+
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            _state.value = _state.value.copy(playWhenReady = playWhenReady)
+        }
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int
+        ) {
+            if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                val targetPosMs = newPosition.positionMs.coerceAtLeast(0L)
+                _state.value = _state.value.copy(currentPositionMs = targetPosMs)
+                _seekDiscontinuityEvents.tryEmit(targetPosMs)
+            }
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -229,13 +256,16 @@ class VoxoraPlayerEngine(context: Context) {
     ) {
         if (isReleased) return
         currentMediaUriString = uriString
+        val safeStartMs = startPositionMs.coerceAtLeast(0L)
         _state.value = PlayerPlaybackState(
+            playWhenReady = autoPlay,
+            currentPositionMs = safeStartMs,
             playbackSpeed = playbackSpeed,
             subtitleSyncOffsetMs = _state.value.subtitleSyncOffsetMs,
             isSoftwareDecoder = _state.value.isSoftwareDecoder
         )
         val mediaItem = MediaItem.fromUri(Uri.parse(uriString))
-        exoPlayer.setMediaItem(mediaItem, startPositionMs.coerceAtLeast(0L))
+        exoPlayer.setMediaItem(mediaItem, safeStartMs)
         exoPlayer.setPlaybackSpeed(playbackSpeed.coerceIn(0.25f, 3.0f))
         exoPlayer.prepare()
         exoPlayer.playWhenReady = autoPlay
@@ -286,6 +316,12 @@ class VoxoraPlayerEngine(context: Context) {
         }
 
         return nextUseSoftware
+    }
+
+    fun getLivePositionMs(): Long {
+        if (isReleased) return _state.value.currentPositionMs.coerceAtLeast(0L)
+        val livePos = exoPlayer.currentPosition
+        return if (livePos >= 0L) livePos else _state.value.currentPositionMs.coerceAtLeast(0L)
     }
 
     fun pollPosition() {
@@ -483,17 +519,22 @@ class VoxoraPlayerEngine(context: Context) {
         val subList = mutableListOf<SubtitleTrackInfo>()
         val s = _state.value
         var selectedAudioLangCode: String? = null
+        var selectedAudioOrdinal = 0
+        var audioOrdinalCounter = 0
 
         tracks.groups.forEachIndexed { groupIndex, group ->
             when (group.type) {
                 C.TRACK_TYPE_AUDIO -> {
                     for (i in 0 until group.length) {
+                        val ordinal = audioOrdinalCounter++
                         val format = group.getTrackFormat(i)
                         val langCode = format.language ?: "und"
+                        val normalizedIso = normalizeWhisperLanguageCode(langCode)
                         val langName = formatLanguageName(langCode)
                         val isTrackSelected = group.isTrackSelected(i)
                         if (isTrackSelected) {
-                            selectedAudioLangCode = normalizeWhisperLanguageCode(langCode)
+                            selectedAudioOrdinal = ordinal
+                            selectedAudioLangCode = normalizedIso
                         }
                         val label = format.label?.takeIf { it.isNotBlank() }
                             ?: if (format.channelCount > 0) "$langName (${format.channelCount}ch)" else langName
@@ -504,7 +545,9 @@ class VoxoraPlayerEngine(context: Context) {
                                 label = label,
                                 language = langName,
                                 channelCount = format.channelCount.coerceAtLeast(0),
-                                isSelected = isTrackSelected
+                                isSelected = isTrackSelected,
+                                audioStreamOrdinal = ordinal,
+                                isoLanguageCode = normalizedIso
                             )
                         )
                     }
@@ -549,6 +592,7 @@ class VoxoraPlayerEngine(context: Context) {
         _state.value = _state.value.copy(
             audioTracks = audioList,
             subtitleTracks = subList,
+            activeAudioTrackIndex = selectedAudioOrdinal,
             activeAudioLanguageCode = selectedAudioLangCode
         )
     }

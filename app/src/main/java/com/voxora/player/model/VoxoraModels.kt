@@ -73,7 +73,9 @@ data class AudioTrackInfo(
     val label: String,
     val language: String,
     val channelCount: Int,
-    val isSelected: Boolean
+    val isSelected: Boolean,
+    val audioStreamOrdinal: Int = 0,
+    val isoLanguageCode: String? = null
 )
 
 data class SubtitleTrackInfo(

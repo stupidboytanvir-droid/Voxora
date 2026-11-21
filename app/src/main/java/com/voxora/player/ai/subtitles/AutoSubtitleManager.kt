@@ -22,6 +22,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +35,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -74,6 +76,13 @@ data class MergedSentenceBlock(
     val endTimeMs: Long get() = constituents.last().endTimeMs
 }
 
+data class CachedSubtitleSegment(
+    val startTimeMs: Long,
+    val endTimeMs: Long,
+    val rawOriginalText: String,
+    val translatedText: String
+)
+
 data class AutoSubtitleUiState(
     val isEnabled: Boolean = false,
     val isSetupRunning: Boolean = false,
@@ -90,6 +99,7 @@ data class AutoSubtitleUiState(
     val activeChunkIndex: Int = -1,
     val completedChunksCount: Int = 0,
     val generatedCueCount: Int = 0,
+    val translationRevision: Int = 0,
     val loadedFromSavedSrt: Boolean = false,
     val statusMessage: String = "Off · Tap Enable for 100% free AI subtitles",
     val errorMessage: String? = null
@@ -196,6 +206,10 @@ class AutoSubtitleManager(
     private val _state = MutableStateFlow(AutoSubtitleUiState())
     val state: StateFlow<AutoSubtitleUiState> = _state.asStateFlow()
 
+    private val seekGenerationId = AtomicLong(0L)
+
+    private val rawBlocksByWindow = linkedMapOf<Long, List<MergedSentenceBlock>>()
+    private val cachedSegmentsByWindow = linkedMapOf<Long, List<CachedSubtitleSegment>>()
     private val primaryCuesByWindow = linkedMapOf<Long, List<SubtitleCue>>()
     private val secondaryCuesByWindow = linkedMapOf<Long, List<SubtitleCue>>()
     private val coveredIntervals = mutableListOf<LongRange>()
@@ -204,6 +218,8 @@ class AutoSubtitleManager(
     private var sortedPrimaryCues: List<SubtitleCue> = emptyList()
     @Volatile
     private var sortedSecondaryCues: List<SubtitleCue> = emptyList()
+    @Volatile
+    private var cachedWindowsUsedEnglishBridge: Boolean = false
 
     @Volatile
     private var activeMediaUri: String = ""
@@ -214,7 +230,11 @@ class AutoSubtitleManager(
     @Volatile
     private var lastPlaybackPositionMs: Long = 0L
     @Volatile
+    private var lastDriftTriggerPosMs: Long = Long.MIN_VALUE
+    @Volatile
     private var isPlaybackActive: Boolean = false
+    @Volatile
+    private var activeAudioTrackIndex: Int = 0
     @Volatile
     private var audioTrackLanguageHint: String? = null
     @Volatile
@@ -225,12 +245,39 @@ class AutoSubtitleManager(
     private var lastEmittedRawEndMs: Long = Long.MIN_VALUE
 
     private var setupJob: Job? = null
-    private var workerJob: Job? = null
+    private var activeSubtitleJob: Job? = null
+    private var retranslateJob: Job? = null
 
     private val activeTranslators = linkedMapOf<String, Translator>()
 
     private val savedSrtCacheDir: File
         get() = File(appContext.filesDir, "saved_ai_subtitles").apply { mkdirs() }
+
+    /**
+     * Cancels all in-flight jobs, invalidates stale results, and wipes all in-memory caches
+     * and duplicate-suppressor state before switching to a new video or Auto-Next episode.
+     */
+    fun resetForNewMedia() {
+        seekGenerationId.incrementAndGet()
+        setupJob?.cancel()
+        setupJob = null
+        retranslateJob?.cancel()
+        retranslateJob = null
+        pauseProcessing()
+        clearGeneratedCues()
+        activeAudioTrackIndex = 0
+        audioTrackLanguageHint = null
+        lastPlaybackPositionMs = 0L
+        lastDriftTriggerPosMs = Long.MIN_VALUE
+        _state.value = _state.value.copy(
+            isGeneratingChunk = false,
+            activeChunkIndex = -1,
+            completedChunksCount = 0,
+            generatedCueCount = 0,
+            translationRevision = _state.value.translationRevision + 1,
+            errorMessage = null
+        )
+    }
 
     fun attachMedia(
         mediaUriString: String,
@@ -247,8 +294,7 @@ class AutoSubtitleManager(
             activeMediaDurationMs = durationMs
         }
         if (uriChanged) {
-            pauseProcessing()
-            clearGeneratedCues()
+            resetForNewMedia()
             val savedCues = loadCachedSavedSrt(mediaUriString, targetOpt.code)
             if (savedCues.isNotEmpty()) {
                 synchronized(cuesLock) {
@@ -280,8 +326,8 @@ class AutoSubtitleManager(
             }
             refreshReadinessAsync(targetOpt.code)
         } else {
-            updateTargetLanguageInternal(targetOpt.code, clearExisting = false)
-            updateDualConfigInternal(dualEnabled, secondaryOpt.code, clearExisting = false)
+            updateTargetLanguageInternal(targetOpt.code, allowInstantRetranslate = false)
+            updateDualConfigInternal(dualEnabled, secondaryOpt.code, allowInstantRetranslate = false)
         }
     }
 
@@ -291,26 +337,62 @@ class AutoSubtitleManager(
         }
     }
 
-    fun setAudioTrackLanguageHint(isoLanguageCode: String?) {
-        val normalized = isoLanguageCode
+    /**
+     * Dual-Audio Track Synchronization:
+     * Updates the active audio stream ordinal + ISO language code for MediaExtractor & Whisper.
+     * When the user switches tracks mid-video (e.g. Korean -> English in a Dual-Audio MKV),
+     * invalidates old-track caches and immediately re-anchors at [currentPositionMs].
+     */
+    fun onAudioTrackChanged(
+        audioTrackIndex: Int,
+        isoLanguageCode: String?,
+        currentPositionMs: Long = lastPlaybackPositionMs
+    ) {
+        val safeTrackIdx = audioTrackIndex.coerceAtLeast(0)
+        val normalizedLang = isoLanguageCode
             ?.trim()
             ?.lowercase(Locale.ROOT)
             ?.takeIf { it.isNotBlank() && it != "und" && it != "auto" }
-        val previous = audioTrackLanguageHint
-        if (previous == normalized) return
-        audioTrackLanguageHint = normalized
+
+        val changed = (activeAudioTrackIndex != safeTrackIdx) || (audioTrackLanguageHint != normalizedLang)
+        if (!changed) return
+
+        activeAudioTrackIndex = safeTrackIdx
+        audioTrackLanguageHint = normalizedLang
 
         val cur = _state.value
-        val hasCovered = synchronized(cuesLock) { coveredIntervals.isNotEmpty() }
-        if (cur.isEnabled && !cur.isSetupRunning && !cur.loadedFromSavedSrt &&
-            hasCovered && activeMediaUri.isNotBlank()
-        ) {
+        val hasCached = synchronized(cuesLock) {
+            coveredIntervals.isNotEmpty() || rawBlocksByWindow.isNotEmpty()
+        }
+        if (cur.isEnabled && !cur.isSetupRunning && !cur.loadedFromSavedSrt && activeMediaUri.isNotBlank()) {
+            val anchorPos = currentPositionMs.coerceAtLeast(0L)
+            lastPlaybackPositionMs = anchorPos
+            retranslateJob?.cancel()
+            retranslateJob = null
             pauseProcessing()
             clearGeneratedCues()
+            _state.value = cur.copy(
+                isGeneratingChunk = false,
+                activeChunkIndex = -1,
+                completedChunksCount = 0,
+                generatedCueCount = 0,
+                translationRevision = cur.translationRevision + 1,
+                statusMessage = "Audio track switched · Syncing subtitles..."
+            )
             if (isPlaybackActive) {
-                scheduleRollingGeneration(lastPlaybackPositionMs)
+                reanchorAtPosition(anchorPos, debounceMs = 0L)
             }
+        } else if (hasCached) {
+            clearGeneratedCues()
         }
+    }
+
+    fun setAudioTrackLanguageHint(isoLanguageCode: String?) {
+        onAudioTrackChanged(
+            audioTrackIndex = activeAudioTrackIndex,
+            isoLanguageCode = isoLanguageCode,
+            currentPositionMs = lastPlaybackPositionMs
+        )
     }
 
     fun refreshReadinessAsync(targetCode: String = _state.value.targetLanguageCode) {
@@ -325,14 +407,18 @@ class AutoSubtitleManager(
     }
 
     fun setTargetLanguage(targetCode: String) {
-        updateTargetLanguageInternal(targetCode, clearExisting = true)
+        updateTargetLanguageInternal(targetCode, allowInstantRetranslate = true)
     }
 
     fun setDualSubtitlesConfig(enabled: Boolean, secondaryCode: String) {
-        updateDualConfigInternal(enabled, secondaryCode, clearExisting = true)
+        updateDualConfigInternal(enabled, secondaryCode, allowInstantRetranslate = true)
     }
 
-    private fun updateDualConfigInternal(enabled: Boolean, secondaryCode: String, clearExisting: Boolean) {
+    private fun updateDualConfigInternal(
+        enabled: Boolean,
+        secondaryCode: String,
+        allowInstantRetranslate: Boolean
+    ) {
         val secOpt = AutoSubtitleLanguageCatalog.findByCode(secondaryCode)
         val cur = _state.value
         val changed = cur.dualSubtitlesEnabled != enabled ||
@@ -340,10 +426,8 @@ class AutoSubtitleManager(
         if (!changed) return
 
         val wasEnabled = cur.isEnabled
-        if (clearExisting && wasEnabled) {
-            pauseProcessing()
-            clearGeneratedCues()
-        }
+        val hasRawBlocks = synchronized(cuesLock) { rawBlocksByWindow.isNotEmpty() }
+
         _state.value = cur.copy(
             dualSubtitlesEnabled = enabled,
             secondaryLanguageCode = secOpt.code,
@@ -351,19 +435,80 @@ class AutoSubtitleManager(
             loadedFromSavedSrt = false,
             errorMessage = null
         )
-        if (wasEnabled && clearExisting && activeMediaUri.isNotBlank()) {
-            enableAndPrepare(lastPlaybackPositionMs, isPlaybackActive)
+
+        if (!enabled) {
+            synchronized(cuesLock) {
+                secondaryCuesByWindow.clear()
+                sortedSecondaryCues = emptyList()
+            }
+            _state.value = _state.value.copy(translationRevision = _state.value.translationRevision + 1)
+            return
+        }
+
+        if (wasEnabled && allowInstantRetranslate && activeMediaUri.isNotBlank()) {
+            if (hasRawBlocks) {
+                if (needsMlKitTranslation(secOpt.code)) {
+                    scope.launch { ensureMlKitLanguagePackDownloaded(secOpt.code) }
+                }
+                retranslateCachedWindowsAsync(
+                    primaryCode = _state.value.targetLanguageCode,
+                    primaryLabel = _state.value.targetLanguageLabel,
+                    dualEnabled = true,
+                    secondaryCode = secOpt.code,
+                    secondaryLabel = secOpt.displayName,
+                    retranslatePrimary = false,
+                    retranslateSecondary = true
+                )
+            } else {
+                enableAndPrepare(lastPlaybackPositionMs, isPlaybackActive)
+            }
         }
     }
 
-    private fun updateTargetLanguageInternal(targetCode: String, clearExisting: Boolean) {
+    /**
+     * Instant Target Language Switching (Zero Whisper Re-Run):
+     * Reuses cached `rawOriginalText` blocks and batch-translates them in < 1 second without
+     * re-running Whisper whenever cached blocks exist (unless switching from an English-bridge
+     * cache to raw non-English Original mode).
+     */
+    private fun updateTargetLanguageInternal(targetCode: String, allowInstantRetranslate: Boolean) {
         val opt = AutoSubtitleLanguageCatalog.findByCode(targetCode)
-        val previous = _state.value.targetLanguageCode
-        val changed = !previous.equals(opt.code, ignoreCase = true)
+        val cur = _state.value
+        val changed = !cur.targetLanguageCode.equals(opt.code, ignoreCase = true)
         if (!changed) return
 
-        val wasEnabled = _state.value.isEnabled
-        if (clearExisting) {
+        val wasEnabled = cur.isEnabled
+        val hasRawBlocks = synchronized(cuesLock) { rawBlocksByWindow.isNotEmpty() }
+        val requiresWhisperRerun = opt.code == AutoSubtitleLanguageCatalog.CODE_ORIGINAL &&
+            cachedWindowsUsedEnglishBridge &&
+            audioTrackLanguageHint != "en"
+
+        if (wasEnabled && allowInstantRetranslate && !cur.loadedFromSavedSrt && hasRawBlocks && !requiresWhisperRerun) {
+            _state.value = cur.copy(
+                targetLanguageCode = opt.code,
+                targetLanguageLabel = opt.displayName,
+                errorMessage = null,
+                statusMessage = "Switching subtitles to ${opt.displayName}..."
+            )
+            refreshReadinessAsync(opt.code)
+            if (needsMlKitTranslation(opt.code)) {
+                scope.launch { ensureMlKitLanguagePackDownloaded(opt.code) }
+            }
+            retranslateCachedWindowsAsync(
+                primaryCode = opt.code,
+                primaryLabel = opt.displayName,
+                dualEnabled = cur.dualSubtitlesEnabled,
+                secondaryCode = cur.secondaryLanguageCode,
+                secondaryLabel = cur.secondaryLanguageLabel,
+                retranslatePrimary = true,
+                retranslateSecondary = false
+            )
+            return
+        }
+
+        if (allowInstantRetranslate) {
+            retranslateJob?.cancel()
+            retranslateJob = null
             pauseProcessing()
             clearGeneratedCues()
         }
@@ -379,16 +524,127 @@ class AutoSubtitleManager(
             }
         )
         refreshReadinessAsync(opt.code)
-        if (wasEnabled && activeMediaUri.isNotBlank()) {
+        if (wasEnabled && allowInstantRetranslate && activeMediaUri.isNotBlank()) {
             enableAndPrepare(lastPlaybackPositionMs, isPlaybackActive)
         }
     }
 
     /**
+     * Re-translates already-cached `rawOriginalText` windows in the background (prioritizing the
+     * window nearest to live playback position first) using single-request batched neural
+     * translation so switching languages updates the UI in < 1 second with ZERO Whisper re-run.
+     */
+    private fun retranslateCachedWindowsAsync(
+        primaryCode: String,
+        primaryLabel: String,
+        dualEnabled: Boolean,
+        secondaryCode: String,
+        secondaryLabel: String,
+        retranslatePrimary: Boolean,
+        retranslateSecondary: Boolean
+    ) {
+        retranslateJob?.cancel()
+        val expectedUri = activeMediaUri
+        val anchorPos = lastPlaybackPositionMs
+        retranslateJob = scope.launch {
+            val snapshotEntries = synchronized(cuesLock) {
+                rawBlocksByWindow.entries
+                    .map { it.key to it.value }
+                    .sortedBy { (winStart, _) -> abs(winStart - anchorPos) }
+            }
+            if (snapshotEntries.isEmpty()) return@launch
+
+            val primaryFallback = if (retranslatePrimary && needsMlKitTranslation(primaryCode)) {
+                getOrCreateTranslator(primaryCode)
+            } else null
+            val secondaryFallback = if (retranslateSecondary && dualEnabled && needsMlKitTranslation(secondaryCode)) {
+                getOrCreateTranslator(secondaryCode)
+            } else null
+
+            for ((winStart, blocks) in snapshotEntries) {
+                coroutineContext.ensureActive()
+                if (activeMediaUri != expectedUri) return@launch
+                if (blocks.isEmpty()) continue
+
+                val newPrimaryCues = if (retranslatePrimary) {
+                    val translatedList = translateBlocksBatched(
+                        blocks = blocks,
+                        targetCode = primaryCode,
+                        mlKitFallback = primaryFallback,
+                        sourceIsAlreadyEnglish = cachedWindowsUsedEnglishBridge || audioTrackLanguageHint == "en"
+                    )
+                    val builtCues = mutableListOf<SubtitleCue>()
+                    val builtCached = mutableListOf<CachedSubtitleSegment>()
+                    for (i in blocks.indices) {
+                        val block = blocks[i]
+                        val tr = translatedList[i]
+                        builtCached.add(
+                            CachedSubtitleSegment(
+                                startTimeMs = block.startTimeMs,
+                                endTimeMs = block.endTimeMs,
+                                rawOriginalText = block.mergedText,
+                                translatedText = tr
+                            )
+                        )
+                        builtCues.addAll(mapTranslatedSentenceToCues(block, tr))
+                    }
+                    builtCached to enforceStrictNonOverlap(builtCues)
+                } else null
+
+                val newSecondaryCues = if (retranslateSecondary && dualEnabled) {
+                    val translatedSec = if (secondaryCode.equals(primaryCode, ignoreCase = true) && newPrimaryCues != null) {
+                        newPrimaryCues.first.map { it.translatedText }
+                    } else {
+                        translateBlocksBatched(
+                            blocks = blocks,
+                            targetCode = secondaryCode,
+                            mlKitFallback = secondaryFallback,
+                            sourceIsAlreadyEnglish = cachedWindowsUsedEnglishBridge || audioTrackLanguageHint == "en"
+                        )
+                    }
+                    val builtSec = mutableListOf<SubtitleCue>()
+                    for (i in blocks.indices) {
+                        builtSec.addAll(mapTranslatedSentenceToCues(blocks[i], translatedSec[i]))
+                    }
+                    enforceStrictNonOverlap(builtSec)
+                } else null
+
+                synchronized(cuesLock) {
+                    if (activeMediaUri != expectedUri) return@synchronized
+                    if (newPrimaryCues != null) {
+                        cachedSegmentsByWindow[winStart] = newPrimaryCues.first
+                        primaryCuesByWindow[winStart] = newPrimaryCues.second
+                        sortedPrimaryCues = suppressConsecutiveDuplicateCues(
+                            enforceStrictNonOverlap(
+                                primaryCuesByWindow.values.flatten().sortedBy { it.startTimeMs }
+                            )
+                        )
+                    }
+                    if (newSecondaryCues != null) {
+                        secondaryCuesByWindow[winStart] = newSecondaryCues
+                        sortedSecondaryCues = suppressConsecutiveDuplicateCues(
+                            enforceStrictNonOverlap(
+                                secondaryCuesByWindow.values.flatten().sortedBy { it.startTimeMs }
+                            )
+                        )
+                    }
+                }
+
+                val modeLabel = if (dualEnabled) "$primaryLabel + $secondaryLabel" else primaryLabel
+                _state.value = _state.value.copy(
+                    generatedCueCount = sortedPrimaryCues.size,
+                    translationRevision = _state.value.translationRevision + 1,
+                    statusMessage = "Live Auto Subtitles ($modeLabel) · ${sortedPrimaryCues.size} lines synced"
+                )
+            }
+        }
+    }
+
+    /**
      * One-Click Setup & Instant Fast-Start Activation:
-     * Ensures Whisper model is ready, prepares ML Kit offline fallback packs (best-effort so
-     * Online Neural Translation starts immediately without waiting), and kicks off the 7-second
-     * fast-start chunk followed by 20-second rolling look-ahead windows.
+     * Anchors strictly to live [currentPositionMs] (`exoPlayer.currentPosition.coerceAtLeast(0L)`),
+     * ensures Whisper model is ready, prepares ML Kit offline fallback packs in background, and
+     * launches the 6-second fast-start chunk followed by 18-second rolling look-ahead (max 60s ahead).
      */
     fun enableAndPrepare(currentPositionMs: Long, isPlayingNow: Boolean) {
         if (activeMediaUri.isBlank()) {
@@ -397,7 +653,8 @@ class AutoSubtitleManager(
             )
             return
         }
-        lastPlaybackPositionMs = currentPositionMs.coerceAtLeast(0L)
+        val anchorPos = currentPositionMs.coerceAtLeast(0L)
+        lastPlaybackPositionMs = anchorPos
         isPlaybackActive = isPlayingNow
 
         if (_state.value.loadedFromSavedSrt && sortedPrimaryCues.isNotEmpty() && !_state.value.dualSubtitlesEnabled) {
@@ -460,8 +717,12 @@ class AutoSubtitleManager(
                     errorMessage = null
                 )
 
-                // Immediately kick off the fast 6-second first chunk right at currentPosMs
-                scheduleRollingGeneration(lastPlaybackPositionMs, forceFirstChunkWhilePaused = !isPlaybackActive)
+                // Immediately anchor the fast 6-second first chunk right at live currentPosMs
+                reanchorAtPosition(
+                    anchorPositionMs = lastPlaybackPositionMs,
+                    debounceMs = 0L,
+                    forceFirstChunkWhilePaused = !isPlaybackActive
+                )
             } catch (ce: CancellationException) {
                 _state.value = _state.value.copy(isSetupRunning = false, setupStepLabel = "")
                 throw ce
@@ -478,8 +739,11 @@ class AutoSubtitleManager(
     }
 
     fun disable() {
+        seekGenerationId.incrementAndGet()
         setupJob?.cancel()
         setupJob = null
+        retranslateJob?.cancel()
+        retranslateJob = null
         pauseProcessing()
         _state.value = _state.value.copy(
             isEnabled = false,
@@ -492,8 +756,50 @@ class AutoSubtitleManager(
         )
     }
 
+    /**
+     * Pauses rolling look-ahead immediately when the player pauses or moves to background so
+     * CPU and battery are never wasted while paused. Preserves all cached cues for instant resume.
+     */
+    fun onPaused() {
+        isPlaybackActive = false
+        val cur = _state.value
+        if (!cur.isEnabled || cur.isSetupRunning) {
+            pauseProcessing()
+            return
+        }
+        if (cur.loadedFromSavedSrt && !cur.dualSubtitlesEnabled) return
+        if (activeSubtitleJob?.isActive == true || cur.isGeneratingChunk) {
+            pauseProcessing()
+            _state.value = _state.value.copy(
+                isGeneratingChunk = false,
+                activeChunkIndex = -1,
+                statusMessage = "Paused · Auto Subtitles standing by (0% CPU)"
+            )
+        }
+    }
+
+    /**
+     * Seamlessly resumes rolling look-ahead anchored at [currentPositionMs] when playback resumes.
+     */
+    fun onResumed(currentPositionMs: Long) {
+        val pos = currentPositionMs.coerceAtLeast(0L)
+        lastPlaybackPositionMs = pos
+        isPlaybackActive = true
+        val cur = _state.value
+        if (!cur.isEnabled || cur.isSetupRunning) return
+        if (cur.loadedFromSavedSrt && !cur.dualSubtitlesEnabled) return
+
+        val nextWin = synchronized(cuesLock) {
+            planNextWindow(pos, coveredIntervals, activeMediaDurationMs)
+        }
+        if (nextWin != null && activeSubtitleJob?.isActive != true) {
+            scheduleRollingGeneration(anchorPositionMs = pos, debounceMs = 0L)
+        }
+    }
+
     fun onPlaybackStateUpdated(positionMs: Long, isPlaying: Boolean) {
-        lastPlaybackPositionMs = positionMs.coerceAtLeast(0L)
+        val pos = positionMs.coerceAtLeast(0L)
+        lastPlaybackPositionMs = pos
         val wasPlaying = isPlaybackActive
         isPlaybackActive = isPlaying
 
@@ -502,46 +808,96 @@ class AutoSubtitleManager(
         if (cur.loadedFromSavedSrt && !cur.dualSubtitlesEnabled) return
 
         if (!isPlaying) {
-            if (wasPlaying || workerJob?.isActive == true) {
-                pauseProcessing()
-                _state.value = _state.value.copy(
-                    isGeneratingChunk = false,
-                    statusMessage = "Paused · Auto Subtitles standing by (0% CPU)"
-                )
+            if (wasPlaying || activeSubtitleJob?.isActive == true) {
+                onPaused()
             }
             return
         }
 
         val nextWin = synchronized(cuesLock) {
-            planNextWindow(lastPlaybackPositionMs, coveredIntervals, activeMediaDurationMs)
+            planNextWindow(pos, coveredIntervals, activeMediaDurationMs)
         }
-        if (nextWin != null && (workerJob == null || workerJob?.isActive != true)) {
-            scheduleRollingGeneration(lastPlaybackPositionMs)
+        if (nextWin != null && activeSubtitleJob?.isActive != true) {
+            scheduleRollingGeneration(anchorPositionMs = pos, debounceMs = 0L)
         }
     }
 
-    fun onSeekTo(positionMs: Long) {
-        lastPlaybackPositionMs = positionMs.coerceAtLeast(0L)
+    /**
+     * Drift Watchdog called from the 80ms subtitle display loop:
+     * If CC is ON and live playback position is > 3 seconds outside any cached chunk with no
+     * active job targeting it (e.g., resume jump or fast-forward drift), auto-reanchors strictly
+     * at [currentPositionMs].
+     */
+    fun checkDriftWatchdog(currentPositionMs: Long) {
+        val pos = currentPositionMs.coerceAtLeast(0L)
+        lastPlaybackPositionMs = pos
+        val cur = _state.value
+        if (!cur.isEnabled || cur.isSetupRunning || !isPlaybackActive) return
+        if (cur.loadedFromSavedSrt && !cur.dualSubtitlesEnabled) return
+
+        val drifted = synchronized(cuesLock) {
+            isPositionDriftedBeyondThreshold(
+                positionMs = pos,
+                covered = coveredIntervals,
+                activeProcessingWindow = activeProcessingWindow,
+                thresholdMs = DRIFT_WATCHDOG_THRESHOLD_MS
+            )
+        }
+        if (!drifted) return
+
+        // Avoid rapid re-triggers while an already-launched watchdog job is starting up
+        if (activeSubtitleJob?.isActive == true &&
+            abs(pos - lastDriftTriggerPosMs) <= DRIFT_WATCHDOG_THRESHOLD_MS
+        ) {
+            return
+        }
+        lastDriftTriggerPosMs = pos
+        reanchorAtPosition(anchorPositionMs = pos, debounceMs = 0L)
+    }
+
+    /**
+     * Handles ExoPlayer `Player.DISCONTINUITY_REASON_SEEK` (seekbar drag, ±10s double-tap,
+     * bookmark jump, or resume jump):
+     * - If [newPositionMs] is already covered by cached chunks, serves instantly without restarting.
+     * - If NOT covered, increments [seekGenerationId], cancels the active coroutine immediately,
+     *   debounces by 350ms, and launches a fresh job anchored strictly at [newPositionMs] with a
+     *   6-second fast-start chunk followed by 18-second rolling look-ahead (max 60s ahead).
+     */
+    fun onSeekDiscontinuity(newPositionMs: Long) {
+        val pos = newPositionMs.coerceAtLeast(0L)
+        lastPlaybackPositionMs = pos
         val cur = _state.value
         if (!cur.isEnabled || cur.isSetupRunning) return
         if (cur.loadedFromSavedSrt && !cur.dualSubtitlesEnabled) return
 
-        val currentProcessing = activeProcessingWindow
-        val isSeekFarFromProcessing = currentProcessing != null &&
-            (lastPlaybackPositionMs < currentProcessing.first - 1_500L ||
-                lastPlaybackPositionMs > currentProcessing.last + 2_000L)
-        if (isSeekFarFromProcessing) {
+        val alreadyCovered = synchronized(cuesLock) {
+            isPositionCovered(pos, coveredIntervals)
+        }
+        if (alreadyCovered) {
+            if (isPlaybackActive && activeSubtitleJob?.isActive != true) {
+                scheduleRollingGeneration(anchorPositionMs = pos, debounceMs = 0L)
+            }
+            return
+        }
+
+        lastDriftTriggerPosMs = pos
+        if (isPlaybackActive) {
+            reanchorAtPosition(anchorPositionMs = pos, debounceMs = SEEK_DEBOUNCE_MS)
+        } else {
+            // Even if paused when seeking, abort stale job targeting old timestamp so CPU stays 0%
+            seekGenerationId.incrementAndGet()
             pauseProcessing()
         }
-        if (isPlaybackActive) {
-            scheduleRollingGeneration(lastPlaybackPositionMs)
-        }
+    }
+
+    fun onSeekTo(positionMs: Long) {
+        onSeekDiscontinuity(positionMs)
     }
 
     fun pauseProcessing() {
         whisperSpeechEngine.requestAbortNativeInference()
-        workerJob?.cancel()
-        workerJob = null
+        activeSubtitleJob?.cancel()
+        activeSubtitleJob = null
         activeProcessingWindow = null
         if (_state.value.isGeneratingChunk) {
             _state.value = _state.value.copy(
@@ -551,28 +907,91 @@ class AutoSubtitleManager(
         }
     }
 
-    private fun scheduleRollingGeneration(
+    private fun reanchorAtPosition(
         anchorPositionMs: Long,
+        debounceMs: Long,
         forceFirstChunkWhilePaused: Boolean = false
     ) {
         val uri = activeMediaUri
         if (uri.isBlank() || !_state.value.isEnabled) return
         if (!isPlaybackActive && !forceFirstChunkWhilePaused) return
-        if (workerJob?.isActive == true) return
 
-        lastPlaybackPositionMs = anchorPositionMs.coerceAtLeast(0L)
-        workerJob = scope.launch {
+        val myGen = seekGenerationId.incrementAndGet()
+        whisperSpeechEngine.requestAbortNativeInference()
+        activeSubtitleJob?.cancel()
+        activeSubtitleJob = null
+        activeProcessingWindow = null
+
+        launchSubtitleWorker(
+            uri = uri,
+            anchorPositionMs = anchorPositionMs.coerceAtLeast(0L),
+            generationId = myGen,
+            debounceMs = debounceMs,
+            forceFirstChunkWhilePaused = forceFirstChunkWhilePaused
+        )
+    }
+
+    private fun scheduleRollingGeneration(
+        anchorPositionMs: Long,
+        debounceMs: Long = 0L,
+        forceFirstChunkWhilePaused: Boolean = false
+    ) {
+        val uri = activeMediaUri
+        if (uri.isBlank() || !_state.value.isEnabled) return
+        if (!isPlaybackActive && !forceFirstChunkWhilePaused) return
+        if (activeSubtitleJob?.isActive == true) return
+
+        val myGen = seekGenerationId.get()
+        launchSubtitleWorker(
+            uri = uri,
+            anchorPositionMs = anchorPositionMs.coerceAtLeast(0L),
+            generationId = myGen,
+            debounceMs = debounceMs,
+            forceFirstChunkWhilePaused = forceFirstChunkWhilePaused
+        )
+    }
+
+    private fun launchSubtitleWorker(
+        uri: String,
+        anchorPositionMs: Long,
+        generationId: Long,
+        debounceMs: Long,
+        forceFirstChunkWhilePaused: Boolean
+    ) {
+        lastPlaybackPositionMs = anchorPositionMs
+        activeSubtitleJob = scope.launch {
             try {
+                if (debounceMs > 0L) {
+                    delay(debounceMs)
+                }
+                if (generationId != seekGenerationId.get()) return@launch
+                if (activeMediaUri != uri) return@launch
+
                 var didSinglePausedFastStart = false
-                while (_state.value.isEnabled && (isPlaybackActive || (forceFirstChunkWhilePaused && !didSinglePausedFastStart))) {
+                var isFirstWindowAfterAnchor = true
+                while (_state.value.isEnabled &&
+                    generationId == seekGenerationId.get() &&
+                    activeMediaUri == uri &&
+                    (isPlaybackActive || (forceFirstChunkWhilePaused && !didSinglePausedFastStart))
+                ) {
                     ensureActive()
-                    val pos = lastPlaybackPositionMs
+                    val pos = if (isFirstWindowAfterAnchor) {
+                        isFirstWindowAfterAnchor = false
+                        anchorPositionMs
+                    } else {
+                        lastPlaybackPositionMs
+                    }
                     val nextWindow = synchronized(cuesLock) {
                         planNextWindow(pos, coveredIntervals, activeMediaDurationMs)
                     } ?: break
 
                     val (windowStartMs, windowDurationMs) = nextWindow
-                    processSingleWindow(uri, windowStartMs, windowDurationMs)
+                    processSingleWindow(
+                        mediaUriString = uri,
+                        windowStartMs = windowStartMs,
+                        windowDurationMs = windowDurationMs,
+                        expectedGen = generationId
+                    )
                     if (!isPlaybackActive) {
                         didSinglePausedFastStart = true
                     }
@@ -580,29 +999,33 @@ class AutoSubtitleManager(
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
-                _state.value = _state.value.copy(
-                    isGeneratingChunk = false,
-                    activeChunkIndex = -1,
-                    errorMessage = t.message ?: "Auto subtitle generation paused due to an error."
-                )
-            } finally {
-                activeProcessingWindow = null
-                if (_state.value.isGeneratingChunk) {
-                    val s = _state.value
-                    val label = if (s.dualSubtitlesEnabled) {
-                        "${s.targetLanguageLabel} + ${s.secondaryLanguageLabel}"
-                    } else {
-                        s.targetLanguageLabel
-                    }
-                    _state.value = s.copy(
+                if (generationId == seekGenerationId.get()) {
+                    _state.value = _state.value.copy(
                         isGeneratingChunk = false,
                         activeChunkIndex = -1,
-                        statusMessage = if (s.isEnabled) {
-                            "Live Auto Subtitles ($label) · ${s.generatedCueCount} lines synced"
-                        } else {
-                            "Off"
-                        }
+                        errorMessage = t.message ?: "Auto subtitle generation paused due to an error."
                     )
+                }
+            } finally {
+                if (generationId == seekGenerationId.get()) {
+                    activeProcessingWindow = null
+                    if (_state.value.isGeneratingChunk) {
+                        val s = _state.value
+                        val label = if (s.dualSubtitlesEnabled) {
+                            "${s.targetLanguageLabel} + ${s.secondaryLanguageLabel}"
+                        } else {
+                            s.targetLanguageLabel
+                        }
+                        _state.value = s.copy(
+                            isGeneratingChunk = false,
+                            activeChunkIndex = -1,
+                            statusMessage = if (s.isEnabled) {
+                                "Live Auto Subtitles ($label) · ${s.generatedCueCount} lines synced"
+                            } else {
+                                "Off"
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -611,26 +1034,25 @@ class AutoSubtitleManager(
     private suspend fun processSingleWindow(
         mediaUriString: String,
         windowStartMs: Long,
-        windowDurationMs: Long
+        windowDurationMs: Long,
+        expectedGen: Long
     ) {
-        val snapshot = _state.value
-        val targetCode = snapshot.targetLanguageCode
-        val targetLabel = snapshot.targetLanguageLabel
-        val dualEnabled = snapshot.dualSubtitlesEnabled
-        val secondaryCode = snapshot.secondaryLanguageCode
+        // Stale Result Guard #1
+        if (expectedGen != seekGenerationId.get() || activeMediaUri != mediaUriString) return
 
+        val initialSnapshot = _state.value
         val seqIndex = windowCounter++
         val isFastStart = windowDurationMs <= FAST_START_CHUNK_DURATION_MS + 500L
         activeProcessingWindow = windowStartMs..(windowStartMs + windowDurationMs)
 
-        _state.value = snapshot.copy(
+        _state.value = initialSnapshot.copy(
             isGeneratingChunk = true,
             activeChunkIndex = seqIndex,
             errorMessage = null,
             statusMessage = if (isFastStart) {
-                "Instant start ($targetLabel · ${windowDurationMs / 1000L}s)..."
+                "Instant start (${initialSnapshot.targetLanguageLabel} · ${windowDurationMs / 1000L}s)..."
             } else {
-                "Syncing speech ($targetLabel · +${windowDurationMs / 1000L}s ahead)..."
+                "Syncing speech (${initialSnapshot.targetLanguageLabel} · +${windowDurationMs / 1000L}s ahead)..."
             }
         )
 
@@ -638,16 +1060,24 @@ class AutoSubtitleManager(
             mediaUriString = mediaUriString,
             startMs = windowStartMs,
             windowDurationMs = windowDurationMs,
-            chunkIndex = seqIndex
+            chunkIndex = seqIndex,
+            preferredAudioTrackIndex = activeAudioTrackIndex,
+            preferredAudioLanguageCode = audioTrackLanguageHint
         ).getOrThrow()
+
+        // Stale Result Guard #2
+        if (expectedGen != seekGenerationId.get() || activeMediaUri != mediaUriString) return
 
         val actualStartMs = pcmChunk.startTimeMs
         val actualEndMs = (actualStartMs + pcmChunk.durationMs.coerceAtLeast(windowDurationMs))
 
         if (pcmChunk.samples16kMono.isEmpty() || !hasChunkSpeechActivity(pcmChunk.samples16kMono)) {
             synchronized(cuesLock) {
+                if (expectedGen != seekGenerationId.get() || activeMediaUri != mediaUriString) return
+                rawBlocksByWindow[windowStartMs] = emptyList()
+                cachedSegmentsByWindow[windowStartMs] = emptyList()
                 primaryCuesByWindow[windowStartMs] = emptyList()
-                if (dualEnabled) {
+                if (_state.value.dualSubtitlesEnabled) {
                     secondaryCuesByWindow[windowStartMs] = emptyList()
                 }
                 recordCoveredInterval(windowStartMs..actualEndMs)
@@ -655,8 +1085,10 @@ class AutoSubtitleManager(
             return
         }
 
-        val needsEnglishBridge = targetCode != AutoSubtitleLanguageCatalog.CODE_ORIGINAL ||
-            (dualEnabled && secondaryCode != AutoSubtitleLanguageCatalog.CODE_ORIGINAL)
+        val preWhisperSnapshot = _state.value
+        val needsEnglishBridge = preWhisperSnapshot.targetLanguageCode != AutoSubtitleLanguageCatalog.CODE_ORIGINAL ||
+            (preWhisperSnapshot.dualSubtitlesEnabled &&
+                preWhisperSnapshot.secondaryLanguageCode != AutoSubtitleLanguageCatalog.CODE_ORIGINAL)
 
         val whisperLangParam = buildWhisperLanguageParam(
             sourceLanguageHint = audioTrackLanguageHint,
@@ -668,11 +1100,15 @@ class AutoSubtitleManager(
             language = whisperLangParam
         ).getOrThrow()
 
+        // Stale Result Guard #3
+        if (expectedGen != seekGenerationId.get() || activeMediaUri != mediaUriString) return
+
         // Stage 1: Sanitize + Speech-Synced VAD trim + Raw Consecutive Duplicate Suppressor
         val chunkNoiseFloor = estimateChunkNoiseFloor(pcmChunk.samples16kMono)
         val vadSegments = mutableListOf<VadTimedSegment>()
         for (seg in rawSegments) {
             coroutineContext.ensureActive()
+            if (expectedGen != seekGenerationId.get()) return
             val cleaned = SubtitleSanitizer.sanitize(seg.originalText) ?: continue
             val rawStart = seg.startTimeMs.coerceIn(actualStartMs, actualEndMs)
             val rawEnd = seg.endTimeMs.coerceIn(rawStart + 350L, actualEndMs + 500L)
@@ -708,6 +1144,13 @@ class AutoSubtitleManager(
         // Stage 2: Smart Sentence Merging before translation for natural grammatical accuracy
         val mergedSentences = mergeIncompleteSentences(vadSegments)
 
+        // Read latest target language in case user switched language while Whisper was decoding
+        val latestSnapshot = _state.value
+        val targetCode = latestSnapshot.targetLanguageCode
+        val targetLabel = latestSnapshot.targetLanguageLabel
+        val dualEnabled = latestSnapshot.dualSubtitlesEnabled
+        val secondaryCode = latestSnapshot.secondaryLanguageCode
+
         val primaryFallbackTranslator = if (needsMlKitTranslation(targetCode)) {
             getOrCreateTranslator(targetCode)
         } else null
@@ -716,15 +1159,16 @@ class AutoSubtitleManager(
             getOrCreateTranslator(secondaryCode)
         } else null
 
-        val generatedPrimary = mutableListOf<SubtitleCue>()
-        val generatedSecondary = mutableListOf<SubtitleCue>()
-
         // Stage 3: Single-Request Batched Online Neural Translation Primary + Offline ML Kit Fallback
         val translatedPrimaryList = translateBlocksBatched(
             blocks = mergedSentences,
             targetCode = targetCode,
             mlKitFallback = primaryFallbackTranslator
         )
+
+        // Stale Result Guard #4
+        if (expectedGen != seekGenerationId.get() || activeMediaUri != mediaUriString) return
+
         val translatedSecondaryList = if (dualEnabled) {
             if (secondaryCode.equals(targetCode, ignoreCase = true)) {
                 translatedPrimaryList
@@ -739,9 +1183,25 @@ class AutoSubtitleManager(
             emptyList()
         }
 
+        // Stale Result Guard #5 (before committing to cache or emitting to UI)
+        if (expectedGen != seekGenerationId.get() || activeMediaUri != mediaUriString) return
+
+        val generatedPrimary = mutableListOf<SubtitleCue>()
+        val generatedSecondary = mutableListOf<SubtitleCue>()
+        val cachedSegments = mutableListOf<CachedSubtitleSegment>()
+
         for (i in mergedSentences.indices) {
             val block = mergedSentences[i]
-            generatedPrimary.addAll(mapTranslatedSentenceToCues(block, translatedPrimaryList[i]))
+            val primaryTranslated = translatedPrimaryList[i]
+            cachedSegments.add(
+                CachedSubtitleSegment(
+                    startTimeMs = block.startTimeMs,
+                    endTimeMs = block.endTimeMs,
+                    rawOriginalText = block.mergedText,
+                    translatedText = primaryTranslated
+                )
+            )
+            generatedPrimary.addAll(mapTranslatedSentenceToCues(block, primaryTranslated))
             if (dualEnabled && i < translatedSecondaryList.size) {
                 generatedSecondary.addAll(mapTranslatedSentenceToCues(block, translatedSecondaryList[i]))
             }
@@ -751,6 +1211,12 @@ class AutoSubtitleManager(
         val nonOverlappingSecondary = enforceStrictNonOverlap(generatedSecondary)
 
         synchronized(cuesLock) {
+            if (expectedGen != seekGenerationId.get() || activeMediaUri != mediaUriString) return
+            if (needsEnglishBridge) {
+                cachedWindowsUsedEnglishBridge = true
+            }
+            rawBlocksByWindow[windowStartMs] = mergedSentences
+            cachedSegmentsByWindow[windowStartMs] = cachedSegments
             primaryCuesByWindow[windowStartMs] = nonOverlappingPrimary
             sortedPrimaryCues = suppressConsecutiveDuplicateCues(
                 enforceStrictNonOverlap(
@@ -771,11 +1237,14 @@ class AutoSubtitleManager(
             recordCoveredInterval(windowStartMs..actualEndMs)
         }
 
+        if (expectedGen != seekGenerationId.get() || activeMediaUri != mediaUriString) return
+
         // Immediately publish translated chunk to UI state flow
-        val modeLabel = if (dualEnabled) "$targetLabel + ${snapshot.secondaryLanguageLabel}" else targetLabel
+        val modeLabel = if (dualEnabled) "$targetLabel + ${latestSnapshot.secondaryLanguageLabel}" else targetLabel
         _state.value = _state.value.copy(
             completedChunksCount = primaryCuesByWindow.size,
             generatedCueCount = sortedPrimaryCues.size,
+            translationRevision = _state.value.translationRevision + 1,
             statusMessage = "Live Auto Subtitles ($modeLabel) · ${sortedPrimaryCues.size} lines synced"
         )
     }
@@ -783,10 +1252,14 @@ class AutoSubtitleManager(
     private suspend fun translateBlocksBatched(
         blocks: List<MergedSentenceBlock>,
         targetCode: String,
-        mlKitFallback: Translator?
+        mlKitFallback: Translator?,
+        sourceIsAlreadyEnglish: Boolean = true
     ): List<String> {
         if (blocks.isEmpty()) return emptyList()
-        if (targetCode == AutoSubtitleLanguageCatalog.CODE_ORIGINAL ||
+        if (targetCode == AutoSubtitleLanguageCatalog.CODE_ORIGINAL) {
+            return blocks.map { it.mergedText }
+        }
+        if (sourceIsAlreadyEnglish &&
             targetCode.equals(AutoSubtitleLanguageCatalog.CODE_ENGLISH, ignoreCase = true)
         ) {
             return blocks.map { it.mergedText }
@@ -808,7 +1281,8 @@ class AutoSubtitleManager(
                     translateSentenceWithNeuralPrimary(
                         text = rawLines[i],
                         targetCode = targetCode,
-                        mlKitFallback = mlKitFallback
+                        mlKitFallback = mlKitFallback,
+                        sourceIsAlreadyEnglish = sourceIsAlreadyEnglish
                     )
                 )
             }
@@ -819,10 +1293,13 @@ class AutoSubtitleManager(
     private suspend fun translateSentenceWithNeuralPrimary(
         text: String,
         targetCode: String,
-        mlKitFallback: Translator?
+        mlKitFallback: Translator?,
+        sourceIsAlreadyEnglish: Boolean = true
     ): String {
         if (targetCode == AutoSubtitleLanguageCatalog.CODE_ORIGINAL) return text
-        if (targetCode.equals(AutoSubtitleLanguageCatalog.CODE_ENGLISH, ignoreCase = true)) {
+        if (sourceIsAlreadyEnglish &&
+            targetCode.equals(AutoSubtitleLanguageCatalog.CODE_ENGLISH, ignoreCase = true)
+        ) {
             return text
         }
         // 1. Online Neural Translation Primary (natural grammar + memory cached)
@@ -960,11 +1437,14 @@ class AutoSubtitleManager(
 
     private fun clearGeneratedCues() {
         synchronized(cuesLock) {
+            rawBlocksByWindow.clear()
+            cachedSegmentsByWindow.clear()
             primaryCuesByWindow.clear()
             secondaryCuesByWindow.clear()
             coveredIntervals.clear()
             sortedPrimaryCues = emptyList()
             sortedSecondaryCues = emptyList()
+            cachedWindowsUsedEnglishBridge = false
         }
         windowCounter = 0
         lastEmittedRawNormalized = null
@@ -1014,7 +1494,9 @@ class AutoSubtitleManager(
     }
 
     fun release() {
+        seekGenerationId.incrementAndGet()
         setupJob?.cancel()
+        retranslateJob?.cancel()
         pauseProcessing()
         clearGeneratedCues()
         neuralTranslator.clearCache()
@@ -1025,6 +1507,9 @@ class AutoSubtitleManager(
     companion object {
         const val FAST_START_CHUNK_DURATION_MS: Long = 6_000L
         const val ROLLING_CHUNK_DURATION_MS: Long = 18_000L
+        const val MAX_LOOKAHEAD_MS: Long = 60_000L
+        const val SEEK_DEBOUNCE_MS: Long = 350L
+        const val DRIFT_WATCHDOG_THRESHOLD_MS: Long = 3_000L
         const val CHUNK_DURATION_MS: Long = ROLLING_CHUNK_DURATION_MS
         const val SAMPLE_RATE_HZ: Int = 16_000
         private const val MAX_MERGED_SENTENCE_WORDS: Int = 18
@@ -1128,12 +1613,52 @@ class AutoSubtitleManager(
             return (positionMs.coerceAtLeast(0L) / ROLLING_CHUNK_DURATION_MS).toInt()
         }
 
+        fun isPositionCovered(positionMs: Long, covered: List<LongRange>): Boolean {
+            val pos = positionMs.coerceAtLeast(0L)
+            return covered.any { pos in it }
+        }
+
         /**
-         * Progressive Fast-Start Window Planner (v2.6.0):
-         * 1. If [currentPositionMs] is NOT covered yet (initial enable or after a seek), returns
-         *    a fast **7-second first chunk** `[currentPositionMs, 7_000L]` so Whisper finishes in ~1.5–2s.
-         * 2. If [currentPositionMs] IS covered, plans the next **20-second rolling look-ahead chunk**
-         *    immediately after the covering interval if within `20_000L` of current playback.
+         * Drift Watchdog predicate:
+         * Returns `true` when [positionMs] is more than [thresholdMs] (default 3 seconds) outside
+         * every cached interval AND no active processing window is already targeting [positionMs].
+         */
+        fun isPositionDriftedBeyondThreshold(
+            positionMs: Long,
+            covered: List<LongRange>,
+            activeProcessingWindow: LongRange?,
+            thresholdMs: Long = DRIFT_WATCHDOG_THRESHOLD_MS
+        ): Boolean {
+            val pos = positionMs.coerceAtLeast(0L)
+            if (activeProcessingWindow != null) {
+                val winDist = when {
+                    pos < activeProcessingWindow.first -> activeProcessingWindow.first - pos
+                    pos > activeProcessingWindow.last -> pos - activeProcessingWindow.last
+                    else -> 0L
+                }
+                if (winDist <= thresholdMs) return false
+            }
+            if (covered.isEmpty()) return true
+            var minDist = Long.MAX_VALUE
+            for (range in covered) {
+                val dist = when {
+                    pos < range.first -> range.first - pos
+                    pos > range.last -> pos - range.last
+                    else -> 0L
+                }
+                if (dist == 0L) return false
+                if (dist < minDist) minDist = dist
+            }
+            return minDist > thresholdMs
+        }
+
+        /**
+         * Progressive Fast-Start Window Planner (v2.6.3):
+         * 1. If [currentPositionMs] is NOT covered yet (initial enable, resume, or seek), returns
+         *    a fast **6-second first chunk** `[currentPositionMs, 6_000L]` anchored strictly at `pos`.
+         * 2. If [currentPositionMs] IS covered, plans the next **18-second rolling look-ahead chunk**
+         *    immediately after the covering interval, strictly capped at max **60 seconds** ahead of
+         *    [currentPositionMs] ([MAX_LOOKAHEAD_MS]).
          */
         fun planNextWindow(
             currentPositionMs: Long,
@@ -1147,7 +1672,7 @@ class AutoSubtitleManager(
             val coveringCurrent = merged.firstOrNull { pos in it }
 
             if (coveringCurrent == null) {
-                // Fast-Start 7-second chunk right at current playback / seek position
+                // Fast-Start 6-second chunk right at current playback / seek position
                 val nextStart = merged.firstOrNull { it.first > pos }?.first
                 val maxEnd = if (durationMs > 0L) durationMs else Long.MAX_VALUE
                 val desiredEnd = minOf(pos + FAST_START_CHUNK_DURATION_MS, nextStart ?: maxEnd, maxEnd)
@@ -1155,14 +1680,20 @@ class AutoSubtitleManager(
                 return if (dur >= 1_000L) pos to dur else null
             }
 
-            // Current position is covered: look ahead up to 20s beyond currentPositionMs
+            // Current position is covered: roll 18s look-ahead strictly capped at max 60s ahead of live pos
             val lookAheadStart = coveringCurrent.last
             if (durationMs > 0L && lookAheadStart >= durationMs) return null
-            if (lookAheadStart > pos + ROLLING_CHUNK_DURATION_MS) return null
+            val maxLookAheadEnd = pos + MAX_LOOKAHEAD_MS
+            if (lookAheadStart >= maxLookAheadEnd) return null
 
             val nextCoveredStart = merged.firstOrNull { it.first > lookAheadStart }?.first
             val maxEnd = if (durationMs > 0L) durationMs else Long.MAX_VALUE
-            val desiredEnd = minOf(lookAheadStart + ROLLING_CHUNK_DURATION_MS, nextCoveredStart ?: maxEnd, maxEnd)
+            val desiredEnd = minOf(
+                lookAheadStart + ROLLING_CHUNK_DURATION_MS,
+                maxLookAheadEnd,
+                nextCoveredStart ?: maxEnd,
+                maxEnd
+            )
             val dur = (desiredEnd - lookAheadStart).coerceAtLeast(0L)
             return if (dur >= 1_000L) lookAheadStart to dur else null
         }

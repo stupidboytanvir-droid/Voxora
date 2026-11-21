@@ -155,14 +155,33 @@ class PlayerViewModel(
                         resumeSleepTimerIfNeeded()
                     } else {
                         stopActivePlaybackLoop()
-                        autoSubtitleManager.onPlaybackStateUpdated(
-                            positionMs = playbackState.value.currentPositionMs,
-                            isPlaying = false
-                        )
                         pauseSleepTimerCountdown()
                         refreshSubtitleCueNow()
                     }
                 }
+        }
+
+        // Pause rolling look-ahead strictly when playWhenReady turns false (real pause/background),
+        // without falsely cancelling seek re-anchoring during brief ExoPlayer seek buffering.
+        viewModelScope.launch {
+            playbackState
+                .map { it.playWhenReady && !it.isEnded }
+                .distinctUntilChanged()
+                .collect { shouldGenerate ->
+                    if (shouldGenerate) {
+                        autoSubtitleManager.onResumed(playerEngine.getLivePositionMs())
+                    } else {
+                        autoSubtitleManager.onPaused()
+                    }
+                }
+        }
+
+        // Listen directly to ExoPlayer Player.DISCONTINUITY_REASON_SEEK (seekbar, ±10s, bookmark, resume)
+        viewModelScope.launch {
+            playerEngine.seekDiscontinuityEvents.collect { newPositionMs ->
+                autoSubtitleManager.onSeekDiscontinuity(newPositionMs)
+                refreshSubtitleCueNow()
+            }
         }
 
         // Apply saved Volume Boost + EQ presets whenever audioSessionId or preferences change
@@ -189,20 +208,24 @@ class PlayerViewModel(
                 }
         }
 
-        // Sync active embedded audio track ISO language code to Whisper for higher accuracy
+        // Dual-Audio Track Synchronization: pass active audio track index + ISO language to Whisper/MediaExtractor
         viewModelScope.launch {
             playbackState
-                .map { it.activeAudioLanguageCode }
+                .map { it.activeAudioTrackIndex to it.activeAudioLanguageCode }
                 .distinctUntilChanged()
-                .collect { langCode ->
-                    autoSubtitleManager.setAudioTrackLanguageHint(langCode)
+                .collect { (trackIdx, langCode) ->
+                    autoSubtitleManager.onAudioTrackChanged(
+                        audioTrackIndex = trackIdx,
+                        isoLanguageCode = langCode,
+                        currentPositionMs = playerEngine.getLivePositionMs()
+                    )
                 }
         }
 
-        // Immediately publish newly translated chunks onto the video overlay with zero polling lag
+        // Immediately publish newly translated chunks & instant language switches onto the video overlay
         viewModelScope.launch {
             autoSubtitleState
-                .map { Triple(it.isEnabled, it.completedChunksCount, it.generatedCueCount) }
+                .map { listOf(it.isEnabled, it.completedChunksCount, it.generatedCueCount, it.translationRevision) }
                 .distinctUntilChanged()
                 .collect {
                     refreshSubtitleCueNow()
@@ -238,7 +261,7 @@ class PlayerViewModel(
             var tickCounter = 0
             while (isActive && playbackState.value.isPlaying) {
                 playerEngine.pollPosition()
-                val pos = playbackState.value.currentPositionMs
+                val pos = playerEngine.getLivePositionMs()
 
                 // Seamless A-B Loop check
                 val ab = _uiState.value.abLoop
@@ -246,6 +269,7 @@ class PlayerViewModel(
                     seekTo(ab.pointAMs)
                 } else {
                     autoSubtitleManager.onPlaybackStateUpdated(positionMs = pos, isPlaying = true)
+                    autoSubtitleManager.checkDriftWatchdog(pos)
                     refreshSubtitleCueNow()
                 }
 
@@ -296,7 +320,11 @@ class PlayerViewModel(
         lastSavedPositionMs = -1L
         cancelUpNext()
         app.musicPlayerController.pause()
-        autoSubtitleManager.pauseProcessing()
+        autoSubtitleManager.resetForNewMedia()
+        _uiState.value = _uiState.value.copy(
+            activeSubtitleText = null,
+            activeSecondarySubtitleText = null
+        )
 
         // Observe Scene Bookmarks for this video URI
         bookmarksJob?.cancel()
@@ -416,7 +444,7 @@ class PlayerViewModel(
         if (_uiState.value.isHoldSpeedActive) endHoldSpeed()
         playerEngine.pause()
         stopActivePlaybackLoop()
-        autoSubtitleManager.pauseProcessing()
+        autoSubtitleManager.onPaused()
         pauseSleepTimerCountdown()
         viewModelScope.launch { persistProgressIfChanged(force = true) }
     }
@@ -424,7 +452,7 @@ class PlayerViewModel(
     fun onActivityBackgrounded(isInPipMode: Boolean) {
         if (isInPipMode || _uiState.value.isBackgroundPlayActive) {
             // Keep audio playing seamlessly in PiP or Background Audio mode
-            autoSubtitleManager.pauseProcessing()
+            autoSubtitleManager.onPaused()
             viewModelScope.launch { persistProgressIfChanged(force = true) }
             return
         }
@@ -662,9 +690,10 @@ class PlayerViewModel(
     fun toggleAutoSubtitles(enabled: Boolean) {
         if (enabled) {
             playerEngine.disableSubtitles()
+            val livePosMs = playerEngine.getLivePositionMs()
             autoSubtitleManager.enableAndPrepare(
-                currentPositionMs = playbackState.value.currentPositionMs,
-                isPlayingNow = playbackState.value.isPlaying
+                currentPositionMs = livePosMs,
+                isPlayingNow = playbackState.value.playWhenReady || playbackState.value.isPlaying
             )
         } else {
             autoSubtitleManager.disable()
@@ -957,7 +986,14 @@ class PlayerViewModel(
         _uiState.value = _uiState.value.copy(isFullScreen = !_uiState.value.isFullScreen)
     }
 
-    fun selectAudioTrack(track: AudioTrackInfo) = playerEngine.selectAudioTrack(track)
+    fun selectAudioTrack(track: AudioTrackInfo) {
+        playerEngine.selectAudioTrack(track)
+        autoSubtitleManager.onAudioTrackChanged(
+            audioTrackIndex = track.audioStreamOrdinal,
+            isoLanguageCode = track.isoLanguageCode,
+            currentPositionMs = playerEngine.getLivePositionMs()
+        )
+    }
 
     fun selectSubtitleTrack(track: SubtitleTrackInfo) {
         if (autoSubtitleState.value.isEnabled) autoSubtitleManager.disable()
@@ -1078,7 +1114,7 @@ class PlayerViewModel(
         sleepTimerJob?.cancel()
         upNextJob?.cancel()
         bookmarksJob?.cancel()
-        autoSubtitleManager.pauseProcessing()
+        autoSubtitleManager.onPaused()
         BackgroundAudioPlaybackService.stop(app)
         playerEngine.release()
         super.onCleared()

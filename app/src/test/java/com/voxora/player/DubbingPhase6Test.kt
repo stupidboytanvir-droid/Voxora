@@ -824,4 +824,116 @@ class DubbingPhase6Test {
                 .splitBatchedTranslation("Only one line", expectedCount = 2)
         )
     }
+
+    @Test
+    fun v263_seekSyncWatchdogMultiChannelDownmixAndDualAudioSelection() {
+        // 1. Rolling look-ahead is strictly capped at max 60 seconds ahead of live playback position
+        assertEquals(60_000L, AutoSubtitleManager.MAX_LOOKAHEAD_MS)
+        assertEquals(350L, AutoSubtitleManager.SEEK_DEBOUNCE_MS)
+        assertEquals(3_000L, AutoSubtitleManager.DRIFT_WATCHDOG_THRESHOLD_MS)
+
+        val cappedWin = AutoSubtitleManager.planNextWindow(
+            currentPositionMs = 10_000L,
+            covered = listOf(10_000L..70_000L), // already 60s ahead of 10s
+            durationMs = 300_000L
+        )
+        assertNull("Rolling look-ahead must stop once 60s ahead is covered", cappedWin)
+
+        val clampedWin = AutoSubtitleManager.planNextWindow(
+            currentPositionMs = 10_000L,
+            covered = listOf(10_000L..60_000L), // 50s ahead covered -> only 10s remaining before 60s cap
+            durationMs = 300_000L
+        )
+        assertEquals(60_000L to 10_000L, clampedWin)
+
+        // 2. Drift Watchdog triggers ONLY when > 3s outside covered chunks with no active job targeting it
+        assertFalse(
+            AutoSubtitleManager.isPositionDriftedBeyondThreshold(
+                positionMs = 12_000L,
+                covered = listOf(10_000L..28_000L),
+                activeProcessingWindow = null
+            )
+        )
+        assertFalse(
+            AutoSubtitleManager.isPositionDriftedBeyondThreshold(
+                positionMs = 30_500L, // 2.5s beyond covered end (<= 3s)
+                covered = listOf(10_000L..28_000L),
+                activeProcessingWindow = null
+            )
+        )
+        assertTrue(
+            AutoSubtitleManager.isPositionDriftedBeyondThreshold(
+                positionMs = 32_000L, // 4.0s beyond covered end (> 3s) and no active job
+                covered = listOf(10_000L..28_000L),
+                activeProcessingWindow = null
+            )
+        )
+        assertFalse(
+            AutoSubtitleManager.isPositionDriftedBeyondThreshold(
+                positionMs = 32_000L,
+                covered = listOf(10_000L..28_000L),
+                activeProcessingWindow = 30_000L..36_000L // active job already covers it
+            )
+        )
+
+        // 3. 5.1 (6-channel) and 7.1 (8-channel) PCM downmixing to Mono + 48kHz -> 16kHz exact 3:1 downsampling
+        val sampleRate48k = 48_000
+        val channels51 = 6
+        val frames = sampleRate48k // 1.0 second at 48kHz
+        val bb = java.nio.ByteBuffer.allocate(frames * channels51 * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        for (f in 0 until frames) {
+            val s = (0.6 * sin(2.0 * PI * 440.0 * f / sampleRate48k) * 32767.0).toInt().toShort()
+            for (ch in 0 until channels51) {
+                bb.putShort(s)
+            }
+        }
+        val resampled16k = com.voxora.player.dubbing.whisper.PcmResampler.pcm16LeTo16kMonoFloat(
+            pcmBytes = bb.array(),
+            byteLength = bb.array().size,
+            sourceSampleRate = sampleRate48k,
+            channelCount = channels51
+        )
+        assertEquals("1.0s of 48kHz 5.1 audio must yield exact 16,000 mono samples", 16_000, resampled16k.size)
+        assertTrue("All normalized float samples must stay in [-1.0f, 1.0f]", resampled16k.all { it in -1.0f..1.0f })
+
+        // 4. Dual-Audio Track Synchronization: matches ordinal index and ISO language cleanly
+        val mkvTracks = listOf(
+            com.voxora.player.dubbing.whisper.AudioTrackDescriptor(extractorTrackIndex = 1, audioOrdinal = 0, languageCode = "kor"),
+            com.voxora.player.dubbing.whisper.AudioTrackDescriptor(extractorTrackIndex = 2, audioOrdinal = 1, languageCode = "eng")
+        )
+        assertEquals(
+            2,
+            com.voxora.player.dubbing.whisper.PcmResampler.selectMatchingAudioTrackIndex(
+                tracks = mkvTracks,
+                preferredAudioOrdinal = 1,
+                preferredLanguageCode = "en"
+            )
+        )
+        assertEquals(
+            2,
+            com.voxora.player.dubbing.whisper.PcmResampler.selectMatchingAudioTrackIndex(
+                tracks = mkvTracks,
+                preferredAudioOrdinal = -1,
+                preferredLanguageCode = "eng"
+            )
+        )
+        assertEquals(
+            1,
+            com.voxora.player.dubbing.whisper.PcmResampler.selectMatchingAudioTrackIndex(
+                tracks = mkvTracks,
+                preferredAudioOrdinal = 0,
+                preferredLanguageCode = "ko"
+            )
+        )
+
+        // 5. CachedSubtitleSegment stores both rawOriginalText and translatedText for zero-Whisper switching
+        val cached = com.voxora.player.ai.subtitles.CachedSubtitleSegment(
+            startTimeMs = 10_000L,
+            endTimeMs = 12_500L,
+            rawOriginalText = "Let's go home now.",
+            translatedText = "চলো এখন বাড়ি যাই।"
+        )
+        assertEquals("Let's go home now.", cached.rawOriginalText)
+        assertEquals("চলো এখন বাড়ি যাই।", cached.translatedText)
+    }
 }

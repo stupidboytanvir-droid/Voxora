@@ -1,9 +1,10 @@
 package com.voxora.player.ui.theme
 
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
 // =========================================================================
-// VOXORA Cinema Spatial (v2.5.0) — Pure OLED Obsidian + Warm Cinema Amber
+// VOXORA Cinema Spatial (v2.6.0) — Pure OLED Obsidian + Sunset Amber-Coral
 // =========================================================================
 
 // Layered Obsidian & Frosted Glass Surfaces
@@ -20,19 +21,40 @@ val VoxoraGlassDark = Color(0xE011131B)       // Frosted glass HUD / floating do
 val VoxoraGlassDrawer = Color(0xEB0B0D13)     // Translucent right-side player drawer
 val VoxoraGlassBorder = Color(0x26FFFFFF)     // Specular glass top-edge highlight
 
-// Signature Accent System — Warm Cinema Amber (#F5A623) + Pure White
-val VoxoraAmber = Color(0xFFF5A623)
-val VoxoraAmberBright = Color(0xFFFFC15E)
-val VoxoraAmberDim = Color(0xFFC47F0E)
-val VoxoraAmberContainer = Color(0xFF2B200B)
+// Signature Sunset Amber-to-Coral Gradient Accent (#F59E0B -> #F97316 -> #EC4899)
+val VoxoraSunsetAmber = Color(0xFFF59E0B)
+val VoxoraSunsetOrange = Color(0xFFF97316)
+val VoxoraSunsetCoral = Color(0xFFEC4899)
+
+val VoxoraSunsetGradientColors = listOf(
+    VoxoraSunsetAmber,
+    VoxoraSunsetOrange,
+    VoxoraSunsetCoral
+)
+
+val VoxoraSunsetBrush = Brush.linearGradient(colors = VoxoraSunsetGradientColors)
+val VoxoraSunsetHorizontalBrush = Brush.horizontalGradient(colors = VoxoraSunsetGradientColors)
+val VoxoraSunsetSubtleBrush = Brush.linearGradient(
+    colors = listOf(
+        VoxoraSunsetAmber.copy(alpha = 0.22f),
+        VoxoraSunsetOrange.copy(alpha = 0.20f),
+        VoxoraSunsetCoral.copy(alpha = 0.22f)
+    )
+)
+
+// Primary Accent System harmonized to Sunset Amber-Coral + Pure White
+val VoxoraAmber = VoxoraSunsetAmber
+val VoxoraAmberBright = Color(0xFFFFB74D)
+val VoxoraAmberDim = Color(0xFFD97706)
+val VoxoraAmberContainer = Color(0xFF2B1B0D)
 val VoxoraPureWhite = Color(0xFFFFFFFF)
 
-// Harmonized legacy semantic aliases (mapped cleanly to Warm Cinema Amber + Crisp Champagne)
-val VoxoraElectricPurple = VoxoraAmber
+// Harmonized legacy semantic aliases
+val VoxoraElectricPurple = VoxoraSunsetOrange
 val VoxoraElectricPurpleBright = VoxoraAmberBright
 val VoxoraElectricPurpleDim = VoxoraAmberDim
 val VoxoraCyan = VoxoraAmberBright
-val VoxoraSubtleBlue = Color(0xFFE5C48B)
+val VoxoraSubtleBlue = Color(0xFFFDA4AF)
 val VoxoraDeepBlue = VoxoraAmberDim
 
 // Typography Colors (Dark Obsidian)

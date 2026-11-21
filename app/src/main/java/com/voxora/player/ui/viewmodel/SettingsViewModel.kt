@@ -14,6 +14,7 @@ import com.voxora.player.model.BatterySaverEvaluation
 import com.voxora.player.model.BatterySaverMode
 import com.voxora.player.model.BatterySavingPolicy
 import com.voxora.player.model.BatteryStatus
+import com.voxora.player.model.FolderViewMode
 import com.voxora.player.model.SubtitleTextColor
 import com.voxora.player.model.ThemeMode
 import com.voxora.player.model.UserPreferences
@@ -223,6 +224,15 @@ class SettingsViewModel(
 
     fun setVaultBiometricEnabled(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setVaultBiometricEnabled(enabled) }
+    }
+
+    fun setFolderViewMode(mode: FolderViewMode) {
+        viewModelScope.launch { settingsRepository.setFolderViewMode(mode) }
+    }
+
+    fun toggleFolderViewMode() {
+        val next = preferences.value.folderViewMode.toggled()
+        setFolderViewMode(next)
     }
 
     fun dismissBanner() {

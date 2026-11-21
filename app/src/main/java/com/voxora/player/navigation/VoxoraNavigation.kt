@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -28,13 +27,13 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.Icon
@@ -74,20 +73,23 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.voxora.player.VoxoraApplication
 import com.voxora.player.data.update.UpdateUiState
+import com.voxora.player.ui.components.FloatingMusicMiniPlayer
+import com.voxora.player.ui.components.FullScreenNowPlayingSheet
 import com.voxora.player.ui.components.InAppUpdateDialog
 import com.voxora.player.ui.screens.FolderDetailScreen
 import com.voxora.player.ui.screens.FoldersScreen
 import com.voxora.player.ui.screens.HistoryScreen
 import com.voxora.player.ui.screens.HomeScreen
+import com.voxora.player.ui.screens.MusicScreen
 import com.voxora.player.ui.screens.PlayerScreen
 import com.voxora.player.ui.screens.PrivateVaultScreen
 import com.voxora.player.ui.screens.SettingsScreen
 import com.voxora.player.ui.screens.StorageCleanerScreen
 import com.voxora.player.ui.screens.VideosScreen
-import com.voxora.player.ui.theme.VoxoraAmber
-import com.voxora.player.ui.theme.VoxoraAmberBright
 import com.voxora.player.ui.theme.VoxoraHairlineBorder
+import com.voxora.player.ui.theme.VoxoraSunsetBrush
 import com.voxora.player.ui.viewmodel.LibraryViewModel
+import com.voxora.player.ui.viewmodel.MusicViewModel
 import com.voxora.player.ui.viewmodel.PlayerViewModel
 import com.voxora.player.ui.viewmodel.SettingsViewModel
 import com.voxora.player.ui.viewmodel.UpdateViewModel
@@ -98,6 +100,7 @@ import java.io.File
 @Serializable data object VideosRoute
 @Serializable data object FoldersRoute
 @Serializable data class FolderDetailRoute(val bucketId: String, val folderName: String)
+@Serializable data object MusicRoute
 @Serializable data object HistoryRoute
 @Serializable data object SettingsRoute
 @Serializable data object PrivateVaultRoute
@@ -131,10 +134,13 @@ fun VoxoraApp(
     val navController = rememberNavController()
 
     val libraryViewModel: LibraryViewModel = viewModel(factory = LibraryViewModel.Factory(app))
+    val musicViewModel: MusicViewModel = viewModel(factory = MusicViewModel.Factory(app))
     val settingsViewModel: SettingsViewModel = viewModel(factory = SettingsViewModel.Factory(app))
     val updateViewModel: UpdateViewModel = viewModel(factory = UpdateViewModel.Factory(app))
 
     val libraryState by libraryViewModel.uiState.collectAsStateWithLifecycle()
+    val musicState by musicViewModel.uiState.collectAsStateWithLifecycle()
+    val musicPlayerState by musicViewModel.playerState.collectAsStateWithLifecycle()
     val playlists by libraryViewModel.playlists.collectAsStateWithLifecycle()
     val allPlaylistItems by libraryViewModel.allPlaylistItems.collectAsStateWithLifecycle()
     val vaultVideos by libraryViewModel.vaultVideos.collectAsStateWithLifecycle()
@@ -146,6 +152,8 @@ fun VoxoraApp(
     val updateState by updateViewModel.updateState.collectAsStateWithLifecycle()
     val showUpdateDialog by updateViewModel.showUpdateDialog.collectAsStateWithLifecycle()
     val pendingInstallAfterPermission by updateViewModel.pendingInstallAfterPermission.collectAsStateWithLifecycle()
+
+    var showNowPlayingSheet by remember { mutableStateOf(false) }
 
     var hasNotificationPermission by remember {
         mutableStateOf(app.updateNotificationHelper.hasNotificationPermission())
@@ -164,6 +172,12 @@ fun VoxoraApp(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) {
         libraryViewModel.onPermissionResult()
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) {
+        musicViewModel.onPermissionResult()
     }
 
     val safVideoLauncher = rememberLauncherForActivityResult(
@@ -222,6 +236,7 @@ fun VoxoraApp(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 libraryViewModel.refreshLibrary()
+                musicViewModel.refreshAudioLibrary()
                 hasNotificationPermission = app.updateNotificationHelper.hasNotificationPermission()
                 val nowCanInstall = app.appUpdateManager.canRequestPackageInstalls()
                 canInstallPackages = nowCanInstall
@@ -255,14 +270,16 @@ fun VoxoraApp(
     val currentDestination = backStackEntry?.destination
     val isPlayerRoute = currentDestination?.hasRoute<PlayerRoute>() == true
     val isSubToolRoute = currentDestination?.hasRoute<PrivateVaultRoute>() == true ||
-        currentDestination?.hasRoute<StorageCleanerRoute>() == true
+        currentDestination?.hasRoute<StorageCleanerRoute>() == true ||
+        currentDestination?.hasRoute<HistoryRoute>() == true
 
+    // De-duplicated clean 5-tab navigation dock: Home | Videos | Folders | Music | Settings
     val tabs = remember {
         listOf(
             BottomNavTab("Home", Icons.Rounded.Home, Icons.Outlined.Home, HomeRoute, "nav_home"),
             BottomNavTab("Videos", Icons.Rounded.VideoLibrary, Icons.Outlined.VideoLibrary, VideosRoute, "nav_videos"),
             BottomNavTab("Folders", Icons.Rounded.Folder, Icons.Outlined.Folder, FoldersRoute, "nav_folders"),
-            BottomNavTab("History", Icons.Rounded.History, Icons.Outlined.History, HistoryRoute, "nav_history"),
+            BottomNavTab("Music", Icons.Rounded.LibraryMusic, Icons.Outlined.LibraryMusic, MusicRoute, "nav_music"),
             BottomNavTab("Settings", Icons.Rounded.Settings, Icons.Outlined.Settings, SettingsRoute, "nav_settings")
         )
     }
@@ -281,11 +298,16 @@ fun VoxoraApp(
         permissionLauncher.launch(libraryViewModel.getRequiredPermissions())
     }
 
+    fun launchAudioPermissionPrompt() {
+        audioPermissionLauncher.launch(musicViewModel.getRequiredAudioPermission())
+    }
+
     fun launchSafVideoPicker() {
         safVideoLauncher.launch(arrayOf("video/*"))
     }
 
     val showFloatingDock = !isPlayerRoute && !isSubToolRoute && !isInPipMode
+    val showMiniMusicBar = !isPlayerRoute && !isInPipMode && musicPlayerState.currentTrack != null
 
     Box(
         modifier = Modifier
@@ -343,7 +365,7 @@ fun VoxoraApp(
                     onClearLibraryMessage = libraryViewModel::clearLibraryMessage,
                     onSeeAllVideos = { navigateToTopTab(VideosRoute) },
                     onSeeAllFolders = { navigateToTopTab(FoldersRoute) },
-                    onSeeAllHistory = { navigateToTopTab(HistoryRoute) },
+                    onSeeAllHistory = { navController.navigate(HistoryRoute) },
                     onSearchClick = { navigateToTopTab(VideosRoute) },
                     onRequestPermission = ::launchPermissionPrompt,
                     onOpenSafVideo = ::launchSafVideoPicker,
@@ -377,6 +399,8 @@ fun VoxoraApp(
             composable<FoldersRoute> {
                 FoldersScreen(
                     uiState = libraryState,
+                    folderViewMode = preferences.folderViewMode,
+                    onToggleFolderViewMode = settingsViewModel::toggleFolderViewMode,
                     onOpenFolder = { folder ->
                         navController.navigate(
                             FolderDetailRoute(folder.bucketId, folder.name)
@@ -405,6 +429,36 @@ fun VoxoraApp(
                 )
             }
 
+            composable<MusicRoute> {
+                val drillDownTracks = remember(
+                    musicState.allTracks,
+                    musicState.filteredTracks,
+                    musicState.selectedFolderId,
+                    musicState.selectedArtistName,
+                    musicState.selectedAlbumKey,
+                    musicState.searchQuery
+                ) {
+                    musicViewModel.tracksForDrillDown()
+                }
+                MusicScreen(
+                    uiState = musicState,
+                    playerState = musicPlayerState,
+                    drillDownTracks = drillDownTracks,
+                    onRequestAudioPermission = ::launchAudioPermissionPrompt,
+                    onRefresh = musicViewModel::refreshAudioLibrary,
+                    onSearchQueryChange = musicViewModel::onSearchQueryChange,
+                    onSelectSubTab = musicViewModel::selectTab,
+                    onOpenFolder = musicViewModel::openFolder,
+                    onOpenArtist = musicViewModel::openArtist,
+                    onOpenAlbum = musicViewModel::openAlbum,
+                    onClearDrillDown = musicViewModel::clearDrillDown,
+                    onPlayTrackFromList = { list, index ->
+                        musicViewModel.playTrackFromList(list, index)
+                    },
+                    onShuffleAll = musicViewModel::shuffleAll
+                )
+            }
+
             composable<HistoryRoute> {
                 HistoryScreen(
                     uiState = libraryState,
@@ -414,7 +468,8 @@ fun VoxoraApp(
                         )
                     },
                     onRemoveItem = libraryViewModel::removeHistoryItem,
-                    onClearHistory = libraryViewModel::clearHistory
+                    onClearHistory = libraryViewModel::clearHistory,
+                    onBack = { navController.popBackStack() }
                 )
             }
 
@@ -500,28 +555,67 @@ fun VoxoraApp(
             }
         }
 
-        // Detached Floating Frosted Glass Navigation Dock
-        if (showFloatingDock) {
-            VoxoraFloatingGlassDock(
-                tabs = tabs,
-                isTabSelected = { tab ->
-                    when (tab.route) {
-                        HomeRoute -> currentDestination?.hasRoute<HomeRoute>() == true
-                        VideosRoute -> currentDestination?.hasRoute<VideosRoute>() == true
-                        FoldersRoute -> currentDestination?.hasRoute<FoldersRoute>() == true ||
-                            currentDestination?.hasRoute<FolderDetailRoute>() == true
-                        HistoryRoute -> currentDestination?.hasRoute<HistoryRoute>() == true
-                        SettingsRoute -> currentDestination?.hasRoute<SettingsRoute>() == true
-                        else -> false
-                    }
-                },
-                onTabClick = { tab -> navigateToTopTab(tab.route) },
+        // Bottom Dock Cluster: Floating Mini-Player Bar (when audio active) + 5-Tab Floating Glass Dock
+        if (showFloatingDock || showMiniMusicBar) {
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
-            )
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (showMiniMusicBar) {
+                    FloatingMusicMiniPlayer(
+                        playerState = musicPlayerState,
+                        onExpand = { showNowPlayingSheet = true },
+                        onTogglePlayPause = musicViewModel::togglePlayPause,
+                        onNext = musicViewModel::skipToNext,
+                        onClose = {
+                            showNowPlayingSheet = false
+                            musicViewModel.stopPlayback()
+                        }
+                    )
+                }
+
+                if (showFloatingDock) {
+                    VoxoraFloatingGlassDock(
+                        tabs = tabs,
+                        isTabSelected = { tab ->
+                            when (tab.route) {
+                                HomeRoute -> currentDestination?.hasRoute<HomeRoute>() == true
+                                VideosRoute -> currentDestination?.hasRoute<VideosRoute>() == true
+                                FoldersRoute -> currentDestination?.hasRoute<FoldersRoute>() == true ||
+                                    currentDestination?.hasRoute<FolderDetailRoute>() == true
+                                MusicRoute -> currentDestination?.hasRoute<MusicRoute>() == true
+                                SettingsRoute -> currentDestination?.hasRoute<SettingsRoute>() == true
+                                else -> false
+                            }
+                        },
+                        onTabClick = { tab -> navigateToTopTab(tab.route) }
+                    )
+                }
+            }
         }
+
+        // Full-Screen Music Now Playing Sheet Overlay
+        FullScreenNowPlayingSheet(
+            visible = showNowPlayingSheet && !isPlayerRoute,
+            playerState = musicPlayerState,
+            onDismiss = { showNowPlayingSheet = false },
+            onTogglePlayPause = musicViewModel::togglePlayPause,
+            onNext = musicViewModel::skipToNext,
+            onPrevious = musicViewModel::skipToPrevious,
+            onSeekTo = musicViewModel::seekTo,
+            onToggleShuffle = musicViewModel::toggleShuffle,
+            onCycleRepeat = musicViewModel::cycleRepeatMode,
+            onSelectQueueIndex = { idx ->
+                musicViewModel.playTrackFromList(musicPlayerState.queue, idx)
+            },
+            onVolumeBoostChange = musicViewModel::setVolumeBoostPercent,
+            onSelectEqPreset = musicViewModel::setEqPreset,
+            onSelectSleepTimer = musicViewModel::setSleepTimer
+        )
     }
 
     if (showUpdateDialog) {
@@ -550,7 +644,7 @@ fun VoxoraApp(
 
 /**
  * Signature VOXORA Detached Pill-Shaped Floating Frosted Glass Bottom Navigation Dock
- * with spring-animated active Warm Cinema Amber pill indicator and subtle haptic feedback.
+ * with spring-animated Sunset Amber-to-Coral Gradient active pill indicator and subtle haptics.
  */
 @Composable
 private fun VoxoraFloatingGlassDock(
@@ -579,22 +673,12 @@ private fun VoxoraFloatingGlassDock(
         ) {
             tabs.forEach { tab ->
                 val selected = isTabSelected(tab)
-                val pillColor by animateColorAsState(
-                    targetValue = if (selected) VoxoraAmber.copy(alpha = 0.18f) else Color.Transparent,
-                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                    label = "dock_pill_bg"
-                )
-                val borderColor by animateColorAsState(
-                    targetValue = if (selected) VoxoraAmber.copy(alpha = 0.5f) else Color.Transparent,
-                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                    label = "dock_pill_border"
-                )
                 val contentColor by animateColorAsState(
-                    targetValue = if (selected) VoxoraAmberBright else Color(0xFF98A0B8),
+                    targetValue = if (selected) Color.White else Color(0xFF98A0B8),
                     label = "dock_item_fg"
                 )
                 val horizontalPad by animateDpAsState(
-                    targetValue = if (selected) 12.dp else 8.dp,
+                    targetValue = if (selected) 10.dp else 6.dp,
                     animationSpec = spring(
                         dampingRatio = Spring.DampingRatioMediumBouncy,
                         stiffness = Spring.StiffnessMedium
@@ -603,13 +687,17 @@ private fun VoxoraFloatingGlassDock(
                 )
 
                 val interactionSource = remember { MutableInteractionSource() }
-                Surface(
-                    shape = RoundedCornerShape(24.dp),
-                    color = pillColor,
-                    border = if (selected) BorderStroke(0.8.dp, borderColor) else null,
+                Box(
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(24.dp))
+                        .then(
+                            if (selected) {
+                                Modifier.background(VoxoraSunsetBrush)
+                            } else {
+                                Modifier.background(Color.Transparent)
+                            }
+                        )
                         .clickable(
                             interactionSource = interactionSource,
                             indication = null
@@ -619,7 +707,8 @@ private fun VoxoraFloatingGlassDock(
                                 onTabClick(tab)
                             }
                         }
-                        .testTag(tab.testTag)
+                        .testTag(tab.testTag),
+                    contentAlignment = Alignment.Center
                 ) {
                     Column(
                         modifier = Modifier.padding(horizontal = horizontalPad, vertical = 7.dp),

@@ -13,6 +13,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.voxora.player.model.AspectRatioMode
 import com.voxora.player.model.AudioEqPreset
 import com.voxora.player.model.BatterySaverMode
+import com.voxora.player.model.FolderViewMode
 import com.voxora.player.model.SortOption
 import com.voxora.player.model.SubtitleTextColor
 import com.voxora.player.model.ThemeMode
@@ -53,6 +54,7 @@ class SettingsRepository(private val context: Context) {
         val MIN_VIDEO_DURATION_SEC = intPreferencesKey("min_video_duration_sec")
         val SHOW_HIDDEN_FOLDERS = booleanPreferencesKey("show_hidden_folders")
         val SORT_OPTION = stringPreferencesKey("sort_option")
+        val FOLDER_VIEW_MODE = stringPreferencesKey("folder_view_mode")
         val BATTERY_SAVER_MODE = stringPreferencesKey("battery_saver_mode")
         val BATTERY_SAVER_THRESHOLD = intPreferencesKey("battery_saver_threshold_percent")
         val BATTERY_SAVER_CAP_REFRESH = booleanPreferencesKey("battery_saver_cap_refresh")
@@ -102,6 +104,9 @@ class SettingsRepository(private val context: Context) {
             sortOption = prefs[Keys.SORT_OPTION]?.let { name ->
                 SortOption.entries.firstOrNull { it.name == name }
             } ?: SortOption.DATE_DESC,
+            folderViewMode = prefs[Keys.FOLDER_VIEW_MODE]?.let { name ->
+                FolderViewMode.entries.firstOrNull { it.name == name }
+            } ?: FolderViewMode.LIST,
             batterySaverMode = prefs[Keys.BATTERY_SAVER_MODE]?.let { name ->
                 BatterySaverMode.entries.firstOrNull { it.name == name }
             } ?: BatterySaverMode.AUTO,
@@ -244,5 +249,9 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setVaultBiometricEnabled(enabled: Boolean) {
         context.voxoraDataStore.edit { it[Keys.VAULT_BIOMETRIC_ENABLED] = enabled }
+    }
+
+    suspend fun setFolderViewMode(mode: FolderViewMode) {
+        context.voxoraDataStore.edit { it[Keys.FOLDER_VIEW_MODE] = mode.name }
     }
 }

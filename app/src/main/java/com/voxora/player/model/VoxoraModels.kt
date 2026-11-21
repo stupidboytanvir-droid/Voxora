@@ -271,6 +271,69 @@ data class VaultVideoItem(
     val addedAtMs: Long = System.currentTimeMillis()
 )
 
+enum class FolderViewMode(val label: String) {
+    LIST("List View"),
+    GRID("Grid View");
+
+    fun toggled(): FolderViewMode = if (this == LIST) GRID else LIST
+}
+
+enum class MusicRepeatMode(val label: String) {
+    OFF("Repeat Off"),
+    ALL("Repeat All"),
+    ONE("Repeat One");
+
+    fun next(): MusicRepeatMode = when (this) {
+        OFF -> ALL
+        ALL -> ONE
+        ONE -> OFF
+    }
+}
+
+/**
+ * Represents a local song, podcast, or audio file discovered via MediaStore.Audio.Media.
+ */
+data class AudioTrackItem(
+    val id: Long,
+    val uriString: String,
+    val title: String,
+    val artist: String,
+    val album: String,
+    val albumId: Long,
+    val albumArtUri: String?,
+    val durationMs: Long,
+    val sizeBytes: Long,
+    val dateModifiedSec: Long,
+    val folderId: String,
+    val folderName: String,
+    val displayName: String,
+    val mimeType: String,
+    val formatBadge: String
+)
+
+data class AudioFolderItem(
+    val folderId: String,
+    val name: String,
+    val trackCount: Int,
+    val totalDurationMs: Long,
+    val previewAlbumArtUri: String?
+)
+
+data class AudioArtistGroup(
+    val name: String,
+    val trackCount: Int,
+    val albumCount: Int,
+    val previewAlbumArtUri: String?
+)
+
+data class AudioAlbumGroup(
+    val albumId: Long,
+    val name: String,
+    val artist: String,
+    val trackCount: Int,
+    val albumArtUri: String?
+)
+
 data class UserPreferences(
     val themeMode: ThemeMode = ThemeMode.DARK_CHARCOAL,
     val defaultPlaybackSpeed: Float = 1.0f,
@@ -300,6 +363,7 @@ data class UserPreferences(
     val minVideoDurationSec: Int = 0,
     val showHiddenFolders: Boolean = false,
     val sortOption: SortOption = SortOption.DATE_DESC,
+    val folderViewMode: FolderViewMode = FolderViewMode.LIST,
     val batterySaverMode: BatterySaverMode = BatterySaverMode.AUTO,
     val batterySaverThresholdPercent: Int = 20,
     val batterySaverCapRefreshRate: Boolean = true,

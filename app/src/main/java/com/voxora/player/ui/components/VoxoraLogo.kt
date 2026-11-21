@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -24,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -42,14 +44,17 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.voxora.player.R
-import com.voxora.player.ui.theme.VoxoraAmber
-import com.voxora.player.ui.theme.VoxoraAmberBright
 import com.voxora.player.ui.theme.VoxoraCardCharcoal
 import com.voxora.player.ui.theme.VoxoraHairlineBorder
+import com.voxora.player.ui.theme.VoxoraSunsetAmber
+import com.voxora.player.ui.theme.VoxoraSunsetCoral
+import com.voxora.player.ui.theme.VoxoraSunsetGradientColors
+import com.voxora.player.ui.theme.VoxoraSunsetOrange
 
 /**
- * Signature VOXORA Cinema Spatial brand mark:
- * Warm Cinema Amber play glyph + luminous acoustic arcs inside an obsidian glass frame.
+ * Signature VOXORA Play-Wave Emblem (v2.6.0):
+ * Sunset Amber-to-Coral (#F59E0B -> #F97316 -> #EC4899) Cinema Play Prism + Sound-Wave bars
+ * inside a deep OLED Obsidian glass frame — matching the adaptive launcher & notification icons.
  */
 @Composable
 fun VoxoraBrandMark(
@@ -62,16 +67,21 @@ fun VoxoraBrandMark(
             .size(size)
             .clip(RoundedCornerShape(size * 0.28f))
             .background(
-                Brush.linearGradient(
-                    colors = listOf(Color(0xFF17140E), Color(0xFF0D0F16))
+                Brush.radialGradient(
+                    colors = listOf(
+                        VoxoraSunsetOrange.copy(alpha = 0.22f),
+                        Color(0xFF0A0C12),
+                        Color(0xFF050608)
+                    )
                 )
             )
             .border(
-                width = 0.8.dp,
+                width = 0.9.dp,
                 brush = Brush.linearGradient(
                     colors = listOf(
-                        VoxoraAmber.copy(alpha = 0.72f),
-                        Color.White.copy(alpha = 0.18f)
+                        VoxoraSunsetAmber.copy(alpha = 0.8f),
+                        VoxoraSunsetOrange.copy(alpha = 0.65f),
+                        VoxoraSunsetCoral.copy(alpha = 0.7f)
                     )
                 ),
                 shape = RoundedCornerShape(size * 0.28f)
@@ -79,66 +89,67 @@ fun VoxoraBrandMark(
             .semantics { contentDescription = logoDesc },
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(size * 0.70f)) {
+        Canvas(modifier = Modifier.size(size * 0.72f)) {
             val w = this.size.width
             val h = this.size.height
 
-            val playPath = Path().apply {
-                moveTo(w * 0.14f, h * 0.18f)
-                lineTo(w * 0.58f, h * 0.50f)
-                lineTo(w * 0.14f, h * 0.82f)
-                close()
-            }
-            val amberBrush = Brush.linearGradient(
-                colors = listOf(VoxoraAmberBright, VoxoraAmber),
+            val sunsetBrush = Brush.linearGradient(
+                colors = VoxoraSunsetGradientColors,
                 start = Offset(0f, 0f),
                 end = Offset(w, h)
             )
 
+            // Rounded Play Prism
+            val playPath = Path().apply {
+                moveTo(w * 0.12f, h * 0.17f)
+                lineTo(w * 0.64f, h * 0.50f)
+                lineTo(w * 0.12f, h * 0.83f)
+                close()
+            }
             drawPath(
                 path = playPath,
-                brush = amberBrush,
+                brush = sunsetBrush,
                 style = Stroke(
-                    width = w * 0.11f,
+                    width = w * 0.10f,
                     cap = StrokeCap.Round,
                     join = StrokeJoin.Round,
                     pathEffect = PathEffect.cornerPathEffect(w * 0.08f)
                 )
             )
-            drawPath(
-                path = playPath,
-                brush = amberBrush
+            drawPath(path = playPath, brush = sunsetBrush)
+
+            // Sound-Wave Bar 1
+            val barWidth = w * 0.105f
+            val barCorner = CornerRadius(barWidth / 2f, barWidth / 2f)
+            drawRoundRect(
+                brush = sunsetBrush,
+                topLeft = Offset(w * 0.71f, h * 0.24f),
+                size = Size(barWidth, h * 0.52f),
+                cornerRadius = barCorner
             )
 
-            drawArc(
-                color = VoxoraAmberBright,
-                startAngle = -48f,
-                sweepAngle = 96f,
-                useCenter = false,
-                topLeft = Offset(w * 0.42f, h * 0.25f),
-                size = Size(w * 0.34f, h * 0.50f),
-                style = Stroke(width = w * 0.085f, cap = StrokeCap.Round)
-            )
-
-            drawArc(
-                color = Color.White.copy(alpha = 0.85f),
-                startAngle = -54f,
-                sweepAngle = 108f,
-                useCenter = false,
-                topLeft = Offset(w * 0.50f, h * 0.12f),
-                size = Size(w * 0.44f, h * 0.76f),
-                style = Stroke(width = w * 0.08f, cap = StrokeCap.Round)
+            // Sound-Wave Bar 2
+            drawRoundRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(VoxoraSunsetOrange, VoxoraSunsetCoral),
+                    start = Offset(w * 0.80f, h * 0.30f),
+                    end = Offset(w, h * 0.72f)
+                ),
+                topLeft = Offset(w * 0.86f, h * 0.36f),
+                size = Size(barWidth, h * 0.28f),
+                cornerRadius = barCorner
             )
         }
     }
 }
 
 /**
- * Minimal flagship Home header: crisp VOXORA wordmark + single Search icon button.
+ * Minimal flagship Home header: crisp VOXORA Play-Wave wordmark + subtle History clock icon + Search icon.
  */
 @Composable
 fun VoxoraTopHeader(
     onSearchClick: () -> Unit,
+    onHistoryClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -149,7 +160,7 @@ fun VoxoraTopHeader(
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            VoxoraBrandMark(size = 34.dp)
+            VoxoraBrandMark(size = 36.dp)
             Spacer(modifier = Modifier.width(12.dp))
             Text(
                 text = "VOXORA",
@@ -162,22 +173,48 @@ fun VoxoraTopHeader(
             )
         }
 
-        Surface(
-            onClick = onSearchClick,
-            shape = CircleShape,
-            color = VoxoraCardCharcoal,
-            border = BorderStroke(0.8.dp, VoxoraHairlineBorder),
-            modifier = Modifier
-                .size(44.dp)
-                .testTag("header_search_button")
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = Icons.Rounded.Search,
-                    contentDescription = stringResource(R.string.cd_search),
-                    tint = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.size(21.dp)
-                )
+            if (onHistoryClick != null) {
+                Surface(
+                    onClick = onHistoryClick,
+                    shape = CircleShape,
+                    color = VoxoraCardCharcoal,
+                    border = BorderStroke(0.8.dp, VoxoraHairlineBorder),
+                    modifier = Modifier
+                        .size(44.dp)
+                        .testTag("header_history_button")
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Rounded.History,
+                            contentDescription = stringResource(R.string.cd_history),
+                            tint = MaterialTheme.colorScheme.onBackground,
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
+                }
+            }
+
+            Surface(
+                onClick = onSearchClick,
+                shape = CircleShape,
+                color = VoxoraCardCharcoal,
+                border = BorderStroke(0.8.dp, VoxoraHairlineBorder),
+                modifier = Modifier
+                    .size(44.dp)
+                    .testTag("header_search_button")
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Rounded.Search,
+                        contentDescription = stringResource(R.string.cd_search),
+                        tint = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier.size(21.dp)
+                    )
+                }
             }
         }
     }

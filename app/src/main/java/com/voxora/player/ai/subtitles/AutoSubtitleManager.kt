@@ -36,6 +36,7 @@ import java.security.MessageDigest
 import java.util.Locale
 import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 data class SubtitleLanguageOption(
@@ -59,6 +60,20 @@ data class DialogueSearchResult(
     val secondaryText: String? = null
 )
 
+data class VadTimedSegment(
+    val startTimeMs: Long,
+    val endTimeMs: Long,
+    val text: String
+)
+
+data class MergedSentenceBlock(
+    val mergedText: String,
+    val constituents: List<VadTimedSegment>
+) {
+    val startTimeMs: Long get() = constituents.first().startTimeMs
+    val endTimeMs: Long get() = constituents.last().endTimeMs
+}
+
 data class AutoSubtitleUiState(
     val isEnabled: Boolean = false,
     val isSetupRunning: Boolean = false,
@@ -76,13 +91,13 @@ data class AutoSubtitleUiState(
     val completedChunksCount: Int = 0,
     val generatedCueCount: Int = 0,
     val loadedFromSavedSrt: Boolean = false,
-    val statusMessage: String = "Off · Tap Enable for 100% free on-device subtitles",
+    val statusMessage: String = "Off · Tap Enable for 100% free AI subtitles",
     val errorMessage: String? = null
 )
 
 /**
- * Full 59+ language catalog powered by Google ML Kit On-Device Translation, plus
- * "Original Spoken Language" (Whisper multilingual auto-detection without translation).
+ * Full 59+ language catalog powered by Online Neural Translation + Google ML Kit Offline Fallback,
+ * plus "Original Spoken Language" (Whisper multilingual auto-detection without translation).
  */
 object AutoSubtitleLanguageCatalog {
     const val CODE_ORIGINAL = "original"
@@ -154,20 +169,24 @@ object AutoSubtitleLanguageCatalog {
 }
 
 /**
- * Dedicated, lightweight, 100% free on-device Auto AI Subtitle engine for VOXORA v2.4.0.
+ * Flagship Auto AI Subtitle Engine for VOXORA v2.6.0:
  *
- * Enhancements in v2.4.0:
- * - RMS Energy / VAD Trimming on each 16kHz PCM segment slice so subtitles NEVER appear early
- *   during 5-7s silent intros/gaps and vanish cleanly when speech ends.
- * - Strict zero-lookahead lookup (`currentPosMs in startTimeMs..endTimeMs`).
- * - Dual Subtitles: renders Primary + Secondary language simultaneously.
- * - Export to `.SRT` (`Documents/VOXORA/Subtitles/`) + automatic reload on next playback.
- * - Dialogue Search: instant keyword search across generated subtitles with timestamp jump.
+ * - **Progressive Fast-Start Chunking**: When enabled or after seeking to an uncached position,
+ *   transcribes a **7-second fast-start chunk** first (~1.5–2s startup!), then seamlessly
+ *   continues with **20-second rolling look-ahead chunks**.
+ * - **2-Stage Grammatically Accurate Translation**:
+ *   1. Smart Sentence Merging before translation (joins non-terminated fragments with <600ms gap
+ *      up to 18 words so translators receive full grammatical context).
+ *   2. Online Neural Translation Primary ([NeuralSubtitleTranslator] with 3s timeout & memory cache)
+ *      with instant, zero-error fallback to On-Device Google ML Kit Translation when offline.
+ * - **Strict Speech-Synced VAD & Zero Look-Ahead**: Anchored to exact MediaExtractor PTS,
+ *   `noiseFloor * 1.45f`, >1200ms leading silence trim, and strict `currentPosMs in start..end`.
  */
 class AutoSubtitleManager(
     context: Context,
     private val whisperSpeechEngine: WhisperCppSpeechRecognitionEngine,
-    private val videoPcmAudioDecoder: VideoPcmAudioDecoder = VideoPcmAudioDecoder(context.applicationContext)
+    private val videoPcmAudioDecoder: VideoPcmAudioDecoder = VideoPcmAudioDecoder(context.applicationContext),
+    private val neuralTranslator: NeuralSubtitleTranslator = NeuralSubtitleTranslator()
 ) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -177,26 +196,29 @@ class AutoSubtitleManager(
     private val _state = MutableStateFlow(AutoSubtitleUiState())
     val state: StateFlow<AutoSubtitleUiState> = _state.asStateFlow()
 
-    private val primaryCuesByChunk = linkedMapOf<Int, List<SubtitleCue>>()
-    private val secondaryCuesByChunk = linkedMapOf<Int, List<SubtitleCue>>()
+    private val primaryCuesByWindow = linkedMapOf<Long, List<SubtitleCue>>()
+    private val secondaryCuesByWindow = linkedMapOf<Long, List<SubtitleCue>>()
+    private val coveredIntervals = mutableListOf<LongRange>()
+
     @Volatile
     private var sortedPrimaryCues: List<SubtitleCue> = emptyList()
     @Volatile
     private var sortedSecondaryCues: List<SubtitleCue> = emptyList()
 
-    private val completedChunks = mutableSetOf<Int>()
     @Volatile
     private var activeMediaUri: String = ""
     @Volatile
     private var activeMediaDurationMs: Long = 0L
     @Volatile
-    private var currentChunkBeingProcessed: Int = -1
+    private var activeProcessingWindow: LongRange? = null
     @Volatile
     private var lastPlaybackPositionMs: Long = 0L
     @Volatile
     private var isPlaybackActive: Boolean = false
     @Volatile
     private var audioTrackLanguageHint: String? = null
+    @Volatile
+    private var windowCounter: Int = 0
 
     private var setupJob: Job? = null
     private var workerJob: Job? = null
@@ -249,7 +271,7 @@ class AutoSubtitleManager(
                     dualSubtitlesEnabled = dualEnabled,
                     secondaryLanguageCode = secondaryOpt.code,
                     secondaryLanguageLabel = secondaryOpt.displayName,
-                    statusMessage = "Off · Tap Enable for free on-device AI subtitles"
+                    statusMessage = "Off · Tap Enable for instant AI subtitles"
                 )
             }
             refreshReadinessAsync(targetOpt.code)
@@ -265,12 +287,6 @@ class AutoSubtitleManager(
         }
     }
 
-    /**
-     * Syncs Whisper's spoken language hint with the active ExoPlayer embedded audio track
-     * (e.g. `"en"`, `"ko"`, `"zh"`, `"hi"`, `"ja"`), falling back to `"auto"` when unknown/und.
-     * When the user switches audio tracks mid-playback while live AI Subtitles are running,
-     * cues are refreshed from the current position using the new spoken language hint.
-     */
     fun setAudioTrackLanguageHint(isoLanguageCode: String?) {
         val normalized = isoLanguageCode
             ?.trim()
@@ -281,8 +297,9 @@ class AutoSubtitleManager(
         audioTrackLanguageHint = normalized
 
         val cur = _state.value
+        val hasCovered = synchronized(cuesLock) { coveredIntervals.isNotEmpty() }
         if (cur.isEnabled && !cur.isSetupRunning && !cur.loadedFromSavedSrt &&
-            completedChunks.isNotEmpty() && activeMediaUri.isNotBlank()
+            hasCovered && activeMediaUri.isNotBlank()
         ) {
             pauseProcessing()
             clearGeneratedCues()
@@ -364,9 +381,10 @@ class AutoSubtitleManager(
     }
 
     /**
-     * One-Click Setup & Activation: downloads `ggml-base-q5_1.bin` (~57 MB) if missing,
-     * downloads primary (and optional dual secondary) ML Kit language packs, and starts
-     * rolling 25s VAD-trimmed, hallucination-filtered subtitle generation synced to playback.
+     * One-Click Setup & Instant Fast-Start Activation:
+     * Ensures Whisper model is ready, prepares ML Kit offline fallback packs (best-effort so
+     * Online Neural Translation starts immediately without waiting), and kicks off the 7-second
+     * fast-start chunk followed by 20-second rolling look-ahead windows.
      */
     fun enableAndPrepare(currentPositionMs: Long, isPlayingNow: Boolean) {
         if (activeMediaUri.isBlank()) {
@@ -378,7 +396,6 @@ class AutoSubtitleManager(
         lastPlaybackPositionMs = currentPositionMs.coerceAtLeast(0L)
         isPlaybackActive = isPlayingNow
 
-        // If already auto-loaded from saved SRT and not dual-mode, enable immediately at 0% CPU
         if (_state.value.loadedFromSavedSrt && sortedPrimaryCues.isNotEmpty() && !_state.value.dualSubtitlesEnabled) {
             _state.value = _state.value.copy(
                 isEnabled = true,
@@ -402,17 +419,12 @@ class AutoSubtitleManager(
                 setupProgressPercent = 0,
                 setupStepLabel = "Checking Whisper multilingual model...",
                 errorMessage = null,
-                statusMessage = "Preparing Auto AI Subtitles ($targetLabel)..."
+                statusMessage = "Preparing Instant AI Subtitles ($targetLabel)..."
             )
             try {
                 val whisperRes = whisperSpeechEngine.ensureBaseEnModelReady { pct ->
-                    val scaled = if (needsMlKitTranslation(targetCode) || (dualEnabled && needsMlKitTranslation(secondaryCode))) {
-                        (pct * 0.65f).toInt()
-                    } else {
-                        pct
-                    }
                     _state.value = _state.value.copy(
-                        setupProgressPercent = scaled.coerceIn(0, 95),
+                        setupProgressPercent = pct.coerceIn(0, 95),
                         setupStepLabel = if (pct < 90) {
                             "Downloading ${WhisperModelCatalog.DEFAULT.fileName} ($pct%)..."
                         } else {
@@ -424,22 +436,14 @@ class AutoSubtitleManager(
 
                 _state.value = _state.value.copy(isWhisperModelReady = true)
 
+                // Warm up offline ML Kit packs in background so instant-start neural translation is NEVER blocked
                 if (needsMlKitTranslation(targetCode)) {
-                    _state.value = _state.value.copy(
-                        setupProgressPercent = 72,
-                        setupStepLabel = "Downloading $targetLabel offline language pack..."
-                    )
-                    ensureMlKitLanguagePackDownloaded(targetCode).getOrThrow()
+                    scope.launch { ensureMlKitLanguagePackDownloaded(targetCode) }
                 }
-
                 if (dualEnabled && needsMlKitTranslation(secondaryCode) &&
                     !secondaryCode.equals(targetCode, ignoreCase = true)
                 ) {
-                    _state.value = _state.value.copy(
-                        setupProgressPercent = 86,
-                        setupStepLabel = "Downloading $secondaryLabel dual subtitle pack..."
-                    )
-                    ensureMlKitLanguagePackDownloaded(secondaryCode).getOrThrow()
+                    scope.launch { ensureMlKitLanguagePackDownloaded(secondaryCode) }
                 }
 
                 val modeLabel = if (dualEnabled) "$targetLabel + $secondaryLabel" else targetLabel
@@ -449,7 +453,7 @@ class AutoSubtitleManager(
                     setupStepLabel = "",
                     isTargetLanguagePackReady = true,
                     statusMessage = if (isPlaybackActive) {
-                        "Live Auto Subtitles ($modeLabel) · Syncing speech..."
+                        "Fast-Start Subtitles ($modeLabel) · Syncing speech..."
                     } else {
                         "Auto Subtitles Ready ($modeLabel) · Play video to start"
                     },
@@ -509,11 +513,10 @@ class AutoSubtitleManager(
             return
         }
 
-        val currentIdx = chunkIndexForPositionMs(lastPlaybackPositionMs)
-        val needsWork = !completedChunks.contains(currentIdx) ||
-            (!completedChunks.contains(currentIdx + 1) && isChunkWithinDuration(currentIdx + 1))
-
-        if (needsWork && (workerJob == null || workerJob?.isActive != true)) {
+        val nextWin = synchronized(cuesLock) {
+            planNextWindow(lastPlaybackPositionMs, coveredIntervals, activeMediaDurationMs)
+        }
+        if (nextWin != null && (workerJob == null || workerJob?.isActive != true)) {
             scheduleRollingGeneration(lastPlaybackPositionMs)
         }
     }
@@ -524,9 +527,11 @@ class AutoSubtitleManager(
         if (!cur.isEnabled || cur.isSetupRunning) return
         if (cur.loadedFromSavedSrt && !cur.dualSubtitlesEnabled) return
 
-        val targetIdx = chunkIndexForPositionMs(lastPlaybackPositionMs)
-        val activeIdx = currentChunkBeingProcessed
-        if (activeIdx >= 0 && abs(targetIdx - activeIdx) > 1) {
+        val currentProcessing = activeProcessingWindow
+        val isSeekFarFromProcessing = currentProcessing != null &&
+            (lastPlaybackPositionMs < currentProcessing.first - 1_500L ||
+                lastPlaybackPositionMs > currentProcessing.last + 2_000L)
+        if (isSeekFarFromProcessing) {
             pauseProcessing()
         }
         if (isPlaybackActive) {
@@ -538,7 +543,7 @@ class AutoSubtitleManager(
         whisperSpeechEngine.requestAbortNativeInference()
         workerJob?.cancel()
         workerJob = null
-        currentChunkBeingProcessed = -1
+        activeProcessingWindow = null
         if (_state.value.isGeneratingChunk) {
             _state.value = _state.value.copy(
                 isGeneratingChunk = false,
@@ -556,12 +561,13 @@ class AutoSubtitleManager(
             try {
                 while (_state.value.isEnabled && isPlaybackActive) {
                     ensureActive()
-                    val currentIdx = chunkIndexForPositionMs(lastPlaybackPositionMs.coerceAtLeast(anchorPositionMs))
-                    val candidateIndices = listOf(currentIdx, currentIdx + 1)
-                        .filter { it >= 0 && !completedChunks.contains(it) && isChunkWithinDuration(it) }
+                    val pos = lastPlaybackPositionMs.coerceAtLeast(anchorPositionMs)
+                    val nextWindow = synchronized(cuesLock) {
+                        planNextWindow(pos, coveredIntervals, activeMediaDurationMs)
+                    } ?: break
 
-                    val nextChunkIdx = candidateIndices.firstOrNull() ?: break
-                    processSingleChunk(uri, nextChunkIdx)
+                    val (windowStartMs, windowDurationMs) = nextWindow
+                    processSingleWindow(uri, windowStartMs, windowDurationMs)
                 }
             } catch (ce: CancellationException) {
                 throw ce
@@ -572,7 +578,7 @@ class AutoSubtitleManager(
                     errorMessage = t.message ?: "Auto subtitle generation paused due to an error."
                 )
             } finally {
-                currentChunkBeingProcessed = -1
+                activeProcessingWindow = null
                 if (_state.value.isGeneratingChunk) {
                     val s = _state.value
                     val label = if (s.dualSubtitlesEnabled) {
@@ -594,31 +600,46 @@ class AutoSubtitleManager(
         }
     }
 
-    private suspend fun processSingleChunk(mediaUriString: String, chunkIndex: Int) {
-        val startMs = chunkIndex * CHUNK_DURATION_MS
+    private suspend fun processSingleWindow(
+        mediaUriString: String,
+        windowStartMs: Long,
+        windowDurationMs: Long
+    ) {
         val snapshot = _state.value
         val targetCode = snapshot.targetLanguageCode
         val targetLabel = snapshot.targetLanguageLabel
         val dualEnabled = snapshot.dualSubtitlesEnabled
         val secondaryCode = snapshot.secondaryLanguageCode
 
-        currentChunkBeingProcessed = chunkIndex
+        val seqIndex = windowCounter++
+        val isFastStart = windowDurationMs <= FAST_START_CHUNK_DURATION_MS + 500L
+        activeProcessingWindow = windowStartMs..(windowStartMs + windowDurationMs)
+
         _state.value = snapshot.copy(
             isGeneratingChunk = true,
-            activeChunkIndex = chunkIndex,
+            activeChunkIndex = seqIndex,
             errorMessage = null,
-            statusMessage = "Syncing speech ($targetLabel · Chunk ${chunkIndex + 1})..."
+            statusMessage = if (isFastStart) {
+                "Instant start ($targetLabel · ${windowDurationMs / 1000L}s)..."
+            } else {
+                "Syncing speech ($targetLabel · +${windowDurationMs / 1000L}s ahead)..."
+            }
         )
 
         val pcmChunk = videoPcmAudioDecoder.decodeWindowTo16kPcm(
             mediaUriString = mediaUriString,
-            startMs = startMs,
-            windowDurationMs = CHUNK_DURATION_MS,
-            chunkIndex = chunkIndex
+            startMs = windowStartMs,
+            windowDurationMs = windowDurationMs,
+            chunkIndex = seqIndex
         ).getOrThrow()
 
+        val actualStartMs = pcmChunk.startTimeMs
+        val actualEndMs = (actualStartMs + pcmChunk.durationMs.coerceAtLeast(windowDurationMs))
+
         if (pcmChunk.samples16kMono.isEmpty()) {
-            completedChunks.add(chunkIndex)
+            synchronized(cuesLock) {
+                recordCoveredInterval(windowStartMs..actualEndMs)
+            }
             return
         }
 
@@ -630,113 +651,132 @@ class AutoSubtitleManager(
             translateToEnglish = needsEnglishBridge
         )
 
-        val segments = whisperSpeechEngine.transcribePcmChunkSuspending(
+        val rawSegments = whisperSpeechEngine.transcribePcmChunkSuspending(
             chunk = pcmChunk,
             language = whisperLangParam
         ).getOrThrow()
 
-        val primaryTranslator = if (needsMlKitTranslation(targetCode)) {
+        // Stage 1: Sanitize + Speech-Synced VAD trim every segment
+        val chunkNoiseFloor = estimateChunkNoiseFloor(pcmChunk.samples16kMono)
+        val vadSegments = mutableListOf<VadTimedSegment>()
+        for (seg in rawSegments) {
+            coroutineContext.ensureActive()
+            val cleaned = SubtitleSanitizer.sanitize(seg.originalText) ?: continue
+            val rawStart = seg.startTimeMs.coerceIn(actualStartMs, actualEndMs)
+            val rawEnd = seg.endTimeMs.coerceIn(rawStart + 350L, actualEndMs + 500L)
+            val wordCount = cleaned.split(Regex("\\s+")).count { it.isNotBlank() }.coerceAtLeast(1)
+            val trimmedBounds = trimSegmentWithVad(
+                pcm16k = pcmChunk.samples16kMono,
+                chunkStartMs = actualStartMs,
+                segmentStartMs = rawStart,
+                segmentEndMs = rawEnd,
+                noiseFloorRms = chunkNoiseFloor,
+                wordCount = wordCount
+            ) ?: continue
+
+            vadSegments.add(
+                VadTimedSegment(
+                    startTimeMs = trimmedBounds.first,
+                    endTimeMs = trimmedBounds.second,
+                    text = cleaned
+                )
+            )
+        }
+
+        // Stage 2: Smart Sentence Merging before translation for natural grammatical accuracy
+        val mergedSentences = mergeIncompleteSentences(vadSegments)
+
+        val primaryFallbackTranslator = if (needsMlKitTranslation(targetCode)) {
             getOrCreateTranslator(targetCode)
         } else null
 
-        val secondaryTranslator = if (dualEnabled && needsMlKitTranslation(secondaryCode)) {
+        val secondaryFallbackTranslator = if (dualEnabled && needsMlKitTranslation(secondaryCode)) {
             getOrCreateTranslator(secondaryCode)
         } else null
 
         val generatedPrimary = mutableListOf<SubtitleCue>()
         val generatedSecondary = mutableListOf<SubtitleCue>()
 
-        val chunkStartMs = pcmChunk.startTimeMs
-        val chunkEndMs = chunkStartMs + pcmChunk.durationMs.coerceAtLeast(CHUNK_DURATION_MS)
-
-        // Compute adaptive noise floor across the 25s chunk for robust VAD trimming
-        val chunkNoiseFloor = estimateChunkNoiseFloor(pcmChunk.samples16kMono)
-
-        for (seg in segments) {
+        // Stage 3: Online Neural Translation Primary + Offline ML Kit Fallback
+        for (block in mergedSentences) {
             coroutineContext.ensureActive()
-            val cleaned = SubtitleSanitizer.sanitize(seg.originalText) ?: continue
-
-            val rawStart = seg.startTimeMs.coerceIn(chunkStartMs, chunkEndMs)
-            val rawEnd = seg.endTimeMs.coerceIn(rawStart + 350L, chunkEndMs + 500L)
-
-            // v2.5.2 Rock-Solid Sync: anchored strictly to exact MediaExtractor chunkStartMs,
-            // gentle 1.45x noise-floor VAD onset, only trimming leading silence if gap > 1200ms.
-            val wordCount = cleaned.split(Regex("\\s+")).count { it.isNotBlank() }.coerceAtLeast(1)
-            val trimmedBounds = trimSegmentWithVad(
-                pcm16k = pcmChunk.samples16kMono,
-                chunkStartMs = chunkStartMs,
-                segmentStartMs = rawStart,
-                segmentEndMs = rawEnd,
-                noiseFloorRms = chunkNoiseFloor,
-                wordCount = wordCount
-            ) ?: continue // Drop pure-silence hallucinations completely
-
-            val cueStart = trimmedBounds.first
-            val cueEnd = trimmedBounds.second
-
-            val primaryText = if (primaryTranslator != null) {
-                runCatching { primaryTranslator.translate(cleaned).await().trim() }
-                    .getOrDefault(cleaned)
-                    .ifBlank { cleaned }
-            } else {
-                cleaned
-            }
-
-            generatedPrimary.add(
-                SubtitleCue(
-                    startTimeMs = cueStart,
-                    endTimeMs = cueEnd,
-                    text = primaryText
-                )
+            val translatedPrimary = translateSentenceWithNeuralPrimary(
+                text = block.mergedText,
+                targetCode = targetCode,
+                mlKitFallback = primaryFallbackTranslator
             )
+            generatedPrimary.addAll(mapTranslatedSentenceToCues(block, translatedPrimary))
 
             if (dualEnabled) {
-                val secText = when {
-                    secondaryCode.equals(targetCode, ignoreCase = true) -> primaryText
-                    secondaryTranslator != null -> {
-                        runCatching { secondaryTranslator.translate(cleaned).await().trim() }
-                            .getOrDefault(cleaned)
-                            .ifBlank { cleaned }
-                    }
-                    else -> cleaned
-                }
-                generatedSecondary.add(
-                    SubtitleCue(
-                        startTimeMs = cueStart,
-                        endTimeMs = cueEnd,
-                        text = secText
+                val translatedSecondary = if (secondaryCode.equals(targetCode, ignoreCase = true)) {
+                    translatedPrimary
+                } else {
+                    translateSentenceWithNeuralPrimary(
+                        text = block.mergedText,
+                        targetCode = secondaryCode,
+                        mlKitFallback = secondaryFallbackTranslator
                     )
-                )
+                }
+                generatedSecondary.addAll(mapTranslatedSentenceToCues(block, translatedSecondary))
             }
         }
 
-        // Prevent consecutive cues from overlapping into the next speaker's lead-in
         val nonOverlappingPrimary = enforceStrictNonOverlap(generatedPrimary)
         val nonOverlappingSecondary = enforceStrictNonOverlap(generatedSecondary)
 
         synchronized(cuesLock) {
-            primaryCuesByChunk[chunkIndex] = nonOverlappingPrimary
-            sortedPrimaryCues = primaryCuesByChunk.values
-                .flatten()
-                .sortedBy { it.startTimeMs }
+            primaryCuesByWindow[windowStartMs] = nonOverlappingPrimary
+            sortedPrimaryCues = enforceStrictNonOverlap(
+                primaryCuesByWindow.values.flatten().sortedBy { it.startTimeMs }
+            )
             if (dualEnabled) {
-                secondaryCuesByChunk[chunkIndex] = nonOverlappingSecondary
-                sortedSecondaryCues = secondaryCuesByChunk.values
-                    .flatten()
-                    .sortedBy { it.startTimeMs }
+                secondaryCuesByWindow[windowStartMs] = nonOverlappingSecondary
+                sortedSecondaryCues = enforceStrictNonOverlap(
+                    secondaryCuesByWindow.values.flatten().sortedBy { it.startTimeMs }
+                )
             } else {
-                secondaryCuesByChunk.clear()
+                secondaryCuesByWindow.clear()
                 sortedSecondaryCues = emptyList()
             }
+            recordCoveredInterval(windowStartMs..actualEndMs)
         }
-        completedChunks.add(chunkIndex)
 
         val modeLabel = if (dualEnabled) "$targetLabel + ${snapshot.secondaryLanguageLabel}" else targetLabel
         _state.value = _state.value.copy(
-            completedChunksCount = completedChunks.size,
+            completedChunksCount = primaryCuesByWindow.size,
             generatedCueCount = sortedPrimaryCues.size,
             statusMessage = "Live Auto Subtitles ($modeLabel) · ${sortedPrimaryCues.size} lines synced"
         )
+    }
+
+    private suspend fun translateSentenceWithNeuralPrimary(
+        text: String,
+        targetCode: String,
+        mlKitFallback: Translator?
+    ): String {
+        if (targetCode == AutoSubtitleLanguageCatalog.CODE_ORIGINAL) return text
+        if (targetCode.equals(AutoSubtitleLanguageCatalog.CODE_ENGLISH, ignoreCase = true)) {
+            return text
+        }
+        // 1. Online Neural Translation Primary (natural grammar + memory cached)
+        val neuralResult = neuralTranslator.translate(text, targetCode)
+        if (!neuralResult.isNullOrBlank()) {
+            return neuralResult
+        }
+        // 2. Seamless Offline ML Kit Fallback
+        if (mlKitFallback != null) {
+            return runCatching { mlKitFallback.translate(text).await().trim() }
+                .getOrDefault(text)
+                .ifBlank { text }
+        }
+        return text
+    }
+
+    private fun recordCoveredInterval(range: LongRange) {
+        coveredIntervals.add(range)
+        val merged = mergeCoveredIntervals(coveredIntervals)
+        coveredIntervals.clear()
+        coveredIntervals.addAll(merged)
     }
 
     /**
@@ -759,10 +799,6 @@ class AutoSubtitleManager(
         return findActiveDualCue(playbackPositionMs, syncOffsetMs).primaryText
     }
 
-    /**
-     * Dialogue Search (Jump to Scene): searches generated primary & secondary subtitles
-     * for any word or phrase and returns matching timestamped entries.
-     */
     fun searchDialogue(query: String): List<DialogueSearchResult> {
         val primary = sortedPrimaryCues
         if (primary.isEmpty()) return emptyList()
@@ -789,11 +825,6 @@ class AutoSubtitleManager(
         return results
     }
 
-    /**
-     * Exports generated AI subtitles as a standard `.srt` file to `Documents/VOXORA/Subtitles/`
-     * AND saves a local auto-load mirror keyed by media URI + language so future playback
-     * loads immediately without re-running Whisper.
-     */
     suspend fun exportSubtitlesToSrt(videoTitle: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val cues = sortedPrimaryCues
@@ -809,13 +840,11 @@ class AutoSubtitleManager(
                 .ifBlank { "VOXORA_Subtitle" }
             val fileName = "${safeBase}_${langCode}.srt"
 
-            // 1. Save auto-load mirror inside app storage keyed by media URI + language
             if (activeMediaUri.isNotBlank()) {
                 val mirrorFile = cacheFileFor(activeMediaUri, langCode)
                 mirrorFile.writeText(srtContent, Charsets.UTF_8)
             }
 
-            // 2. Save user-visible .SRT to Documents/VOXORA/Subtitles/
             val savedDisplayPath = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val values = ContentValues().apply {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
@@ -864,18 +893,13 @@ class AutoSubtitleManager(
 
     private fun clearGeneratedCues() {
         synchronized(cuesLock) {
-            primaryCuesByChunk.clear()
-            secondaryCuesByChunk.clear()
+            primaryCuesByWindow.clear()
+            secondaryCuesByWindow.clear()
+            coveredIntervals.clear()
             sortedPrimaryCues = emptyList()
             sortedSecondaryCues = emptyList()
         }
-        completedChunks.clear()
-    }
-
-    private fun isChunkWithinDuration(chunkIndex: Int): Boolean {
-        val dur = activeMediaDurationMs
-        if (dur <= 0L) return chunkIndex < 120
-        return (chunkIndex * CHUNK_DURATION_MS) < dur
+        windowCounter = 0
     }
 
     private suspend fun isTargetMlKitModelReady(targetCode: String): Boolean = withContext(Dispatchers.IO) {
@@ -924,18 +948,25 @@ class AutoSubtitleManager(
         setupJob?.cancel()
         pauseProcessing()
         clearGeneratedCues()
+        neuralTranslator.clearCache()
         activeTranslators.values.forEach { runCatching { it.close() } }
         activeTranslators.clear()
     }
 
     companion object {
-        const val CHUNK_DURATION_MS: Long = 25_000L
+        const val FAST_START_CHUNK_DURATION_MS: Long = 7_000L
+        const val ROLLING_CHUNK_DURATION_MS: Long = 20_000L
+        const val CHUNK_DURATION_MS: Long = ROLLING_CHUNK_DURATION_MS
         const val SAMPLE_RATE_HZ: Int = 16_000
+        private const val MAX_MERGED_SENTENCE_WORDS: Int = 18
+        private const val SENTENCE_MERGE_MAX_GAP_MS: Long = 600L
         private const val VAD_FRAME_MS: Int = 50
         private const val VAD_FRAME_SAMPLES: Int = (SAMPLE_RATE_HZ * VAD_FRAME_MS) / 1000 // 800 samples (50ms)
         private const val VAD_CONSECUTIVE_ONSET_FRAMES: Int = 2 // 2 * 50ms = 100ms speech onset
         private const val MIN_SPEECH_RMS_THRESHOLD: Float = 0.008f
         private const val LEADING_SILENCE_TRIM_MIN_GAP_MS: Long = 1_200L
+
+        private val SENTENCE_END_CHARS = setOf('.', '?', '!', '।', '。', '？', '！')
 
         fun needsMlKitTranslation(targetCode: String): Boolean {
             return targetCode != AutoSubtitleLanguageCatalog.CODE_ORIGINAL &&
@@ -943,13 +974,175 @@ class AutoSubtitleManager(
         }
 
         fun chunkIndexForPositionMs(positionMs: Long): Int {
-            return (positionMs.coerceAtLeast(0L) / CHUNK_DURATION_MS).toInt()
+            return (positionMs.coerceAtLeast(0L) / ROLLING_CHUNK_DURATION_MS).toInt()
         }
 
         /**
-         * Estimates the adaptive background/BGM noise floor across a 16kHz PCM chunk using
-         * the 35th-percentile RMS energy of 50ms frames.
+         * Progressive Fast-Start Window Planner (v2.6.0):
+         * 1. If [currentPositionMs] is NOT covered yet (initial enable or after a seek), returns
+         *    a fast **7-second first chunk** `[currentPositionMs, 7_000L]` so Whisper finishes in ~1.5–2s.
+         * 2. If [currentPositionMs] IS covered, plans the next **20-second rolling look-ahead chunk**
+         *    immediately after the covering interval if within `20_000L` of current playback.
          */
+        fun planNextWindow(
+            currentPositionMs: Long,
+            covered: List<LongRange>,
+            durationMs: Long
+        ): Pair<Long, Long>? {
+            val pos = currentPositionMs.coerceAtLeast(0L)
+            if (durationMs > 0L && pos >= durationMs) return null
+
+            val merged = mergeCoveredIntervals(covered)
+            val coveringCurrent = merged.firstOrNull { pos in it }
+
+            if (coveringCurrent == null) {
+                // Fast-Start 7-second chunk right at current playback / seek position
+                val nextStart = merged.firstOrNull { it.first > pos }?.first
+                val maxEnd = if (durationMs > 0L) durationMs else Long.MAX_VALUE
+                val desiredEnd = minOf(pos + FAST_START_CHUNK_DURATION_MS, nextStart ?: maxEnd, maxEnd)
+                val dur = (desiredEnd - pos).coerceAtLeast(0L)
+                return if (dur >= 1_000L) pos to dur else null
+            }
+
+            // Current position is covered: look ahead up to 20s beyond currentPositionMs
+            val lookAheadStart = coveringCurrent.last
+            if (durationMs > 0L && lookAheadStart >= durationMs) return null
+            if (lookAheadStart > pos + ROLLING_CHUNK_DURATION_MS) return null
+
+            val nextCoveredStart = merged.firstOrNull { it.first > lookAheadStart }?.first
+            val maxEnd = if (durationMs > 0L) durationMs else Long.MAX_VALUE
+            val desiredEnd = minOf(lookAheadStart + ROLLING_CHUNK_DURATION_MS, nextCoveredStart ?: maxEnd, maxEnd)
+            val dur = (desiredEnd - lookAheadStart).coerceAtLeast(0L)
+            return if (dur >= 1_000L) lookAheadStart to dur else null
+        }
+
+        fun mergeCoveredIntervals(intervals: List<LongRange>): List<LongRange> {
+            if (intervals.size <= 1) return intervals.toList()
+            val sorted = intervals.sortedBy { it.first }
+            val result = mutableListOf(sorted.first())
+            for (i in 1 until sorted.size) {
+                val cur = sorted[i]
+                val prev = result.last()
+                if (cur.first <= prev.last + 250L) {
+                    result[result.lastIndex] = prev.first..maxOf(prev.last, cur.last)
+                } else {
+                    result.add(cur)
+                }
+            }
+            return result
+        }
+
+        /**
+         * Stage 1 Smart Sentence Merging before translation:
+         * Joins consecutive Whisper segments belonging to the same spoken sentence when:
+         * - Previous text does NOT end with sentence-ending punctuation (`.`, `?`, `!`, `।`, `。`, `？`, `！`),
+         * - Time gap to next segment is `< 600ms`, AND
+         * - Combined word count does not exceed 18 words.
+         */
+        fun mergeIncompleteSentences(segments: List<VadTimedSegment>): List<MergedSentenceBlock> {
+            if (segments.isEmpty()) return emptyList()
+            val blocks = mutableListOf<MergedSentenceBlock>()
+            var currentGroup = mutableListOf(segments.first())
+            var currentText = segments.first().text.trim()
+            var currentWords = countWords(currentText)
+
+            for (i in 1 until segments.size) {
+                val next = segments[i]
+                val prev = currentGroup.last()
+                val gapMs = next.startTimeMs - prev.endTimeMs
+                val nextText = next.text.trim()
+                val nextWords = countWords(nextText)
+                val prevTerminated = endsWithSentencePunctuation(currentText)
+
+                if (!prevTerminated &&
+                    gapMs in -250L until SENTENCE_MERGE_MAX_GAP_MS &&
+                    (currentWords + nextWords) <= MAX_MERGED_SENTENCE_WORDS
+                ) {
+                    currentGroup.add(next)
+                    currentText = "$currentText $nextText"
+                    currentWords += nextWords
+                } else {
+                    blocks.add(MergedSentenceBlock(currentText, currentGroup.toList()))
+                    currentGroup = mutableListOf(next)
+                    currentText = nextText
+                    currentWords = nextWords
+                }
+            }
+            blocks.add(MergedSentenceBlock(currentText, currentGroup.toList()))
+            return blocks
+        }
+
+        /**
+         * Maps a translated merged sentence cleanly back to constituent VAD-trimmed timestamps.
+         * Keeps single-segment or short (<4.5s) sentences intact, and splits longer multi-segment
+         * translations proportionally across constituent timings so subtitles remain concise and synced.
+         */
+        fun mapTranslatedSentenceToCues(
+            block: MergedSentenceBlock,
+            translatedText: String
+        ): List<SubtitleCue> {
+            val clean = translatedText.trim()
+            if (clean.isBlank()) return emptyList()
+            val parts = block.constituents
+            if (parts.size == 1 || (block.endTimeMs - block.startTimeMs) <= 4_500L) {
+                return listOf(
+                    SubtitleCue(
+                        startTimeMs = block.startTimeMs,
+                        endTimeMs = block.endTimeMs,
+                        text = clean
+                    )
+                )
+            }
+
+            val words = clean.split(Regex("\\s+")).filter { it.isNotBlank() }
+            if (words.size < parts.size) {
+                return listOf(
+                    SubtitleCue(
+                        startTimeMs = block.startTimeMs,
+                        endTimeMs = block.endTimeMs,
+                        text = clean
+                    )
+                )
+            }
+
+            val totalWeight = parts.sumOf { (it.endTimeMs - it.startTimeMs).coerceAtLeast(300L) }.toDouble()
+            val cues = mutableListOf<SubtitleCue>()
+            var wordCursor = 0
+            for (idx in parts.indices) {
+                val seg = parts[idx]
+                val remainingSegments = parts.size - idx
+                val remainingWords = words.size - wordCursor
+                val takeCount = if (idx == parts.lastIndex) {
+                    remainingWords
+                } else {
+                    val weight = (seg.endTimeMs - seg.startTimeMs).coerceAtLeast(300L).toDouble() / totalWeight
+                    (words.size * weight).roundToInt().coerceIn(1, (remainingWords - (remainingSegments - 1)).coerceAtLeast(1))
+                }
+                val slice = words.subList(wordCursor, (wordCursor + takeCount).coerceAtMost(words.size))
+                wordCursor += slice.size
+                if (slice.isNotEmpty()) {
+                    cues.add(
+                        SubtitleCue(
+                            startTimeMs = seg.startTimeMs,
+                            endTimeMs = seg.endTimeMs,
+                            text = slice.joinToString(" ")
+                        )
+                    )
+                }
+            }
+            return cues
+        }
+
+        private fun endsWithSentencePunctuation(text: String): Boolean {
+            val trimmed = text.trimEnd('"', '\'', ')', ']', ' ')
+            if (trimmed.isEmpty()) return false
+            return trimmed.last() in SENTENCE_END_CHARS
+        }
+
+        private fun countWords(text: String): Int {
+            return text.split(Regex("\\s+")).count { it.isNotBlank() }
+        }
+
         fun estimateChunkNoiseFloor(pcm16k: FloatArray): Float {
             if (pcm16k.size < VAD_FRAME_SAMPLES) return 0.006f
             val frameCount = pcm16k.size / VAD_FRAME_SAMPLES
@@ -968,17 +1161,6 @@ class AutoSubtitleManager(
             return energies[p35Index].coerceIn(0.002f, 0.060f)
         }
 
-        /**
-         * Balanced v2.5.2 Speech-Synced VAD + Backward Duration-Cap Guard for Whisper segments:
-         * 1. Scans forward from [segmentStartMs] in 50ms steps with gentle `noiseFloorRms * 1.45f`
-         *    threshold to detect speech onset.
-         * 2. ONLY trims leading silence if the detected leading gap exceeds `1200ms`, ensuring
-         *    the first spoken word is never clipped and subtitles never drift late.
-         * 3. Scans backward from [segmentEndMs] to trim trailing silence (+150ms natural decay tail).
-         * 4. Applies the Backward Duration-Cap Guard only when the segment spans significantly longer
-         *    than its spoken word duration (e.g., 5–7s BGM/silence gaps).
-         * 5. Returns `null` if the entire segment slice contains pure silence below noise floor.
-         */
         fun trimSegmentWithVad(
             pcm16k: FloatArray,
             chunkStartMs: Long,
@@ -1011,20 +1193,17 @@ class AutoSubtitleManager(
                 if (rms > peakRms) peakRms = rms
             }
 
-            // Discard pure-silence hallucinations completely
             if (peakRms < MIN_SPEECH_RMS_THRESHOLD) return null
 
             val speechThreshold = maxOf(
                 MIN_SPEECH_RMS_THRESHOLD,
                 noiseFloorRms * 1.45f
             )
-            // Soft cap so quiet dialogue lines in loud BGM scenes are still detected on time
             val effectiveThreshold = minOf(
                 maxOf(speechThreshold, peakRms * 0.14f),
                 peakRms * 0.80f
             )
 
-            // 1. Scan forward in 50ms steps to locate speech onset
             var firstActive = -1
             val requiredRun = VAD_CONSECUTIVE_ONSET_FRAMES.coerceAtMost(frameCount)
             var runLen = 0
@@ -1044,7 +1223,6 @@ class AutoSubtitleManager(
             }
             if (firstActive < 0) return null
 
-            // 2. Scan backward from t1 to locate where speech ends
             var lastActive = firstActive
             for (f in frameCount - 1 downTo firstActive) {
                 if (frameRms[f] >= effectiveThreshold * 0.80f) {
@@ -1053,7 +1231,6 @@ class AutoSubtitleManager(
                 }
             }
 
-            // 3. Only trim leading silence if the leading silent gap exceeds 1200ms
             val detectedLeadingSilenceMs = firstActive * VAD_FRAME_MS.toLong()
             var speechStartMs = if (detectedLeadingSilenceMs > LEADING_SILENCE_TRIM_MIN_GAP_MS) {
                 (chunkStartMs + relStartMs + detectedLeadingSilenceMs).coerceAtLeast(segmentStartMs)
@@ -1065,7 +1242,6 @@ class AutoSubtitleManager(
                 .coerceAtMost(segmentEndMs)
                 .coerceAtLeast(speechStartMs + 300L)
 
-            // 4. Backward Duration-Cap Guard (only kicks in on excessive >1200ms BGM/silence overhang)
             if (wordCount > 0) {
                 val expectedMs = (wordCount * 450L).coerceIn(1_000L, 6_500L)
                 if ((speechEndMs - speechStartMs) > expectedMs + LEADING_SILENCE_TRIM_MIN_GAP_MS) {
@@ -1136,10 +1312,6 @@ class AutoSubtitleManager(
             return SubtitleSanitizer.sanitize(raw).orEmpty()
         }
 
-        /**
-         * Strict zero-lookahead lookup for frame-accurate subtitle display.
-         * Returns `null` immediately during any silent gap outside `[startTimeMs, endTimeMs]`.
-         */
         fun findExactCueForPosition(
             cues: List<SubtitleCue>,
             playbackPositionMs: Long,

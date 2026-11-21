@@ -47,15 +47,15 @@ val LocalVoxoraColors = staticCompositionLocalOf {
 }
 
 private val CinemaSpatialDarkColorScheme = darkColorScheme(
-    primary = VoxoraAmber,
-    onPrimary = Color(0xFF140D00),
+    primary = VoxoraSunsetOrange,
+    onPrimary = Color.White,
     primaryContainer = VoxoraAmberContainer,
     onPrimaryContainer = VoxoraAmberBright,
     secondary = VoxoraPureWhite,
     onSecondary = Color(0xFF0A0C10),
     secondaryContainer = VoxoraElevatedCharcoal,
     onSecondaryContainer = VoxoraTextPrimary,
-    tertiary = VoxoraAmberBright,
+    tertiary = VoxoraSunsetCoral,
     background = VoxoraObsidian,
     onBackground = VoxoraTextPrimary,
     surface = VoxoraCharcoal,

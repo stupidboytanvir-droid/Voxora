@@ -628,4 +628,98 @@ class DubbingPhase6Test {
             trimmedShort!!.first
         )
     }
+
+    @Test
+    fun v260_fastStartChunking_sentenceMerging_neuralTranslatorAndMusicLibraryHelpers() {
+        // 1. Progressive Fast-Start Chunking: 7s first chunk on enable/seek, then 20s rolling look-ahead
+        assertEquals(7_000L, AutoSubtitleManager.FAST_START_CHUNK_DURATION_MS)
+        assertEquals(20_000L, AutoSubtitleManager.ROLLING_CHUNK_DURATION_MS)
+
+        val firstWin = AutoSubtitleManager.planNextWindow(
+            currentPositionMs = 0L,
+            covered = emptyList(),
+            durationMs = 120_000L
+        )
+        assertEquals(0L to 7_000L, firstWin)
+
+        val rollingWin = AutoSubtitleManager.planNextWindow(
+            currentPositionMs = 1_500L,
+            covered = listOf(0L..7_000L),
+            durationMs = 120_000L
+        )
+        assertEquals(7_000L to 20_000L, rollingWin)
+
+        val seekFastWin = AutoSubtitleManager.planNextWindow(
+            currentPositionMs = 90_000L,
+            covered = listOf(0L..27_000L),
+            durationMs = 120_000L
+        )
+        assertEquals(90_000L to 7_000L, seekFastWin)
+
+        // 2. Smart Sentence Merging before translation (<600ms gap, non-terminated, <=18 words)
+        val segments = listOf(
+            com.voxora.player.ai.subtitles.VadTimedSegment(1_000L, 2_200L, "I think we should"),
+            com.voxora.player.ai.subtitles.VadTimedSegment(2_500L, 4_000L, "leave before it rains."),
+            com.voxora.player.ai.subtitles.VadTimedSegment(4_300L, 5_500L, "Are you ready?"),
+            com.voxora.player.ai.subtitles.VadTimedSegment(7_000L, 8_200L, "Yes, let us go now.")
+        )
+        val merged = AutoSubtitleManager.mergeIncompleteSentences(segments)
+        assertEquals(3, merged.size)
+        assertEquals("I think we should leave before it rains.", merged[0].mergedText)
+        assertEquals(2, merged[0].constituents.size)
+        assertEquals("Are you ready?", merged[1].mergedText)
+        assertEquals("Yes, let us go now.", merged[2].mergedText)
+
+        // Mapping merged translated sentence back to cues stays concise & timestamped
+        val mappedShort = AutoSubtitleManager.mapTranslatedSentenceToCues(
+            block = merged[0],
+            translatedText = "আমার মনে হয় বৃষ্টি নামার আগেই আমাদের বের হওয়া উচিত।"
+        )
+        assertEquals(1, mappedShort.size)
+        assertEquals(1_000L, mappedShort[0].startTimeMs)
+        assertEquals(4_000L, mappedShort[0].endTimeMs)
+
+        // 3. NeuralSubtitleTranslator JSON response parser
+        val sampleJson = """[[["আমি এখনই বাড়ি যাচ্ছি। ","I am going home now.",null,null,10],["তুমি চিন্তা করো না।","Don't worry.",null,null,10]],null,"en"]"""
+        assertEquals(
+            "আমি এখনই বাড়ি যাচ্ছি। তুমি চিন্তা করো না।",
+            com.voxora.player.ai.subtitles.NeuralSubtitleTranslator.parseGoogleTranslateResponse(sampleJson)
+        )
+        assertNull(com.voxora.player.ai.subtitles.NeuralSubtitleTranslator.parseGoogleTranslateResponse(""))
+        assertNull(com.voxora.player.ai.subtitles.NeuralSubtitleTranslator.parseGoogleTranslateResponse("{invalid}"))
+
+        // 4. Folder View Mode toggle, Music Repeat cycling, and Audio Format Badge resolution
+        assertEquals(
+            com.voxora.player.model.FolderViewMode.GRID,
+            com.voxora.player.model.FolderViewMode.LIST.toggled()
+        )
+        assertEquals(
+            com.voxora.player.model.FolderViewMode.LIST,
+            com.voxora.player.model.FolderViewMode.GRID.toggled()
+        )
+        assertEquals(
+            com.voxora.player.model.MusicRepeatMode.ALL,
+            com.voxora.player.model.MusicRepeatMode.OFF.next()
+        )
+        assertEquals(
+            com.voxora.player.model.MusicRepeatMode.ONE,
+            com.voxora.player.model.MusicRepeatMode.ALL.next()
+        )
+        assertEquals(
+            com.voxora.player.model.MusicRepeatMode.OFF,
+            com.voxora.player.model.MusicRepeatMode.ONE.next()
+        )
+        assertEquals(
+            "FLAC",
+            com.voxora.player.data.local.storage.MediaStoreAudioScanner.resolveAudioFormatBadge("Track_01.flac", "audio/flac")
+        )
+        assertEquals(
+            "MP3",
+            com.voxora.player.data.local.storage.MediaStoreAudioScanner.resolveAudioFormatBadge("song_without_ext", "audio/mpeg")
+        )
+        assertEquals(
+            "OPUS",
+            com.voxora.player.data.local.storage.MediaStoreAudioScanner.resolveAudioFormatBadge("voice_note.opus", "audio/ogg")
+        )
+    }
 }

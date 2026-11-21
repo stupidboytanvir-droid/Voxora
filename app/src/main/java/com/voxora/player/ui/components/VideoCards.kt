@@ -79,6 +79,9 @@ import com.voxora.player.ui.theme.VoxoraAmberBright
 import com.voxora.player.ui.theme.VoxoraCardCharcoal
 import com.voxora.player.ui.theme.VoxoraElevatedCharcoal
 import com.voxora.player.ui.theme.VoxoraHairlineBorder
+import com.voxora.player.ui.theme.VoxoraSunsetBrush
+import com.voxora.player.ui.theme.VoxoraSunsetHorizontalBrush
+import com.voxora.player.ui.theme.VoxoraSunsetOrange
 import com.voxora.player.util.FormatUtils
 import com.voxora.player.util.TitleFormatter
 import kotlinx.coroutines.Dispatchers
@@ -262,7 +265,7 @@ fun VideoThumbnail(
 }
 
 /**
- * Signature Warm Cinema Amber Episode Pill Badge (`S01 · E06` / `EP 06`).
+ * Signature Sunset Amber-to-Coral Episode Pill Badge (`S01 · E06` / `EP 06`).
  */
 @Composable
 fun EpisodeBadgePill(
@@ -270,22 +273,41 @@ fun EpisodeBadgePill(
     modifier: Modifier = Modifier,
     filled: Boolean = false
 ) {
-    Surface(
-        color = if (filled) VoxoraAmber else VoxoraAmber.copy(alpha = 0.18f),
-        shape = RoundedCornerShape(7.dp),
-        border = if (filled) null else BorderStroke(0.8.dp, VoxoraAmber.copy(alpha = 0.55f)),
-        modifier = modifier
-    ) {
-        Text(
-            text = badgeText,
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.5.sp
-            ),
-            color = if (filled) Color(0xFF140D00) else VoxoraAmberBright,
-            maxLines = 1,
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
-        )
+    if (filled) {
+        Box(
+            modifier = modifier
+                .clip(RoundedCornerShape(7.dp))
+                .background(VoxoraSunsetBrush)
+        ) {
+            Text(
+                text = badgeText,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp
+                ),
+                color = Color.White,
+                maxLines = 1,
+                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
+            )
+        }
+    } else {
+        Surface(
+            color = VoxoraSunsetOrange.copy(alpha = 0.18f),
+            shape = RoundedCornerShape(7.dp),
+            border = BorderStroke(0.8.dp, VoxoraSunsetOrange.copy(alpha = 0.55f)),
+            modifier = modifier
+        ) {
+            Text(
+                text = badgeText,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp
+                ),
+                color = VoxoraAmberBright,
+                maxLines = 1,
+                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
+            )
+        }
     }
 }
 
@@ -366,7 +388,7 @@ fun ContinueWatchingCard(
                         modifier = Modifier
                             .fillMaxHeight()
                             .fillMaxWidth(item.progressFraction)
-                            .background(VoxoraAmber)
+                            .background(VoxoraSunsetHorizontalBrush)
                     )
                 }
             }
@@ -494,7 +516,7 @@ fun VideoRowCard(
                             modifier = Modifier
                                 .fillMaxHeight()
                                 .fillMaxWidth(progress)
-                                .background(VoxoraAmber)
+                                .background(VoxoraSunsetHorizontalBrush)
                         )
                     }
                 }
@@ -684,7 +706,7 @@ fun VideoGridCard(
                             modifier = Modifier
                                 .fillMaxHeight()
                                 .fillMaxWidth(progress)
-                                .background(VoxoraAmber)
+                                .background(VoxoraSunsetHorizontalBrush)
                         )
                     }
                 }

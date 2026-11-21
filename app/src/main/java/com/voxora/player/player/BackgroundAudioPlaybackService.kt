@@ -118,7 +118,8 @@ class BackgroundAudioPlaybackService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_voxora_notification)
+            .setColor(0xFFF97316.toInt())
             .setContentTitle(BackgroundPlaybackBridge.activeTitle)
             .setContentText(if (isPlaying) "Playing audio in background" else "Background audio paused")
             .setContentIntent(contentPending)

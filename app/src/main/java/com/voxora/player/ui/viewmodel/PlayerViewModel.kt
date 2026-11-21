@@ -285,6 +285,7 @@ class PlayerViewModel(
         activeUriString = uriString
         lastSavedPositionMs = -1L
         cancelUpNext()
+        app.musicPlayerController.pause()
         autoSubtitleManager.pauseProcessing()
 
         // Observe Scene Bookmarks for this video URI

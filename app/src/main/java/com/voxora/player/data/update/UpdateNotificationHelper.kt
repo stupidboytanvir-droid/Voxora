@@ -73,7 +73,8 @@ class UpdateNotificationHelper(private val context: Context) {
             .ifBlank { "A new version of VOXORA is ready to download and install." }
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_voxora_notification)
+            .setColor(0xFFF97316.toInt())
             .setContentTitle("VOXORA v${release.versionName} Update Available")
             .setContentText("Tap to download and install the latest version.")
             .setStyle(NotificationCompat.BigTextStyle().bigText(previewNotes))
@@ -104,7 +105,8 @@ class UpdateNotificationHelper(private val context: Context) {
         )
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_voxora_notification)
+            .setColor(0xFFF97316.toInt())
             .setContentTitle("VOXORA v${release.versionName} Downloaded")
             .setContentText("Tap to install the update now.")
             .setPriority(NotificationCompat.PRIORITY_HIGH)

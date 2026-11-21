@@ -118,6 +118,9 @@ import com.voxora.player.ui.theme.VoxoraElevatedCharcoal
 import com.voxora.player.ui.theme.VoxoraGlassBorder
 import com.voxora.player.ui.theme.VoxoraGlassDark
 import com.voxora.player.ui.theme.VoxoraHairlineBorder
+import com.voxora.player.ui.theme.VoxoraSunsetBrush
+import com.voxora.player.ui.theme.VoxoraSunsetCoral
+import com.voxora.player.ui.theme.VoxoraSunsetOrange
 import com.voxora.player.ui.viewmodel.SleepTimerUiState
 import com.voxora.player.util.FormatUtils
 import com.voxora.player.util.TitleFormatter
@@ -730,21 +733,26 @@ fun PlayerControlsOverlay(
                         }
                     }
 
-                    // 4. CC (AI Subtitles) Pill
-                    Surface(
-                        onClick = {
-                            onUserInteraction()
-                            onOpenSubtitles()
-                        },
-                        color = if (autoSubtitleActive) VoxoraAmber.copy(alpha = 0.24f) else VoxoraGlassDark,
-                        shape = RoundedCornerShape(19.dp),
-                        border = BorderStroke(
-                            width = 0.85.dp,
-                            color = if (autoSubtitleActive) VoxoraAmber else VoxoraGlassBorder
-                        ),
+                    // 4. CC (AI Subtitles) Pill (Sunset Gradient when active)
+                    Box(
                         modifier = Modifier
                             .height(38.dp)
-                            .testTag("player_subtitles_button")
+                            .clip(RoundedCornerShape(19.dp))
+                            .then(
+                                if (autoSubtitleActive) {
+                                    Modifier.background(VoxoraSunsetBrush)
+                                } else {
+                                    Modifier
+                                        .background(VoxoraGlassDark)
+                                        .border(0.85.dp, VoxoraGlassBorder, RoundedCornerShape(19.dp))
+                                }
+                            )
+                            .clickable {
+                                onUserInteraction()
+                                onOpenSubtitles()
+                            }
+                            .testTag("player_subtitles_button"),
+                        contentAlignment = Alignment.Center
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 10.dp),
@@ -754,12 +762,12 @@ fun PlayerControlsOverlay(
                             Icon(
                                 imageVector = if (autoSubtitleActive) Icons.Rounded.AutoAwesome else Icons.Rounded.Subtitles,
                                 contentDescription = stringResource(R.string.cd_auto_subtitles),
-                                tint = if (autoSubtitleActive) VoxoraAmberBright else Color.White,
+                                tint = Color.White,
                                 modifier = Modifier.size(15.dp)
                             )
                             Text(
                                 text = autoSubtitleBadgeText,
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                 color = Color.White,
                                 maxLines = 1
                             )
@@ -954,13 +962,13 @@ fun PlayerControlsOverlay(
                         .size(76.dp)
                         .scale(playScale)
                         .clip(CircleShape)
-                        .background(VoxoraAmber)
+                        .background(VoxoraSunsetBrush)
                         .testTag("player_play_pause_button")
                 ) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                         contentDescription = stringResource(R.string.cd_play_pause),
-                        tint = Color(0xFF140D00),
+                        tint = Color.White,
                         modifier = Modifier.size(42.dp)
                     )
                 }
@@ -1053,8 +1061,8 @@ fun PlayerControlsOverlay(
                                 isScrubbing = false
                             },
                             colors = SliderDefaults.colors(
-                                thumbColor = VoxoraAmberBright,
-                                activeTrackColor = VoxoraAmber,
+                                thumbColor = VoxoraSunsetCoral,
+                                activeTrackColor = VoxoraSunsetOrange,
                                 inactiveTrackColor = Color.White.copy(alpha = 0.24f)
                             ),
                             modifier = Modifier

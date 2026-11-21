@@ -6,6 +6,7 @@ import coil.ImageLoaderFactory
 import coil.decode.VideoFrameDecoder
 import com.voxora.player.data.local.db.VoxoraDatabase
 import com.voxora.player.data.local.power.BatteryMonitor
+import com.voxora.player.data.local.storage.MediaStoreAudioScanner
 import com.voxora.player.data.local.storage.MediaStoreVideoScanner
 import com.voxora.player.data.local.storage.StorageAccessManager
 import com.voxora.player.data.repository.LibraryOrganizationRepository
@@ -32,6 +33,7 @@ import com.voxora.player.ai.tts.BengaliTtsModelManager
 import com.voxora.player.ai.tts.OfflineBengaliTtsEngine
 import com.voxora.player.dubbing.whisper.VideoPcmAudioDecoder
 import com.voxora.player.dubbing.whisper.WhisperCppSpeechRecognitionEngine
+import com.voxora.player.player.MusicPlayerController
 
 class VoxoraApplication : Application(), ImageLoaderFactory {
 
@@ -83,11 +85,17 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         private set
     lateinit var autoSubtitleManager: AutoSubtitleManager
         private set
+    lateinit var audioScanner: MediaStoreAudioScanner
+        private set
+    lateinit var musicPlayerController: MusicPlayerController
+        private set
 
     override fun onCreate() {
         super.onCreate()
         database = VoxoraDatabase.getInstance(this)
         storageAccessManager = StorageAccessManager(this)
+        audioScanner = MediaStoreAudioScanner(this)
+        musicPlayerController = MusicPlayerController(this)
         val scanner = MediaStoreVideoScanner(this)
         mediaRepository = MediaRepository(scanner, storageAccessManager)
         historyRepository = PlaybackHistoryRepository(database.playbackHistoryDao())

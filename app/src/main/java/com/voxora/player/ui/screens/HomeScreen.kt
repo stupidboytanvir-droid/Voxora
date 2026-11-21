@@ -82,6 +82,9 @@ import com.voxora.player.ui.theme.VoxoraAmberBright
 import com.voxora.player.ui.theme.VoxoraCardCharcoal
 import com.voxora.player.ui.theme.VoxoraHairlineBorder
 import com.voxora.player.ui.theme.VoxoraObsidian
+import com.voxora.player.ui.theme.VoxoraSunsetBrush
+import com.voxora.player.ui.theme.VoxoraSunsetHorizontalBrush
+import com.voxora.player.ui.theme.VoxoraSunsetOrange
 import com.voxora.player.ui.viewmodel.LibraryUiState
 import com.voxora.player.util.FormatUtils
 import com.voxora.player.util.TitleFormatter
@@ -125,9 +128,13 @@ fun HomeScreen(
 
     val heroHistory = uiState.continueWatching.firstOrNull() ?: uiState.recentlyPlayed.firstOrNull()
     val heroFallbackVideo = if (heroHistory == null) uiState.allVideos.firstOrNull() else null
-    val upNextHistory = remember(uiState.continueWatching, uiState.recentlyPlayed, heroHistory) {
-        val combined = (uiState.continueWatching + uiState.recentlyPlayed).distinctBy { it.uriString }
-        if (heroHistory != null) combined.filterNot { it.uriString == heroHistory.uriString } else combined
+    // De-duplicated Continue Watching rail: only unfinished items not already shown in Hero Spotlight
+    val continueWatchingRail = remember(uiState.continueWatching, heroHistory) {
+        if (heroHistory != null) {
+            uiState.continueWatching.filterNot { it.uriString == heroHistory.uriString }
+        } else {
+            uiState.continueWatching
+        }
     }
 
     LaunchedEffect(libraryMessage) {
@@ -187,22 +194,25 @@ fun HomeScreen(
 
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Minimal Flagship Header: VOXORA brand wordmark + Search icon only
-            VoxoraTopHeader(onSearchClick = onSearchClick)
+            // Minimal Flagship Header: VOXORA brand wordmark + History clock icon + Search icon
+            VoxoraTopHeader(
+                onSearchClick = onSearchClick,
+                onHistoryClick = onSeeAllHistory
+            )
 
             if (uiState.isScanning) {
                 LinearProgressIndicator(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp),
-                    color = VoxoraAmber,
+                    color = VoxoraSunsetOrange,
                     trackColor = VoxoraHairlineBorder
                 )
             }
 
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(top = 6.dp, bottom = 118.dp),
+                contentPadding = PaddingValues(top = 6.dp, bottom = 152.dp),
                 verticalArrangement = Arrangement.spacedBy(24.dp)
             ) {
                 if (updateState is UpdateUiState.UpdateAvailable ||
@@ -260,11 +270,11 @@ fun HomeScreen(
                     }
                 }
 
-                // Horizontal Poster Rail: Up Next & Recent
-                if (upNextHistory.isNotEmpty()) {
-                    item(key = "rail_up_next") {
+                // Horizontal Poster Rail: Continue Watching (cleanly de-duplicated — no redundant Recently Played rail)
+                if (continueWatchingRail.isNotEmpty()) {
+                    item(key = "rail_continue_watching") {
                         CinemaSectionHeader(
-                            title = "Up Next & Recent",
+                            title = "Continue Watching",
                             actionLabel = "History",
                             onActionClick = onSeeAllHistory
                         )
@@ -273,7 +283,7 @@ fun HomeScreen(
                             contentPadding = PaddingValues(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            items(upNextHistory.take(12), key = { "upnext_${it.uriString}" }) { item ->
+                            items(continueWatchingRail.take(12), key = { "cw_${it.uriString}" }) { item ->
                                 ContinueWatchingCard(
                                     item = item,
                                     onClick = { onResumeHistory(item) }
@@ -506,26 +516,28 @@ private fun CinemaHeroSpotlightCard(
                         )
                     }
 
-                    Button(
-                        onClick = onClick,
-                        shape = RoundedCornerShape(50),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = VoxoraAmber,
-                            contentColor = Color(0xFF140D00)
-                        ),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-                        modifier = Modifier.testTag("home_hero_resume_button")
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(VoxoraSunsetBrush)
+                            .clickable(onClick = onClick)
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                            .testTag("home_hero_resume_button")
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = ctaLabel,
-                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Rounded.PlayArrow,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = ctaLabel,
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                color = Color.White
+                            )
+                        }
                     }
                 }
 
@@ -540,7 +552,7 @@ private fun CinemaHeroSpotlightCard(
                             modifier = Modifier
                                 .fillMaxHeight()
                                 .fillMaxWidth(progressFraction.coerceIn(0f, 1f))
-                                .background(VoxoraAmber)
+                                .background(VoxoraSunsetHorizontalBrush)
                         )
                     }
                 }

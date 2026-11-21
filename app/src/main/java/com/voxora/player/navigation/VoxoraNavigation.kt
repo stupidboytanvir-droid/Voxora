@@ -5,10 +5,27 @@ import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.History
@@ -22,10 +39,7 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -34,11 +48,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -63,7 +84,9 @@ import com.voxora.player.ui.screens.PrivateVaultScreen
 import com.voxora.player.ui.screens.SettingsScreen
 import com.voxora.player.ui.screens.StorageCleanerScreen
 import com.voxora.player.ui.screens.VideosScreen
-import com.voxora.player.ui.theme.LocalVoxoraColors
+import com.voxora.player.ui.theme.VoxoraAmber
+import com.voxora.player.ui.theme.VoxoraAmberBright
+import com.voxora.player.ui.theme.VoxoraHairlineBorder
 import com.voxora.player.ui.viewmodel.LibraryViewModel
 import com.voxora.player.ui.viewmodel.PlayerViewModel
 import com.voxora.player.ui.viewmodel.SettingsViewModel
@@ -106,7 +129,6 @@ fun VoxoraApp(
     val app = context.applicationContext as VoxoraApplication
     val lifecycleOwner = LocalLifecycleOwner.current
     val navController = rememberNavController()
-    val voxoraColors = LocalVoxoraColors.current
 
     val libraryViewModel: LibraryViewModel = viewModel(factory = LibraryViewModel.Factory(app))
     val settingsViewModel: SettingsViewModel = viewModel(factory = SettingsViewModel.Factory(app))
@@ -235,13 +257,15 @@ fun VoxoraApp(
     val isSubToolRoute = currentDestination?.hasRoute<PrivateVaultRoute>() == true ||
         currentDestination?.hasRoute<StorageCleanerRoute>() == true
 
-    val tabs = listOf(
-        BottomNavTab("Home", Icons.Rounded.Home, Icons.Outlined.Home, HomeRoute, "nav_home"),
-        BottomNavTab("Videos", Icons.Rounded.VideoLibrary, Icons.Outlined.VideoLibrary, VideosRoute, "nav_videos"),
-        BottomNavTab("Folders", Icons.Rounded.Folder, Icons.Outlined.Folder, FoldersRoute, "nav_folders"),
-        BottomNavTab("History", Icons.Rounded.History, Icons.Outlined.History, HistoryRoute, "nav_history"),
-        BottomNavTab("Settings", Icons.Rounded.Settings, Icons.Outlined.Settings, SettingsRoute, "nav_settings")
-    )
+    val tabs = remember {
+        listOf(
+            BottomNavTab("Home", Icons.Rounded.Home, Icons.Outlined.Home, HomeRoute, "nav_home"),
+            BottomNavTab("Videos", Icons.Rounded.VideoLibrary, Icons.Outlined.VideoLibrary, VideosRoute, "nav_videos"),
+            BottomNavTab("Folders", Icons.Rounded.Folder, Icons.Outlined.Folder, FoldersRoute, "nav_folders"),
+            BottomNavTab("History", Icons.Rounded.History, Icons.Outlined.History, HistoryRoute, "nav_history"),
+            BottomNavTab("Settings", Icons.Rounded.Settings, Icons.Outlined.Settings, SettingsRoute, "nav_settings")
+        )
+    }
 
     fun navigateToTopTab(route: Any) {
         navController.navigate(route) {
@@ -261,60 +285,19 @@ fun VoxoraApp(
         safVideoLauncher.launch(arrayOf("video/*"))
     }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        contentWindowInsets = if (isPlayerRoute || isInPipMode) WindowInsets(0) else WindowInsets.statusBars,
-        bottomBar = {
-            if (!isPlayerRoute && !isSubToolRoute && !isInPipMode) {
-                NavigationBar(
-                    containerColor = voxoraColors.glassSurface,
-                    tonalElevation = 0.dp
-                ) {
-                    tabs.forEach { tab ->
-                        val selected = when (tab.route) {
-                            HomeRoute -> currentDestination?.hasRoute<HomeRoute>() == true
-                            VideosRoute -> currentDestination?.hasRoute<VideosRoute>() == true
-                            FoldersRoute -> currentDestination?.hasRoute<FoldersRoute>() == true ||
-                                currentDestination?.hasRoute<FolderDetailRoute>() == true
-                            HistoryRoute -> currentDestination?.hasRoute<HistoryRoute>() == true
-                            SettingsRoute -> currentDestination?.hasRoute<SettingsRoute>() == true
-                            else -> false
-                        }
-                        NavigationBarItem(
-                            selected = selected,
-                            onClick = { navigateToTopTab(tab.route) },
-                            icon = {
-                                Icon(
-                                    imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
-                                    contentDescription = tab.label
-                                )
-                            },
-                            label = {
-                                Text(
-                                    text = tab.label,
-                                    maxLines = 1
-                                )
-                            },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = MaterialTheme.colorScheme.primary,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                            ),
-                            modifier = Modifier.testTag(tab.testTag)
-                        )
-                    }
-                }
-            }
-        }
-    ) { innerPadding ->
+    val showFloatingDock = !isPlayerRoute && !isSubToolRoute && !isInPipMode
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
         val contentModifier = if (isPlayerRoute || isInPipMode) {
             Modifier.fillMaxSize()
         } else {
             Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
+                .statusBarsPadding()
         }
 
         NavHost(
@@ -335,11 +318,6 @@ fun VoxoraApp(
                             PlayerRoute(video.uriString, video.title, -1L)
                         )
                     },
-                    onPlayStreamUrl = { url, title ->
-                        navController.navigate(
-                            PlayerRoute(url, title, 0L)
-                        )
-                    },
                     onPlayPlaylistEntry = { entry ->
                         navController.navigate(
                             PlayerRoute(entry.videoUri, entry.title, -1L)
@@ -355,8 +333,6 @@ fun VoxoraApp(
                             FolderDetailRoute(folder.bucketId, folder.name)
                         )
                     },
-                    onOpenVault = { navController.navigate(PrivateVaultRoute) },
-                    onOpenCleaner = { navController.navigate(StorageCleanerRoute) },
                     onCreatePlaylist = libraryViewModel::createPlaylist,
                     onDeletePlaylist = libraryViewModel::deletePlaylist,
                     onAddToWatchLater = libraryViewModel::addToWatchLater,
@@ -369,7 +345,6 @@ fun VoxoraApp(
                     onSeeAllFolders = { navigateToTopTab(FoldersRoute) },
                     onSeeAllHistory = { navigateToTopTab(HistoryRoute) },
                     onSearchClick = { navigateToTopTab(VideosRoute) },
-                    onSettingsClick = { navigateToTopTab(SettingsRoute) },
                     onRequestPermission = ::launchPermissionPrompt,
                     onOpenSafVideo = ::launchSafVideoPicker,
                     onRefresh = libraryViewModel::refreshLibrary
@@ -458,7 +433,12 @@ fun VoxoraApp(
                         }
                     },
                     onOpenVault = { navController.navigate(PrivateVaultRoute) },
-                    onOpenCleaner = { navController.navigate(StorageCleanerRoute) }
+                    onOpenCleaner = { navController.navigate(StorageCleanerRoute) },
+                    onPlayStreamUrl = { url, title ->
+                        navController.navigate(
+                            PlayerRoute(url, title, 0L)
+                        )
+                    }
                 )
             }
 
@@ -519,6 +499,29 @@ fun VoxoraApp(
                 )
             }
         }
+
+        // Detached Floating Frosted Glass Navigation Dock
+        if (showFloatingDock) {
+            VoxoraFloatingGlassDock(
+                tabs = tabs,
+                isTabSelected = { tab ->
+                    when (tab.route) {
+                        HomeRoute -> currentDestination?.hasRoute<HomeRoute>() == true
+                        VideosRoute -> currentDestination?.hasRoute<VideosRoute>() == true
+                        FoldersRoute -> currentDestination?.hasRoute<FoldersRoute>() == true ||
+                            currentDestination?.hasRoute<FolderDetailRoute>() == true
+                        HistoryRoute -> currentDestination?.hasRoute<HistoryRoute>() == true
+                        SettingsRoute -> currentDestination?.hasRoute<SettingsRoute>() == true
+                        else -> false
+                    }
+                },
+                onTabClick = { tab -> navigateToTopTab(tab.route) },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+            )
+        }
     }
 
     if (showUpdateDialog) {
@@ -542,5 +545,105 @@ fun VoxoraApp(
             onRetryCheck = { updateViewModel.checkForUpdates(isManual = true) },
             onDismiss = updateViewModel::dismissUpdateDialog
         )
+    }
+}
+
+/**
+ * Signature VOXORA Detached Pill-Shaped Floating Frosted Glass Bottom Navigation Dock
+ * with spring-animated active Warm Cinema Amber pill indicator and subtle haptic feedback.
+ */
+@Composable
+private fun VoxoraFloatingGlassDock(
+    tabs: List<BottomNavTab>,
+    isTabSelected: (BottomNavTab) -> Boolean,
+    onTabClick: (BottomNavTab) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val haptic = LocalHapticFeedback.current
+
+    Surface(
+        modifier = modifier
+            .widthIn(max = 460.dp)
+            .fillMaxWidth(),
+        shape = RoundedCornerShape(32.dp),
+        color = Color(0xEB11131B),
+        border = BorderStroke(0.85.dp, VoxoraHairlineBorder),
+        shadowElevation = 18.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 7.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            tabs.forEach { tab ->
+                val selected = isTabSelected(tab)
+                val pillColor by animateColorAsState(
+                    targetValue = if (selected) VoxoraAmber.copy(alpha = 0.18f) else Color.Transparent,
+                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                    label = "dock_pill_bg"
+                )
+                val borderColor by animateColorAsState(
+                    targetValue = if (selected) VoxoraAmber.copy(alpha = 0.5f) else Color.Transparent,
+                    animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                    label = "dock_pill_border"
+                )
+                val contentColor by animateColorAsState(
+                    targetValue = if (selected) VoxoraAmberBright else Color(0xFF98A0B8),
+                    label = "dock_item_fg"
+                )
+                val horizontalPad by animateDpAsState(
+                    targetValue = if (selected) 12.dp else 8.dp,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessMedium
+                    ),
+                    label = "dock_pad"
+                )
+
+                val interactionSource = remember { MutableInteractionSource() }
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = pillColor,
+                    border = if (selected) BorderStroke(0.8.dp, borderColor) else null,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(24.dp))
+                        .clickable(
+                            interactionSource = interactionSource,
+                            indication = null
+                        ) {
+                            if (!selected) {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onTabClick(tab)
+                            }
+                        }
+                        .testTag(tab.testTag)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = horizontalPad, vertical = 7.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                            contentDescription = tab.label,
+                            tint = contentColor,
+                            modifier = Modifier.size(21.dp)
+                        )
+                        Text(
+                            text = tab.label,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 10.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                            ),
+                            color = contentColor,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
     }
 }

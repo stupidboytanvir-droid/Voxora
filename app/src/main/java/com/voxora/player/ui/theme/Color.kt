@@ -2,40 +2,53 @@ package com.voxora.player.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Signature VOXORA v2.3.0 Obsidian & Glassmorphism Palette
-val VoxoraObsidian = Color(0xFF0B0D12)
-val VoxoraDeepBlack = Color(0xFF000000)
-val VoxoraCharcoal = Color(0xFF12151F)
-val VoxoraCardCharcoal = Color(0xFF171B26)
-val VoxoraElevatedCharcoal = Color(0xFF202636)
-val VoxoraOutlineDark = Color(0xFF2A3144)
+// =========================================================================
+// VOXORA Cinema Spatial (v2.5.0) — Pure OLED Obsidian + Warm Cinema Amber
+// =========================================================================
 
-// Glassmorphism Overlay Surfaces
-val VoxoraGlassDark = Color(0xCC11141E)
-val VoxoraGlassBorder = Color(0x26FFFFFF)
+// Layered Obsidian & Frosted Glass Surfaces
+val VoxoraObsidian = Color(0xFF050608)        // Pure OLED Obsidian canvas
+val VoxoraDeepBlack = Color(0xFF000000)       // Pitch Black AMOLED
+val VoxoraCharcoal = Color(0xFF0B0D13)        // Elevated dark sheet / drawer backdrop
+val VoxoraCardCharcoal = Color(0xFF11131B)    // Frosted glass card surface
+val VoxoraElevatedCharcoal = Color(0xFF181B26) // Raised pills & interactive tiles
+val VoxoraOutlineDark = Color(0xFF1F2433)     // Subtle 0.8dp hairline border
+val VoxoraHairlineBorder = Color(0xFF1F2433)
 
-// Accents (Violet & Crisp Cyan)
-val VoxoraElectricPurple = Color(0xFF8B5CF6)
-val VoxoraElectricPurpleBright = Color(0xFFA78BFA)
-val VoxoraElectricPurpleDim = Color(0xFF6D28D9)
-val VoxoraCyan = Color(0xFF22D3EE)
-val VoxoraSubtleBlue = Color(0xFF38BDF8)
-val VoxoraDeepBlue = Color(0xFF1D4ED8)
+// Glassmorphism Overlay & Dock Surfaces
+val VoxoraGlassDark = Color(0xE011131B)       // Frosted glass HUD / floating dock
+val VoxoraGlassDrawer = Color(0xEB0B0D13)     // Translucent right-side player drawer
+val VoxoraGlassBorder = Color(0x26FFFFFF)     // Specular glass top-edge highlight
 
-// Text Colors (Dark)
-val VoxoraTextPrimary = Color(0xFFF6F7FB)
-val VoxoraTextSecondary = Color(0xFFA5ADC0)
-val VoxoraTextMuted = Color(0xFF727A90)
+// Signature Accent System — Warm Cinema Amber (#F5A623) + Pure White
+val VoxoraAmber = Color(0xFFF5A623)
+val VoxoraAmberBright = Color(0xFFFFC15E)
+val VoxoraAmberDim = Color(0xFFC47F0E)
+val VoxoraAmberContainer = Color(0xFF2B200B)
+val VoxoraPureWhite = Color(0xFFFFFFFF)
 
-// Light Theme Palette
-val VoxoraLightBackground = Color(0xFFF5F6FA)
+// Harmonized legacy semantic aliases (mapped cleanly to Warm Cinema Amber + Crisp Champagne)
+val VoxoraElectricPurple = VoxoraAmber
+val VoxoraElectricPurpleBright = VoxoraAmberBright
+val VoxoraElectricPurpleDim = VoxoraAmberDim
+val VoxoraCyan = VoxoraAmberBright
+val VoxoraSubtleBlue = Color(0xFFE5C48B)
+val VoxoraDeepBlue = VoxoraAmberDim
+
+// Typography Colors (Dark Obsidian)
+val VoxoraTextPrimary = Color(0xFFFFFFFF)
+val VoxoraTextSecondary = Color(0xFFA0A7B8)
+val VoxoraTextMuted = Color(0xFF6B7285)
+
+// Studio Light Theme Palette
+val VoxoraLightBackground = Color(0xFFF6F6F8)
 val VoxoraLightSurface = Color(0xFFFFFFFF)
-val VoxoraLightSurfaceVariant = Color(0xFFECEEF6)
-val VoxoraLightOutline = Color(0xFFD5DAE8)
-val VoxoraLightTextPrimary = Color(0xFF10131C)
-val VoxoraLightTextSecondary = Color(0xFF525B70)
+val VoxoraLightSurfaceVariant = Color(0xFFECEEF3)
+val VoxoraLightOutline = Color(0xFFD8DCE6)
+val VoxoraLightTextPrimary = Color(0xFF0E1016)
+val VoxoraLightTextSecondary = Color(0xFF555D70)
 
-// Semantic
+// Semantic Status
 val VoxoraError = Color(0xFFEF4444)
 val VoxoraSuccess = Color(0xFF10B981)
-val VoxoraWarning = Color(0xFFF59E0B)
+val VoxoraWarning = Color(0xFFF5A623)

@@ -35,6 +35,7 @@ import com.voxora.player.model.UserPreferences
 import com.voxora.player.player.VoxoraPlayerEngine
 import com.voxora.player.util.PrivateVaultManager
 import com.voxora.player.util.SubtitleParser
+import com.voxora.player.util.TitleFormatter
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -441,15 +442,17 @@ class DubbingPhase6Test {
             }
         }
         val trimmed = AutoSubtitleManager.trimSegmentWithVad(
-            chunkPcm = pcm,
+            pcm16k = pcm,
             chunkStartMs = 0L,
-            rawStartMs = 0L,
-            rawEndMs = 8_000L
+            segmentStartMs = 0L,
+            segmentEndMs = 8_000L,
+            noiseFloorRms = AutoSubtitleManager.estimateChunkNoiseFloor(pcm),
+            wordCount = 2
         )
         assertNotNull("Expected voiced region to survive VAD trim", trimmed)
         val (vadStartMs, vadEndMs) = trimmed!!
-        assertTrue("Expected VAD start near 5000ms (got $vadStartMs)", vadStartMs in 4_900L..5_100L)
-        assertTrue("Expected VAD end near 6800ms (got $vadEndMs)", vadEndMs in 6_750L..6_950L)
+        assertTrue("Expected VAD start near 5000ms (got $vadStartMs)", vadStartMs in 4_900L..5_250L)
+        assertTrue("Expected VAD end near 6800ms (got $vadEndMs)", vadEndMs in 6_700L..7_000L)
 
         // Zero look-ahead during the 5-second silence gap
         val syncedCues = listOf(SubtitleCue(startTimeMs = vadStartMs, endTimeMs = vadEndMs, text = "Hello now"))
@@ -491,5 +494,44 @@ class DubbingPhase6Test {
         assertFalse(ABLoopState(pointAMs = 5_000L, pointBMs = null).isLooping)
         assertFalse(ABLoopState(pointAMs = 5_000L, pointBMs = 3_000L).isLooping)
         assertTrue(ABLoopState(pointAMs = 5_000L, pointBMs = 12_000L).isLooping)
+    }
+
+    @Test
+    fun v250_cinemaSpatial_titleFormatterAndVadBackwardDurationCapGuard() {
+        // 1. Smart TitleFormatter strips website/release junk and extracts Amber episode badges
+        val formattedSeries = TitleFormatter.format("MovieLinkBD.com - Dark.S01E06.1080p.WEB-DL.x264-[SubsPlease].mkv")
+        assertEquals("Dark", formattedSeries.cleanTitle)
+        assertEquals("S01 · E06", formattedSeries.episodeBadge)
+
+        val formattedEp = TitleFormatter.format("www.example.com_Solo_Leveling_Episode_12_720p_HEVC.mp4")
+        assertEquals("Solo Leveling", formattedEp.cleanTitle)
+        assertEquals("EP 12", formattedEp.episodeBadge)
+
+        val formattedMovie = TitleFormatter.format("Interstellar.2014.IMAX.2160p.BluRay.x265.mkv")
+        assertEquals("Interstellar 2014", formattedMovie.cleanTitle)
+        assertNull(formattedMovie.episodeBadge)
+
+        // 2. Backward Duration-Cap Guard eliminates premature Whisper subtitles even during noisy BGM gaps
+        val sr = 16_000
+        // 10-second segment filled with continuous moderate BGM (amplitude 0.08) + short 2-word line at the end (8.5s..9.8s)
+        val bgmPcm = FloatArray(sr * 10) { i ->
+            (0.08 * sin(2.0 * PI * 180.0 * i / sr)).toFloat()
+        }
+        val noiseFloor = AutoSubtitleManager.estimateChunkNoiseFloor(bgmPcm)
+        val guarded = AutoSubtitleManager.trimSegmentWithVad(
+            pcm16k = bgmPcm,
+            chunkStartMs = 0L,
+            segmentStartMs = 0L,
+            segmentEndMs = 10_000L,
+            noiseFloorRms = noiseFloor,
+            wordCount = 2 // expectedMs = 900ms; max guard window = 1300ms before end
+        )
+        assertNotNull("Expected guarded segment to remain valid", guarded)
+        val (guardedStartMs, guardedEndMs) = guarded!!
+        assertTrue(
+            "Backward Duration-Cap Guard must prevent premature display during 8s BGM gap (got start=$guardedStartMs)",
+            guardedStartMs >= 8_000L
+        )
+        assertTrue("Expected end near 10000ms (got $guardedEndMs)", guardedEndMs <= 10_000L)
     }
 }

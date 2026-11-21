@@ -625,13 +625,16 @@ class AutoSubtitleManager(
             val rawStart = seg.startTimeMs.coerceAtLeast(startMs)
             val rawEnd = seg.endTimeMs.coerceAtLeast(rawStart + 350L)
 
-            // CRITICAL v2.4.0 FIX: Trim leading & trailing silence using 20ms RMS Voice Activity Detection
+            // CRITICAL v2.5.0 FIX: 50ms 35th-percentile adaptive noise floor + 150ms sustained speech onset
+            // + Backward Duration-Cap Guard so upcoming dialogue NEVER appears early during 5-7s silence/BGM gaps.
+            val wordCount = cleaned.split(Regex("\\s+")).count { it.isNotBlank() }.coerceAtLeast(1)
             val trimmedBounds = trimSegmentWithVad(
                 pcm16k = pcmChunk.samples16kMono,
                 chunkStartMs = startMs,
                 segmentStartMs = rawStart,
                 segmentEndMs = rawEnd,
-                noiseFloorRms = chunkNoiseFloor
+                noiseFloorRms = chunkNoiseFloor,
+                wordCount = wordCount
             ) ?: continue // Drop pure-silence hallucinations completely
 
             val cueStart = trimmedBounds.first
@@ -894,9 +897,10 @@ class AutoSubtitleManager(
     companion object {
         const val CHUNK_DURATION_MS: Long = 25_000L
         const val SAMPLE_RATE_HZ: Int = 16_000
-        private const val VAD_FRAME_MS: Int = 20
-        private const val VAD_FRAME_SAMPLES: Int = (SAMPLE_RATE_HZ * VAD_FRAME_MS) / 1000 // 320 samples
-        private const val MIN_SPEECH_RMS_THRESHOLD: Float = 0.015f
+        private const val VAD_FRAME_MS: Int = 50
+        private const val VAD_FRAME_SAMPLES: Int = (SAMPLE_RATE_HZ * VAD_FRAME_MS) / 1000 // 800 samples (50ms)
+        private const val VAD_CONSECUTIVE_ONSET_FRAMES: Int = 3 // 3 * 50ms = 150ms consecutive speech
+        private const val MIN_SPEECH_RMS_THRESHOLD: Float = 0.014f
 
         fun needsMlKitTranslation(targetCode: String): Boolean {
             return targetCode != AutoSubtitleLanguageCatalog.CODE_ORIGINAL &&
@@ -908,8 +912,8 @@ class AutoSubtitleManager(
         }
 
         /**
-         * Estimates the ambient noise floor RMS across a 16kHz PCM chunk using the 20th-percentile
-         * frame RMS so VAD adapts cleanly to quiet rooms, movie BGM, or noisy recordings.
+         * Estimates the adaptive background/BGM noise floor across a 16kHz PCM chunk using
+         * the 35th-percentile RMS energy of 50ms frames.
          */
         fun estimateChunkNoiseFloor(pcm16k: FloatArray): Float {
             if (pcm16k.size < VAD_FRAME_SAMPLES) return 0.006f
@@ -925,25 +929,29 @@ class AutoSubtitleManager(
                 energies[f] = sqrt(sumSq / VAD_FRAME_SAMPLES).toFloat()
             }
             energies.sort()
-            val p20Index = (frameCount * 0.20f).toInt().coerceIn(0, frameCount - 1)
-            return energies[p20Index].coerceIn(0.002f, 0.045f)
+            val p35Index = (frameCount * 0.35f).toInt().coerceIn(0, frameCount - 1)
+            return energies[p35Index].coerceIn(0.002f, 0.060f)
         }
 
         /**
-         * Lightweight RMS Energy / Voice Activity Detection (VAD) trim for a Whisper segment.
-         *
-         * Fixes premature subtitles during 5-7s silent gaps before the speaker actually speaks:
-         * - Advances `startMs` forward to the exact millisecond where speech energy crosses the
-         *   adaptive threshold (requires 2 consecutive active 20ms frames to ignore micro-clicks).
-         * - Trims `endMs` back to where speech actually stops (+120ms natural decay tail).
-         * - Returns `null` if the entire segment slice contains no real speech energy.
+         * Definitive v2.5.0 Speech-Synced VAD + Backward Duration-Cap Guard for Whisper segments:
+         * 1. Scans forward from [segmentStartMs] in 50ms steps to locate the exact `speechStartMs`
+         *    where RMS energy exceeds `noiseFloorRms * 2.2f` for at least 150ms consecutively (3 frames).
+         * 2. Scans backward from [segmentEndMs] to trim trailing silence (+120ms natural decay tail).
+         * 3. Applies the Backward Duration-Cap Guard:
+         *    `expectedMs = (wordCount * 420L).coerceIn(900L, 6500L)`
+         *    If `(speechEndMs - speechStartMs) > expectedMs + 800L`, clamps
+         *    `speechStartMs = maxOf(speechStartMs, speechEndMs - expectedMs - 400L)`
+         *    so upcoming dialogue NEVER appears early during 5–7s silent or BGM gaps.
+         * 4. Returns `null` if the entire segment slice contains no real speech energy.
          */
         fun trimSegmentWithVad(
             pcm16k: FloatArray,
             chunkStartMs: Long,
             segmentStartMs: Long,
             segmentEndMs: Long,
-            noiseFloorRms: Float = 0.006f
+            noiseFloorRms: Float = 0.006f,
+            wordCount: Int = 0
         ): Pair<Long, Long>? {
             if (pcm16k.isEmpty() || segmentEndMs <= segmentStartMs) return null
 
@@ -969,47 +977,64 @@ class AutoSubtitleManager(
                 if (rms > peakRms) peakRms = rms
             }
 
-            val adaptiveThreshold = maxOf(
-                MIN_SPEECH_RMS_THRESHOLD,
-                noiseFloorRms * 2.2f,
-                peakRms * 0.16f
-            )
-
-            // If peak energy never exceeds minimum speech floor, discard silent hallucination
+            // Discard pure-silence hallucinations completely
             if (peakRms < MIN_SPEECH_RMS_THRESHOLD) return null
 
-            // Find first sustained speech onset (2 consecutive active frames to skip clicks)
+            val speechThreshold = maxOf(
+                MIN_SPEECH_RMS_THRESHOLD,
+                noiseFloorRms * 2.2f
+            )
+            // Also guard against loud BGM chunks where speech is significantly brighter than floor
+            val effectiveThreshold = minOf(
+                maxOf(speechThreshold, peakRms * 0.18f),
+                peakRms * 0.85f
+            )
+
+            // 1. Scan forward in 50ms steps for >= 150ms (3 consecutive frames) above threshold
             var firstActive = -1
+            val requiredRun = VAD_CONSECUTIVE_ONSET_FRAMES.coerceAtMost(frameCount)
+            var runLen = 0
             for (f in 0 until frameCount) {
-                val isActive = frameRms[f] >= adaptiveThreshold
-                val nextActive = (f + 1 < frameCount) && (frameRms[f + 1] >= adaptiveThreshold * 0.85f)
-                if (isActive && (nextActive || frameCount == 1)) {
-                    firstActive = f
-                    break
+                if (frameRms[f] >= effectiveThreshold) {
+                    runLen++
+                    if (runLen >= requiredRun) {
+                        firstActive = f - requiredRun + 1
+                        break
+                    }
+                } else {
+                    runLen = 0
                 }
             }
             if (firstActive < 0) {
-                firstActive = frameRms.indexOfFirst { it >= adaptiveThreshold }
+                firstActive = frameRms.indexOfFirst { it >= effectiveThreshold }
             }
             if (firstActive < 0) return null
 
-            // Find last active speech frame
+            // 2. Scan backward from t1 to locate where speech ends
             var lastActive = firstActive
             for (f in frameCount - 1 downTo firstActive) {
-                if (frameRms[f] >= adaptiveThreshold * 0.85f) {
+                if (frameRms[f] >= effectiveThreshold * 0.85f) {
                     lastActive = f
                     break
                 }
             }
 
-            // Tiny 40ms onset lead (never bleeds into multi-second silence) and 120ms speech tail
-            val trimmedStartMs = (chunkStartMs + relStartMs + (firstActive * VAD_FRAME_MS.toLong()) - 40L)
+            var speechStartMs = (chunkStartMs + relStartMs + (firstActive * VAD_FRAME_MS.toLong()))
                 .coerceAtLeast(segmentStartMs)
-            val trimmedEndMs = (chunkStartMs + relStartMs + ((lastActive + 1) * VAD_FRAME_MS.toLong()) + 120L)
+            val speechEndMs = (chunkStartMs + relStartMs + ((lastActive + 1) * VAD_FRAME_MS.toLong()) + 120L)
                 .coerceAtMost(segmentEndMs)
-                .coerceAtLeast(trimmedStartMs + 280L)
+                .coerceAtLeast(speechStartMs + 300L)
 
-            return trimmedStartMs to trimmedEndMs
+            // 3. Backward Duration-Cap Guard (prevents premature captions during 5–7s BGM/silence gaps)
+            if (wordCount > 0) {
+                val expectedMs = (wordCount * 420L).coerceIn(900L, 6_500L)
+                if ((speechEndMs - speechStartMs) > expectedMs + 800L) {
+                    speechStartMs = maxOf(speechStartMs, speechEndMs - expectedMs - 400L)
+                        .coerceAtMost(speechEndMs - 300L)
+                }
+            }
+
+            return speechStartMs to speechEndMs
         }
 
         fun enforceStrictNonOverlap(cues: List<SubtitleCue>): List<SubtitleCue> {

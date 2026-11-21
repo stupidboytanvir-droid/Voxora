@@ -100,11 +100,11 @@ import com.voxora.player.ui.components.GestureHudState
 import com.voxora.player.ui.components.HoldSpeedIndicatorPill
 import com.voxora.player.ui.components.KidsLockOverlay
 import com.voxora.player.ui.components.PlayerControlsOverlay
+import com.voxora.player.ui.components.PlayerSettingsDrawer
 import com.voxora.player.ui.components.SleepTimerSheet
 import com.voxora.player.ui.components.SpeedSelectorSheet
 import com.voxora.player.ui.components.UpNextOverlayCard
-import com.voxora.player.ui.theme.VoxoraCyan
-import com.voxora.player.ui.theme.VoxoraElectricPurple
+import com.voxora.player.ui.theme.VoxoraAmber
 import com.voxora.player.ui.viewmodel.PlayerViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -151,11 +151,11 @@ fun PlayerScreen(
     val upNextState by viewModel.upNextState.collectAsStateWithLifecycle()
     val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
 
-    val comingSoonMessage = stringResource(R.string.ai_dubbing_coming_soon_message)
     val latestIsInPip by rememberUpdatedState(isInPipMode)
     val latestHoldSpeedPref by rememberUpdatedState(preferences.holdSpeedMultiplier)
 
     var controlsVisible by remember { mutableStateOf(true) }
+    var isSettingsDrawerOpen by remember { mutableStateOf(false) }
     var lastInteractionMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var activeSheet by remember { mutableStateOf(ActiveSheet.NONE) }
     var gestureHudState by remember { mutableStateOf<GestureHudState>(GestureHudState.Hidden) }
@@ -214,13 +214,22 @@ fun PlayerScreen(
     }
 
     // Auto-hide controls smoothly after 3.0 seconds of inactivity while playing
-    LaunchedEffect(controlsVisible, playbackState.isPlaying, activeSheet, lastInteractionMs, uiState.isLocked, isInPipMode) {
+    LaunchedEffect(
+        controlsVisible,
+        playbackState.isPlaying,
+        activeSheet,
+        isSettingsDrawerOpen,
+        lastInteractionMs,
+        uiState.isLocked,
+        isInPipMode
+    ) {
         if (isInPipMode) {
             controlsVisible = false
+            isSettingsDrawerOpen = false
             activeSheet = ActiveSheet.NONE
             return@LaunchedEffect
         }
-        if (controlsVisible && playbackState.isPlaying && activeSheet == ActiveSheet.NONE) {
+        if (controlsVisible && playbackState.isPlaying && activeSheet == ActiveSheet.NONE && !isSettingsDrawerOpen) {
             delay(3_000L)
             controlsVisible = false
         }
@@ -280,6 +289,9 @@ fun PlayerScreen(
         when {
             uiState.isKidsLockActive -> {
                 // Kids Lock blocks system back navigation until unlocked by holding 3s
+            }
+            isSettingsDrawerOpen -> {
+                isSettingsDrawerOpen = false
             }
             activeSheet != ActiveSheet.NONE -> {
                 activeSheet = ActiveSheet.NONE
@@ -633,7 +645,7 @@ fun PlayerScreen(
         // Buffering Indicator
         if (playbackState.isBuffering && uiState.fileMissingError == null && playbackState.errorMessage == null) {
             CircularProgressIndicator(
-                color = VoxoraCyan,
+                color = VoxoraAmber,
                 modifier = Modifier.align(Alignment.Center)
             )
         }
@@ -651,42 +663,38 @@ fun PlayerScreen(
                 // Gesture Feedback HUD
                 GestureHudOverlay(state = gestureHudState)
 
-                // Controls Overlay
+                // Ultra-Clean VOXORA Cinema Spatial Controls Overlay
                 val autoBadge = if (autoSubtitleState.isEnabled) {
                     if (autoSubtitleState.isSetupRunning) {
                         "AI ${autoSubtitleState.setupProgressPercent}%"
                     } else if (autoSubtitleState.dualSubtitlesEnabled) {
-                        "AI · ${autoSubtitleState.targetLanguageCode.uppercase()}+${autoSubtitleState.secondaryLanguageCode.uppercase()}"
+                        "${autoSubtitleState.targetLanguageCode.uppercase()}+${autoSubtitleState.secondaryLanguageCode.uppercase()}"
                     } else {
-                        "AI · ${autoSubtitleState.targetLanguageCode.uppercase()}"
+                        "CC · ${autoSubtitleState.targetLanguageCode.uppercase()}"
                     }
                 } else {
-                    "CC AI"
+                    "CC"
                 }
 
                 PlayerControlsOverlay(
-                    visible = controlsVisible && uiState.fileMissingError == null && playbackState.errorMessage == null && !uiState.isHoldSpeedActive,
+                    visible = controlsVisible &&
+                        !isSettingsDrawerOpen &&
+                        uiState.fileMissingError == null &&
+                        playbackState.errorMessage == null &&
+                        !uiState.isHoldSpeedActive,
                     isLocked = uiState.isLocked,
                     title = uiState.videoTitle.ifBlank { videoTitle },
                     isPlaying = playbackState.isPlaying,
                     currentPositionMs = playbackState.currentPositionMs,
                     durationMs = playbackState.durationMs,
-                    playbackSpeed = playbackState.playbackSpeed,
                     aspectRatioMode = uiState.aspectRatioMode,
-                    isFullScreen = uiState.isFullScreen,
-                    isBackgroundPlayActive = uiState.isBackgroundPlayActive,
-                    volumeBoostPercent = preferences.volumeBoostPercent,
-                    eqPreset = preferences.audioEqPreset,
-                    eyeCareEnabled = uiState.displayFilters.eyeCareEnabled,
                     abLoop = uiState.abLoop,
                     bookmarks = bookmarks,
                     zoomScale = zoomScale,
-                    isExtractingAudio = uiState.isExtractingAudio,
                     resumedFromMs = uiState.resumedFromPositionMs,
                     autoSubtitleActive = autoSubtitleState.isEnabled,
                     autoSubtitleBadgeText = autoBadge,
                     sleepTimerState = sleepTimerState,
-                    canEnterPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O,
                     onBack = {
                         if (!uiState.isBackgroundPlayActive) {
                             viewModel.pausePlayback()
@@ -698,29 +706,8 @@ fun PlayerScreen(
                         controlsVisible = true
                         registerInteraction()
                     },
-                    onEnableKidsLock = {
-                        controlsVisible = false
-                        activeSheet = ActiveSheet.NONE
-                        viewModel.enableKidsLock()
-                    },
                     onRotateScreen = {
                         toggleOrientation()
-                        registerInteraction()
-                    },
-                    onToggleFullScreen = {
-                        viewModel.toggleFullScreen()
-                        registerInteraction()
-                    },
-                    onToggleBackgroundPlay = {
-                        viewModel.toggleBackgroundAudioMode()
-                        registerInteraction()
-                    },
-                    onCaptureScreenshot = {
-                        viewModel.captureScreenshot()
-                        registerInteraction()
-                    },
-                    onOpenCast = {
-                        openSystemCastSettings()
                         registerInteraction()
                     },
                     onTogglePlayPause = {
@@ -739,43 +726,78 @@ fun PlayerScreen(
                         viewModel.seekBySeconds(10)
                         registerInteraction()
                     },
-                    onStepPrevFrame = {
-                        viewModel.stepFrameBackward()
-                        registerInteraction()
-                    },
-                    onStepNextFrame = {
-                        viewModel.stepFrameForward()
-                        registerInteraction()
-                    },
-                    onOpenSpeed = { activeSheet = ActiveSheet.SPEED },
                     onOpenSubtitles = { activeSheet = ActiveSheet.SUBTITLES },
-                    onOpenAudioTracks = { activeSheet = ActiveSheet.AUDIO_TRACKS },
-                    onOpenAudioFx = { activeSheet = ActiveSheet.AUDIO_FX },
-                    onOpenDisplaySettings = { activeSheet = ActiveSheet.DISPLAY },
-                    onOpenBookmarks = { activeSheet = ActiveSheet.BOOKMARKS },
+                    onOpenSettingsDrawer = {
+                        controlsVisible = false
+                        isSettingsDrawerOpen = true
+                        registerInteraction()
+                    },
+                    onOpenAspectRatio = { activeSheet = ActiveSheet.ASPECT_RATIO },
                     onOpenABLoop = { activeSheet = ActiveSheet.AB_LOOP },
+                    onOpenSleepTimer = { activeSheet = ActiveSheet.SLEEP_TIMER },
+                    onResetZoom = {
+                        zoomScale = 1f
+                        panOffset = Offset.Zero
+                    },
+                    onStartFromBeginning = { viewModel.startFromBeginning() },
+                    onDismissResumeBanner = { viewModel.dismissResumeBanner() },
+                    onUserInteraction = { registerInteraction() }
+                )
+
+                // MX-Style Right-Side Translucent Slide-Out Settings Drawer (does NOT pause video)
+                PlayerSettingsDrawer(
+                    visible = isSettingsDrawerOpen && !uiState.isLocked,
+                    playbackSpeed = playbackState.playbackSpeed,
+                    abLoop = uiState.abLoop,
+                    isBackgroundPlayActive = uiState.isBackgroundPlayActive,
+                    sleepTimerState = sleepTimerState,
+                    isFullScreen = uiState.isFullScreen,
+                    volumeBoostPercent = preferences.volumeBoostPercent,
+                    eqPreset = preferences.audioEqPreset,
+                    displayFilters = uiState.displayFilters,
+                    bookmarksCount = bookmarks.size,
+                    zoomScale = zoomScale,
+                    isExtractingAudio = uiState.isExtractingAudio,
+                    canEnterPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O,
+                    onDismiss = { isSettingsDrawerOpen = false },
+                    onOpenSpeed = { activeSheet = ActiveSheet.SPEED },
+                    onOpenABLoop = { activeSheet = ActiveSheet.AB_LOOP },
+                    onToggleBackgroundPlay = { viewModel.toggleBackgroundAudioMode() },
+                    onOpenSleepTimer = { activeSheet = ActiveSheet.SLEEP_TIMER },
+                    onStepPrevFrame = { viewModel.stepFrameBackward() },
+                    onStepNextFrame = { viewModel.stepFrameForward() },
+                    onToggleFullScreen = { viewModel.toggleFullScreen() },
+                    onOpenAudioFx = { activeSheet = ActiveSheet.AUDIO_FX },
+                    onOpenAudioTracks = { activeSheet = ActiveSheet.AUDIO_TRACKS },
+                    onOpenDisplaySettings = { activeSheet = ActiveSheet.DISPLAY },
+                    onToggleEyeCare = viewModel::setEyeCareEnabled,
+                    onToggleMirror = { viewModel.toggleVideoMirror() },
+                    onRotateVideo90 = { viewModel.rotateVideo90() },
+                    onResetZoom = {
+                        zoomScale = 1f
+                        panOffset = Offset.Zero
+                        isSettingsDrawerOpen = false
+                    },
+                    onOpenBookmarks = { activeSheet = ActiveSheet.BOOKMARKS },
+                    onCaptureScreenshot = { viewModel.captureScreenshot() },
                     onOpenClipCutter = { activeSheet = ActiveSheet.CLIP_CUTTER },
                     onExtractAudio = { viewModel.extractAudioToMusic() },
-                    onOpenAspectRatio = { activeSheet = ActiveSheet.ASPECT_RATIO },
-                    onOpenSleepTimer = { activeSheet = ActiveSheet.SLEEP_TIMER },
+                    onOpenCast = { openSystemCastSettings() },
                     onEnterPip = {
                         controlsVisible = false
+                        isSettingsDrawerOpen = false
                         activeSheet = ActiveSheet.NONE
                         onEnterPipMode(
                             playbackState.effectiveVideoWidth.takeIf { it > 0 } ?: playbackState.videoWidth,
                             playbackState.effectiveVideoHeight.takeIf { it > 0 } ?: playbackState.videoHeight
                         )
                     },
-                    onResetZoom = {
-                        zoomScale = 1f
-                        panOffset = Offset.Zero
-                    },
-                    onTapAiDubbingComingSoon = {
-                        viewModel.showFeedbackMessage(comingSoonMessage)
-                    },
-                    onStartFromBeginning = { viewModel.startFromBeginning() },
-                    onDismissResumeBanner = { viewModel.dismissResumeBanner() },
-                    onUserInteraction = { registerInteraction() }
+                    onEnableKidsLock = {
+                        controlsVisible = false
+                        isSettingsDrawerOpen = false
+                        activeSheet = ActiveSheet.NONE
+                        viewModel.enableKidsLock()
+                    }
                 )
 
                 // 5-Second Cancelable "Up Next" Card
@@ -791,7 +813,7 @@ fun PlayerScreen(
         val activeError = uiState.fileMissingError ?: playbackState.errorMessage
         if (activeError != null && !isInPipMode) {
             Surface(
-                color = Color(0xEE11141E),
+                color = Color(0xEE11131B),
                 shape = RoundedCornerShape(22.dp),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
                 modifier = Modifier
@@ -827,7 +849,10 @@ fun PlayerScreen(
                         }
                         Button(
                             onClick = { viewModel.retryLoad() },
-                            colors = ButtonDefaults.buttonColors(containerColor = VoxoraElectricPurple)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = VoxoraAmber,
+                                contentColor = Color(0xFF140D00)
+                            )
                         ) {
                             Text("Retry")
                         }

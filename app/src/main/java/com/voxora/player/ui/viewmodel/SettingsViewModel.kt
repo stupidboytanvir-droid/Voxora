@@ -29,8 +29,16 @@ class SettingsViewModel(
     private val settingsRepository: SettingsRepository,
     private val historyRepository: PlaybackHistoryRepository,
     private val mediaRepository: MediaRepository,
-    private val batteryMonitor: BatteryMonitor
+    private val batteryMonitor: BatteryMonitor,
+    private val whisperSpeechEngine: com.voxora.player.dubbing.whisper.WhisperCppSpeechRecognitionEngine
 ) : ViewModel() {
+
+    private val _isWhisperModelInstalled = MutableStateFlow(whisperSpeechEngine.isModelInstalledOnDisk())
+    val isWhisperModelInstalled: StateFlow<Boolean> = _isWhisperModelInstalled.asStateFlow()
+
+    fun refreshOfflineModelStatus() {
+        _isWhisperModelInstalled.value = whisperSpeechEngine.isModelInstalledOnDisk()
+    }
 
     val preferences: StateFlow<UserPreferences> = settingsRepository.preferencesFlow
         .stateIn(
@@ -177,6 +185,10 @@ class SettingsViewModel(
         viewModelScope.launch { settingsRepository.setAutoCheckUpdates(enabled) }
     }
 
+    fun setAutoSubtitleTargetLanguageCode(code: String) {
+        viewModelScope.launch { settingsRepository.setAutoSubtitleTargetLanguageCode(code) }
+    }
+
     fun setDualSubtitlesEnabled(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setDualSubtitlesEnabled(enabled) }
     }
@@ -224,7 +236,8 @@ class SettingsViewModel(
                 settingsRepository = app.settingsRepository,
                 historyRepository = app.historyRepository,
                 mediaRepository = app.mediaRepository,
-                batteryMonitor = app.batteryMonitor
+                batteryMonitor = app.batteryMonitor,
+                whisperSpeechEngine = app.whisperSpeechEngine
             ) as T
         }
     }

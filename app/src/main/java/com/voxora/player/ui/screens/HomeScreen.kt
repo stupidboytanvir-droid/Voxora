@@ -3,7 +3,6 @@ package com.voxora.player.ui.screens
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +10,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -20,47 +20,46 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.CleaningServices
-import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.GraphicEq
-import androidx.compose.material.icons.rounded.Link
-import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
+import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.voxora.player.R
 import com.voxora.player.data.update.UpdateUiState
 import com.voxora.player.model.PlaybackHistoryItem
@@ -70,19 +69,24 @@ import com.voxora.player.model.VideoFolder
 import com.voxora.player.model.VideoItem
 import com.voxora.player.ui.components.ContinueWatchingCard
 import com.voxora.player.ui.components.EmptyLibraryView
+import com.voxora.player.ui.components.EpisodeBadgePill
+import com.voxora.player.ui.components.FolderGridCard
 import com.voxora.player.ui.components.MediaPermissionBanner
 import com.voxora.player.ui.components.UpdateAvailableBanner
 import com.voxora.player.ui.components.VideoRowCard
 import com.voxora.player.ui.components.VideoThumbnail
 import com.voxora.player.ui.components.VoxoraTopHeader
-import com.voxora.player.ui.theme.LocalVoxoraColors
 import com.voxora.player.ui.theme.TabularTimeStyle
-import com.voxora.player.ui.theme.VoxoraCyan
-import com.voxora.player.ui.theme.VoxoraElectricPurple
+import com.voxora.player.ui.theme.VoxoraAmber
+import com.voxora.player.ui.theme.VoxoraAmberBright
+import com.voxora.player.ui.theme.VoxoraCardCharcoal
+import com.voxora.player.ui.theme.VoxoraHairlineBorder
+import com.voxora.player.ui.theme.VoxoraObsidian
 import com.voxora.player.ui.viewmodel.LibraryUiState
 import com.voxora.player.util.FormatUtils
-import kotlinx.coroutines.launch
+import com.voxora.player.util.TitleFormatter
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     uiState: LibraryUiState,
@@ -92,12 +96,9 @@ fun HomeScreen(
     updateState: UpdateUiState = UpdateUiState.Idle,
     onOpenUpdateDialog: () -> Unit = {},
     onPlayVideo: (VideoItem) -> Unit,
-    onPlayStreamUrl: (url: String, title: String) -> Unit = { _, _ -> },
     onPlayPlaylistEntry: (PlaylistEntryItem) -> Unit = {},
     onResumeHistory: (PlaybackHistoryItem) -> Unit,
     onOpenFolder: (VideoFolder) -> Unit,
-    onOpenVault: () -> Unit = {},
-    onOpenCleaner: () -> Unit = {},
     onCreatePlaylist: (String) -> Unit = {},
     onDeletePlaylist: (Long) -> Unit = {},
     onAddToWatchLater: (VideoItem) -> Unit = {},
@@ -110,20 +111,24 @@ fun HomeScreen(
     onSeeAllFolders: () -> Unit,
     onSeeAllHistory: () -> Unit,
     onSearchClick: () -> Unit,
-    onSettingsClick: () -> Unit,
     onRequestPermission: () -> Unit,
     onOpenSafVideo: () -> Unit,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val historyByUri = uiState.recentlyPlayed.associateBy { it.uriString }
+    val historyByUri = remember(uiState.recentlyPlayed) {
+        uiState.recentlyPlayed.associateBy { it.uriString }
+    }
     val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
-    val comingSoonMessage = stringResource(R.string.ai_dubbing_coming_soon_message)
-
-    var selectedHomeTab by remember { mutableIntStateOf(0) } // 0 = Library, 1 = Playlists & Watch Later
-    var showStreamUrlDialog by remember { mutableStateOf(false) }
     var optionsTargetVideo by remember { mutableStateOf<VideoItem?>(null) }
+    var showPlaylistsSheet by remember { mutableStateOf(false) }
+
+    val heroHistory = uiState.continueWatching.firstOrNull() ?: uiState.recentlyPlayed.firstOrNull()
+    val heroFallbackVideo = if (heroHistory == null) uiState.allVideos.firstOrNull() else null
+    val upNextHistory = remember(uiState.continueWatching, uiState.recentlyPlayed, heroHistory) {
+        val combined = (uiState.continueWatching + uiState.recentlyPlayed).distinctBy { it.uriString }
+        if (heroHistory != null) combined.filterNot { it.uriString == heroHistory.uriString } else combined
+    }
 
     LaunchedEffect(libraryMessage) {
         if (libraryMessage != null) {
@@ -131,13 +136,6 @@ fun HomeScreen(
             snackbarHostState.showSnackbar(libraryMessage)
             onClearLibraryMessage()
         }
-    }
-
-    if (showStreamUrlDialog) {
-        StreamUrlDialog(
-            onPlayUrl = onPlayStreamUrl,
-            onDismiss = { showStreamUrlDialog = false }
-        )
     }
 
     optionsTargetVideo?.let { video ->
@@ -152,255 +150,232 @@ fun HomeScreen(
         )
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            VoxoraTopHeader(
-                onSearchClick = onSearchClick,
-                onOpenFileClick = onOpenSafVideo,
-                onSettingsClick = onSettingsClick
-            )
-            if (uiState.isScanning) {
-                LinearProgressIndicator(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            // Segmented Tabs: Library | Playlists & Watch Later
-            Row(
+    if (showPlaylistsSheet) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showPlaylistsSheet = false },
+            sheetState = sheetState,
+            containerColor = VoxoraCardCharcoal,
+            contentColor = Color.White
+        ) {
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    .height(540.dp)
             ) {
-                HomeSegmentTabChip(
-                    label = "Library",
-                    selected = selectedHomeTab == 0,
-                    onClick = { selectedHomeTab = 0 },
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("home_tab_library")
+                Text(
+                    text = "Playlists & Watch Later",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                 )
-                HomeSegmentTabChip(
-                    label = "Playlists & Watch Later",
-                    selected = selectedHomeTab == 1,
-                    onClick = { selectedHomeTab = 1 },
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("home_tab_playlists")
-                )
-            }
-
-            if (selectedHomeTab == 1) {
                 PlaylistsWatchLaterTabContent(
                     playlists = playlists,
                     allPlaylistItems = allPlaylistItems,
                     onCreatePlaylist = onCreatePlaylist,
                     onDeletePlaylist = onDeletePlaylist,
-                    onPlayEntry = onPlayPlaylistEntry,
+                    onPlayEntry = { entry ->
+                        showPlaylistsSheet = false
+                        onPlayPlaylistEntry(entry)
+                    },
                     onRemoveEntry = onRemoveFromPlaylist,
                     modifier = Modifier.weight(1f)
                 )
-            } else {
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(bottom = 24.dp),
-                    verticalArrangement = Arrangement.spacedBy(18.dp)
+            }
+        }
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Minimal Flagship Header: VOXORA brand wordmark + Search icon only
+            VoxoraTopHeader(onSearchClick = onSearchClick)
+
+            if (uiState.isScanning) {
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    color = VoxoraAmber,
+                    trackColor = VoxoraHairlineBorder
+                )
+            }
+
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(top = 6.dp, bottom = 118.dp),
+                verticalArrangement = Arrangement.spacedBy(24.dp)
+            ) {
+                if (updateState is UpdateUiState.UpdateAvailable ||
+                    updateState is UpdateUiState.Downloading ||
+                    updateState is UpdateUiState.ReadyToInstall
                 ) {
-                    // Quick Flagship Utilities Row: Stream URL | Private Vault | Storage Cleaner
                     item {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState())
-                                .padding(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        UpdateAvailableBanner(
+                            state = updateState,
+                            onClick = onOpenUpdateDialog,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                    }
+                }
+
+                item {
+                    MediaPermissionBanner(
+                        permissionState = uiState.permissionState,
+                        onRequestPermission = onRequestPermission,
+                        onOpenSafVideo = onOpenSafVideo,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                }
+
+                // Cinematic 16:9 Hero Spotlight ("Continue Watching" or Featured Latest Video)
+                if (heroHistory != null) {
+                    item(key = "hero_history_${heroHistory.uriString}") {
+                        CinemaHeroSpotlightCard(
+                            title = heroHistory.title,
+                            subtitle = "${FormatUtils.formatDuration(heroHistory.lastPositionMs)} of ${FormatUtils.formatDuration(heroHistory.durationMs)} · ${heroHistory.folderName}",
+                            uriString = heroHistory.uriString,
+                            frameTimeMs = heroHistory.lastPositionMs.coerceAtLeast(6_000L),
+                            durationMs = heroHistory.durationMs,
+                            progressFraction = heroHistory.progressFraction,
+                            eyebrow = "CONTINUE WATCHING",
+                            ctaLabel = "Resume",
+                            onClick = { onResumeHistory(heroHistory) },
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                    }
+                } else if (heroFallbackVideo != null) {
+                    item(key = "hero_video_${heroFallbackVideo.uriString}") {
+                        CinemaHeroSpotlightCard(
+                            title = heroFallbackVideo.title,
+                            subtitle = "${heroFallbackVideo.folderName} · ${FormatUtils.formatDuration(heroFallbackVideo.durationMs)}",
+                            uriString = heroFallbackVideo.uriString,
+                            frameTimeMs = 8_000L,
+                            durationMs = heroFallbackVideo.durationMs,
+                            progressFraction = 0f,
+                            eyebrow = "FEATURED IN LIBRARY",
+                            ctaLabel = "Play Now",
+                            onClick = { onPlayVideo(heroFallbackVideo) },
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                    }
+                }
+
+                // Horizontal Poster Rail: Up Next & Recent
+                if (upNextHistory.isNotEmpty()) {
+                    item(key = "rail_up_next") {
+                        CinemaSectionHeader(
+                            title = "Up Next & Recent",
+                            actionLabel = "History",
+                            onActionClick = onSeeAllHistory
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            QuickUtilityPill(
-                                icon = Icons.Rounded.Link,
-                                label = "Stream URL",
-                                contentDescription = stringResource(R.string.cd_stream_url),
-                                onClick = { showStreamUrlDialog = true },
-                                testTag = "home_stream_url_button"
-                            )
-                            QuickUtilityPill(
-                                icon = Icons.Rounded.Security,
-                                label = "Private Vault",
-                                contentDescription = stringResource(R.string.cd_private_vault),
-                                onClick = onOpenVault,
-                                testTag = "home_private_vault_button"
-                            )
-                            QuickUtilityPill(
-                                icon = Icons.Rounded.CleaningServices,
-                                label = "Storage Cleaner",
-                                contentDescription = stringResource(R.string.cd_storage_cleaner),
-                                onClick = onOpenCleaner,
-                                testTag = "home_storage_cleaner_button"
-                            )
+                            items(upNextHistory.take(12), key = { "upnext_${it.uriString}" }) { item ->
+                                ContinueWatchingCard(
+                                    item = item,
+                                    onClick = { onResumeHistory(item) }
+                                )
+                            }
                         }
                     }
+                }
 
-                    if (updateState is UpdateUiState.UpdateAvailable ||
-                        updateState is UpdateUiState.Downloading ||
-                        updateState is UpdateUiState.ReadyToInstall
+                // Horizontal Visual Folders Rail (real thumbnail previews)
+                if (uiState.folders.isNotEmpty()) {
+                    item(key = "rail_folders") {
+                        CinemaSectionHeader(
+                            title = "Folders",
+                            actionLabel = "All (${uiState.folders.size})",
+                            onActionClick = onSeeAllFolders
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(uiState.folders.take(10), key = { "home_folder_${it.bucketId}" }) { folder ->
+                                FolderGridCard(
+                                    folder = folder,
+                                    onClick = { onOpenFolder(folder) },
+                                    modifier = Modifier.width(178.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Compact Playlists & Watch Later Access Strip (zero clutter)
+                item(key = "rail_playlists_strip") {
+                    PlaylistsAccessStrip(
+                        playlistCount = playlists.size,
+                        totalEntries = allPlaylistItems.size,
+                        onClick = { showPlaylistsSheet = true },
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                }
+
+                // Library Videos Preview Section
+                item(key = "header_library") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        item {
-                            UpdateAvailableBanner(
-                                state = updateState,
-                                onClick = onOpenUpdateDialog,
-                                modifier = Modifier.padding(horizontal = 16.dp)
-                            )
+                        Text(
+                            text = "Library",
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = onRefresh,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .testTag("home_refresh_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Refresh,
+                                    contentDescription = stringResource(R.string.cd_refresh),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            if (uiState.allVideos.isNotEmpty()) {
+                                TextButton(onClick = onSeeAllVideos) {
+                                    Text(
+                                        text = "See All",
+                                        color = VoxoraAmberBright,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
                         }
                     }
+                }
 
+                if (uiState.allVideos.isEmpty() && !uiState.isScanning) {
                     item {
-                        MediaPermissionBanner(
-                            permissionState = uiState.permissionState,
-                            onRequestPermission = onRequestPermission,
-                            onOpenSafVideo = onOpenSafVideo,
-                            modifier = Modifier.padding(horizontal = 16.dp)
+                        EmptyLibraryView(
+                            title = "No Videos Found Yet",
+                            subtitle = "Scan your device video folders or open any video directly using the system picker.",
+                            onRefresh = onRefresh,
+                            onOpenFile = onOpenSafVideo
                         )
                     }
-
-                    // Sleek Locked AI Audio Dubbing — Coming Soon Badge Card
-                    item {
-                        AiDubbingComingSoonCard(
-                            onClick = {
-                                scope.launch {
-                                    snackbarHostState.currentSnackbarData?.dismiss()
-                                    snackbarHostState.showSnackbar(comingSoonMessage)
-                                }
-                            },
+                } else {
+                    items(uiState.allVideos.take(12), key = { it.uriString }) { video ->
+                        VideoRowCard(
+                            video = video,
+                            lastPositionMs = historyByUri[video.uriString]?.lastPositionMs,
+                            onClick = { onPlayVideo(video) },
+                            onMoreClick = { optionsTargetVideo = video },
                             modifier = Modifier.padding(horizontal = 16.dp)
                         )
-                    }
-
-                    // Continue Watching Section
-                    if (uiState.continueWatching.isNotEmpty()) {
-                        item {
-                            SectionHeader(
-                                title = "Continue Watching",
-                                actionLabel = "History",
-                                onActionClick = onSeeAllHistory
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            LazyRow(
-                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                items(uiState.continueWatching, key = { it.uriString }) { item ->
-                                    ContinueWatchingCard(
-                                        item = item,
-                                        onClick = { onResumeHistory(item) }
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Recently Played Section
-                    if (uiState.recentlyPlayed.isNotEmpty()) {
-                        item {
-                            SectionHeader(
-                                title = "Recently Played",
-                                actionLabel = "See All",
-                                onActionClick = onSeeAllHistory
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            LazyRow(
-                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                items(uiState.recentlyPlayed.take(10), key = { "recent_${it.uriString}" }) { item ->
-                                    RecentlyPlayedTile(
-                                        item = item,
-                                        onClick = { onResumeHistory(item) }
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Folders Section
-                    if (uiState.folders.isNotEmpty()) {
-                        item {
-                            SectionHeader(
-                                title = "Folders",
-                                actionLabel = "All (${uiState.folders.size})",
-                                onActionClick = onSeeAllFolders
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            LazyRow(
-                                contentPadding = PaddingValues(horizontal = 16.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                items(uiState.folders.take(10), key = { it.bucketId }) { folder ->
-                                    QuickFolderTile(
-                                        folder = folder,
-                                        onClick = { onOpenFolder(folder) }
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // All Videos Section
-                    item {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "All Videos (${uiState.allVideos.size})",
-                                style = MaterialTheme.typography.titleLarge,
-                                color = MaterialTheme.colorScheme.onBackground
-                            )
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(
-                                    onClick = onRefresh,
-                                    modifier = Modifier
-                                        .size(48.dp)
-                                        .testTag("home_refresh_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Refresh,
-                                        contentDescription = stringResource(R.string.cd_refresh),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                if (uiState.allVideos.isNotEmpty()) {
-                                    TextButton(onClick = onSeeAllVideos) {
-                                        Text("See All")
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (uiState.allVideos.isEmpty() && !uiState.isScanning) {
-                        item {
-                            EmptyLibraryView(
-                                title = "No Videos Found Yet",
-                                subtitle = "Scan your device video folders or open any video directly using the system picker.",
-                                onRefresh = onRefresh,
-                                onOpenFile = onOpenSafVideo
-                            )
-                        }
-                    } else {
-                        items(uiState.allVideos.take(15), key = { it.uriString }) { video ->
-                            VideoRowCard(
-                                video = video,
-                                lastPositionMs = historyByUri[video.uriString]?.lastPositionMs,
-                                onClick = { onPlayVideo(video) },
-                                onMoreClick = { optionsTargetVideo = video },
-                                modifier = Modifier.padding(horizontal = 16.dp)
-                            )
-                        }
                     }
                 }
             }
@@ -410,105 +385,185 @@ fun HomeScreen(
             hostState = snackbarHostState,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(16.dp)
+                .padding(start = 16.dp, end = 16.dp, bottom = 104.dp)
         )
     }
 }
 
 @Composable
-private fun HomeSegmentTabChip(
-    label: String,
-    selected: Boolean,
+private fun CinemaHeroSpotlightCard(
+    title: String,
+    subtitle: String,
+    uriString: String,
+    frameTimeMs: Long,
+    durationMs: Long,
+    progressFraction: Float,
+    eyebrow: String,
+    ctaLabel: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        onClick = onClick,
-        color = if (selected) VoxoraElectricPurple.copy(alpha = 0.24f) else MaterialTheme.colorScheme.surfaceContainer,
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (selected) VoxoraCyan else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
-        ),
-        modifier = modifier
-    ) {
-        Box(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge.copy(
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
-                ),
-                color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
+    val formatted = remember(title) { TitleFormatter.format(title) }
 
-@Composable
-private fun QuickUtilityPill(
-    icon: ImageVector,
-    label: String,
-    contentDescription: String,
-    onClick: () -> Unit,
-    testTag: String
-) {
-    val voxoraColors = LocalVoxoraColors.current
-    Surface(
-        onClick = onClick,
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, voxoraColors.cardBorder.copy(alpha = 0.85f)),
-        modifier = Modifier.testTag(testTag)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = contentDescription,
-                tint = VoxoraCyan,
-                modifier = Modifier.size(18.dp)
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-        }
-    }
-}
-
-@Composable
-private fun AiDubbingComingSoonCard(
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(22.dp))
             .clickable(onClick = onClick)
-            .testTag("home_ai_dubbing_coming_soon_card"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer
-        ),
-        border = BorderStroke(
-            width = 1.dp,
-            brush = Brush.horizontalGradient(
-                listOf(
-                    VoxoraElectricPurple.copy(alpha = 0.55f),
-                    VoxoraCyan.copy(alpha = 0.45f)
-                )
+            .testTag("home_hero_spotlight_card"),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = VoxoraCardCharcoal),
+        border = BorderStroke(0.9.dp, VoxoraHairlineBorder)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9.4f)
+        ) {
+            VideoThumbnail(
+                uriString = uriString,
+                contentDescription = formatted.cleanTitle,
+                frameTimeMs = frameTimeMs,
+                durationMs = durationMs,
+                modifier = Modifier.fillMaxSize()
             )
-        )
+
+            // Ambient cinematic gradient scrim
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colorStops = arrayOf(
+                                0.0f to Color(0x40050608),
+                                0.42f to Color(0x28050608),
+                                0.72f to Color(0xBF050608),
+                                1.0f to VoxoraObsidian.copy(alpha = 0.96f)
+                            )
+                        )
+                    )
+            )
+
+            // Top-left eyebrow & episode pill
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(
+                    color = Color(0xB8050608),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.16f))
+                ) {
+                    Text(
+                        text = eyebrow,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.1.sp
+                        ),
+                        color = VoxoraAmberBright,
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                    )
+                }
+                formatted.episodeBadge?.let { badge ->
+                    EpisodeBadgePill(badgeText = badge, filled = true)
+                }
+            }
+
+            // Bottom content: clean title, metadata, Resume button & thin Amber progress bar
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = formatted.cleanTitle,
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = (-0.2).sp
+                            ),
+                            color = Color.White,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = subtitle,
+                            style = TabularTimeStyle,
+                            color = Color.White.copy(alpha = 0.76f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Button(
+                        onClick = onClick,
+                        shape = RoundedCornerShape(50),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = VoxoraAmber,
+                            contentColor = Color(0xFF140D00)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                        modifier = Modifier.testTag("home_hero_resume_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = ctaLabel,
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+                }
+
+                if (progressFraction > 0.01f) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.5.dp)
+                            .background(Color.White.copy(alpha = 0.16f))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(progressFraction.coerceIn(0f, 1f))
+                                .background(VoxoraAmber)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistsAccessStrip(
+    playlistCount: Int,
+    totalEntries: Int,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        onClick = onClick,
+        color = VoxoraCardCharcoal,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(0.8.dp, VoxoraHairlineBorder),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("home_playlists_strip")
     ) {
         Row(
             modifier = Modifier
@@ -517,63 +572,44 @@ private fun AiDubbingComingSoonCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Surface(
-                color = VoxoraElectricPurple.copy(alpha = 0.16f),
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.size(38.dp)
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(VoxoraAmber.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Rounded.GraphicEq,
-                        contentDescription = null,
-                        tint = VoxoraElectricPurple,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
+                Icon(
+                    imageVector = Icons.Rounded.Bookmark,
+                    contentDescription = null,
+                    tint = VoxoraAmber,
+                    modifier = Modifier.size(20.dp)
+                )
             }
             Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    Text(
-                        text = "AI Audio Dubbing",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Icon(
-                        imageVector = Icons.Rounded.Lock,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(13.dp)
-                    )
-                }
                 Text(
-                    text = "Live Auto AI Subtitles, Dual Subtitles & .SRT export active",
+                    text = "Playlists & Watch Later",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "$playlistCount collections · $totalEntries saved videos",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Surface(
-                color = VoxoraCyan.copy(alpha = 0.14f),
-                shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(1.dp, VoxoraCyan.copy(alpha = 0.45f))
-            ) {
-                Text(
-                    text = "Coming Soon",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = VoxoraCyan,
-                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
-                )
-            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.PlaylistPlay,
+                contentDescription = "Open playlists",
+                tint = VoxoraAmberBright,
+                modifier = Modifier.size(22.dp)
+            )
         }
     }
 }
 
 @Composable
-private fun SectionHeader(
+private fun CinemaSectionHeader(
     title: String,
     actionLabel: String,
     onActionClick: () -> Unit
@@ -587,138 +623,14 @@ private fun SectionHeader(
     ) {
         Text(
             text = title,
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
             color = MaterialTheme.colorScheme.onBackground
         )
         TextButton(onClick = onActionClick) {
-            Text(actionLabel)
-        }
-    }
-}
-
-@Composable
-private fun RecentlyPlayedTile(
-    item: PlaybackHistoryItem,
-    onClick: () -> Unit
-) {
-    val voxoraColors = LocalVoxoraColors.current
-    Card(
-        modifier = Modifier
-            .width(164.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-        border = BorderStroke(1.dp, voxoraColors.cardBorder.copy(alpha = 0.7f))
-    ) {
-        Column {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 10f)
-            ) {
-                VideoThumbnail(
-                    uriString = item.uriString,
-                    contentDescription = item.title,
-                    modifier = Modifier.fillMaxSize()
-                )
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(6.dp)
-                ) {
-                    Surface(
-                        color = Color(0xBF09090D),
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.PlayArrow,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier
-                                .padding(3.dp)
-                                .size(14.dp)
-                        )
-                    }
-                }
-                if (item.durationMs > 0L) {
-                    Surface(
-                        color = Color(0xCC09090D),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(6.dp)
-                    ) {
-                        Text(
-                            text = FormatUtils.formatDuration(item.durationMs),
-                            style = TabularTimeStyle,
-                            color = Color.White,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-            }
-            Column(modifier = Modifier.padding(10.dp)) {
-                Text(
-                    text = item.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = FormatUtils.formatRelativePlayedAt(item.lastPlayedAtMs),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = voxoraColors.blueHighlight
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun QuickFolderTile(
-    folder: VideoFolder,
-    onClick: () -> Unit
-) {
-    val voxoraColors = LocalVoxoraColors.current
-    Card(
-        modifier = Modifier
-            .width(152.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-        border = BorderStroke(1.dp, voxoraColors.cardBorder.copy(alpha = 0.7f))
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Folder,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            }
-            Spacer(modifier = Modifier.height(10.dp))
             Text(
-                text = folder.name,
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = "${folder.videoCount} videos",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = actionLabel,
+                color = VoxoraAmberBright,
+                fontWeight = FontWeight.SemiBold
             )
         }
     }

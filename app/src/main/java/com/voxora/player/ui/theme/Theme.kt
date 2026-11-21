@@ -21,6 +21,8 @@ import com.voxora.player.model.ThemeMode
 data class VoxoraExtendedColors(
     val blueHighlight: Color,
     val purpleGlow: Color,
+    val amberAccent: Color,
+    val amberBright: Color,
     val cardElevated: Color,
     val cardBorder: Color,
     val glassSurface: Color,
@@ -31,60 +33,62 @@ data class VoxoraExtendedColors(
 
 val LocalVoxoraColors = staticCompositionLocalOf {
     VoxoraExtendedColors(
-        blueHighlight = VoxoraSubtleBlue,
-        purpleGlow = VoxoraElectricPurpleBright,
+        blueHighlight = VoxoraAmberBright,
+        purpleGlow = VoxoraAmber,
+        amberAccent = VoxoraAmber,
+        amberBright = VoxoraAmberBright,
         cardElevated = VoxoraElevatedCharcoal,
-        cardBorder = VoxoraOutlineDark,
-        glassSurface = Color(0xD9121218),
+        cardBorder = VoxoraHairlineBorder,
+        glassSurface = VoxoraGlassDark,
         textMuted = VoxoraTextMuted,
         success = VoxoraSuccess,
         warning = VoxoraWarning
     )
 }
 
-private val CharcoalDarkColorScheme = darkColorScheme(
-    primary = VoxoraElectricPurple,
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFF271D4F),
-    onPrimaryContainer = VoxoraElectricPurpleBright,
-    secondary = VoxoraCyan,
-    onSecondary = Color(0xFF041F29),
-    secondaryContainer = Color(0xFF102A3A),
-    onSecondaryContainer = Color(0xFFBAE6FD),
-    tertiary = VoxoraElectricPurpleBright,
+private val CinemaSpatialDarkColorScheme = darkColorScheme(
+    primary = VoxoraAmber,
+    onPrimary = Color(0xFF140D00),
+    primaryContainer = VoxoraAmberContainer,
+    onPrimaryContainer = VoxoraAmberBright,
+    secondary = VoxoraPureWhite,
+    onSecondary = Color(0xFF0A0C10),
+    secondaryContainer = VoxoraElevatedCharcoal,
+    onSecondaryContainer = VoxoraTextPrimary,
+    tertiary = VoxoraAmberBright,
     background = VoxoraObsidian,
     onBackground = VoxoraTextPrimary,
     surface = VoxoraCharcoal,
     onSurface = VoxoraTextPrimary,
     surfaceVariant = VoxoraCardCharcoal,
     onSurfaceVariant = VoxoraTextSecondary,
-    surfaceContainerLowest = VoxoraDeepBlack,
+    surfaceContainerLowest = VoxoraObsidian,
     surfaceContainerLow = VoxoraCharcoal,
     surfaceContainer = VoxoraCardCharcoal,
     surfaceContainerHigh = VoxoraElevatedCharcoal,
-    outline = VoxoraOutlineDark,
+    outline = VoxoraHairlineBorder,
     error = VoxoraError,
     onError = Color.White
 )
 
-private val AmoledDarkColorScheme = CharcoalDarkColorScheme.copy(
+private val AmoledDarkColorScheme = CinemaSpatialDarkColorScheme.copy(
     background = VoxoraDeepBlack,
     surface = VoxoraDeepBlack,
     surfaceContainerLowest = VoxoraDeepBlack,
-    surfaceContainerLow = Color(0xFF080A0F),
-    surfaceContainer = Color(0xFF10131C),
-    surfaceContainerHigh = Color(0xFF181C28)
+    surfaceContainerLow = Color(0xFF07080C),
+    surfaceContainer = Color(0xFF0E1017),
+    surfaceContainerHigh = Color(0xFF151822)
 )
 
 private val VoxoraLightColorScheme = lightColorScheme(
-    primary = VoxoraElectricPurpleDim,
+    primary = VoxoraAmberDim,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFEDE9FE),
-    onPrimaryContainer = Color(0xFF3B0764),
-    secondary = Color(0xFF0284C7),
+    primaryContainer = Color(0xFFFFF3DC),
+    onPrimaryContainer = Color(0xFF422700),
+    secondary = Color(0xFF1F2433),
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFE0F2FE),
-    onSecondaryContainer = Color(0xFF0C4A6E),
+    secondaryContainer = Color(0xFFE7EAF2),
+    onSecondaryContainer = Color(0xFF11131B),
     background = VoxoraLightBackground,
     onBackground = VoxoraLightTextPrimary,
     surface = VoxoraLightSurface,
@@ -104,7 +108,7 @@ private val VoxoraShapes = Shapes(
     small = RoundedCornerShape(12.dp),
     medium = RoundedCornerShape(18.dp),
     large = RoundedCornerShape(24.dp),
-    extraLarge = RoundedCornerShape(28.dp)
+    extraLarge = RoundedCornerShape(30.dp)
 )
 
 @Composable
@@ -114,39 +118,45 @@ fun VoxoraTheme(
 ) {
     val isDark = themeMode != ThemeMode.LIGHT
     val colorScheme = when (themeMode) {
-        ThemeMode.DARK_CHARCOAL -> CharcoalDarkColorScheme
+        ThemeMode.DARK_CHARCOAL -> CinemaSpatialDarkColorScheme
         ThemeMode.AMOLED_BLACK -> AmoledDarkColorScheme
         ThemeMode.LIGHT -> VoxoraLightColorScheme
     }
 
     val extendedColors = when (themeMode) {
         ThemeMode.DARK_CHARCOAL -> VoxoraExtendedColors(
-            blueHighlight = VoxoraCyan,
-            purpleGlow = VoxoraElectricPurpleBright,
+            blueHighlight = VoxoraAmberBright,
+            purpleGlow = VoxoraAmber,
+            amberAccent = VoxoraAmber,
+            amberBright = VoxoraAmberBright,
             cardElevated = VoxoraElevatedCharcoal,
-            cardBorder = VoxoraOutlineDark,
+            cardBorder = VoxoraHairlineBorder,
             glassSurface = VoxoraGlassDark,
             textMuted = VoxoraTextMuted,
             success = VoxoraSuccess,
             warning = VoxoraWarning
         )
         ThemeMode.AMOLED_BLACK -> VoxoraExtendedColors(
-            blueHighlight = VoxoraCyan,
-            purpleGlow = VoxoraElectricPurpleBright,
-            cardElevated = Color(0xFF151822),
-            cardBorder = Color(0xFF232838),
-            glassSurface = Color(0xE605070B),
+            blueHighlight = VoxoraAmberBright,
+            purpleGlow = VoxoraAmber,
+            amberAccent = VoxoraAmber,
+            amberBright = VoxoraAmberBright,
+            cardElevated = Color(0xFF141720),
+            cardBorder = Color(0xFF1C202E),
+            glassSurface = Color(0xEA080A0F),
             textMuted = VoxoraTextMuted,
             success = VoxoraSuccess,
             warning = VoxoraWarning
         )
         ThemeMode.LIGHT -> VoxoraExtendedColors(
-            blueHighlight = Color(0xFF0284C7),
-            purpleGlow = VoxoraElectricPurpleDim,
-            cardElevated = Color(0xFFF0EFF8),
+            blueHighlight = VoxoraAmberDim,
+            purpleGlow = VoxoraAmberDim,
+            amberAccent = VoxoraAmberDim,
+            amberBright = VoxoraAmber,
+            cardElevated = Color(0xFFF0F1F6),
             cardBorder = VoxoraLightOutline,
-            glassSurface = Color(0xE8FFFFFF),
-            textMuted = Color(0xFF6B6B84),
+            glassSurface = Color(0xEBFFFFFF),
+            textMuted = Color(0xFF6B7285),
             success = Color(0xFF059669),
             warning = Color(0xFFD97706)
         )

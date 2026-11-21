@@ -14,45 +14,62 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CleaningServices
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Equalizer
+import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.NotificationsActive
-import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PlayCircleOutline
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.SystemUpdate
-import androidx.compose.material.icons.rounded.TouchApp
-import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -63,30 +80,49 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.voxora.player.BuildConfig
 import com.voxora.player.R
+import com.voxora.player.ai.subtitles.AutoSubtitleLanguageCatalog
 import com.voxora.player.data.update.UpdateUiState
 import com.voxora.player.model.AspectRatioMode
+import com.voxora.player.model.AudioEqPreset
 import com.voxora.player.model.SubtitleTextColor
 import com.voxora.player.model.ThemeMode
 import com.voxora.player.model.UserPreferences
 import com.voxora.player.ui.components.VoxoraBrandMark
-import com.voxora.player.ui.theme.LocalVoxoraColors
 import com.voxora.player.ui.theme.TabularTimeStyle
-import com.voxora.player.ui.theme.VoxoraCyan
-import com.voxora.player.ui.theme.VoxoraElectricPurple
+import com.voxora.player.ui.theme.VoxoraAmber
+import com.voxora.player.ui.theme.VoxoraAmberBright
+import com.voxora.player.ui.theme.VoxoraCardCharcoal
+import com.voxora.player.ui.theme.VoxoraElevatedCharcoal
+import com.voxora.player.ui.theme.VoxoraError
+import com.voxora.player.ui.theme.VoxoraHairlineBorder
+import com.voxora.player.ui.theme.VoxoraObsidian
+import com.voxora.player.ui.theme.VoxoraSuccess
 import com.voxora.player.ui.viewmodel.SettingsViewModel
 import com.voxora.player.util.FormatUtils
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalLayoutApi::class)
+private enum class SettingsSheetType {
+    NONE,
+    PLAYBACK_GESTURES,
+    AI_SUBTITLES,
+    AUDIO_VISUAL,
+    LIBRARY_DATA,
+    UPDATES,
+    ABOUT
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     preferences: UserPreferences,
@@ -99,13 +135,21 @@ fun SettingsScreen(
     onRequestNotificationPermission: () -> Unit = {},
     onOpenVault: () -> Unit = {},
     onOpenCleaner: () -> Unit = {},
+    onPlayStreamUrl: (url: String, title: String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
-    val voxoraColors = LocalVoxoraColors.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val comingSoonMessage = stringResource(R.string.ai_dubbing_coming_soon_message)
+    val isWhisperInstalled by viewModel.isWhisperModelInstalled.collectAsStateWithLifecycle()
+
+    var activeSheet by remember { mutableStateOf(SettingsSheetType.NONE) }
     var showClearDialog by remember { mutableStateOf(false) }
+    var showStreamUrlDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshOfflineModelStatus()
+    }
 
     LaunchedEffect(statusBanner) {
         if (statusBanner != null) {
@@ -114,9 +158,17 @@ fun SettingsScreen(
         }
     }
 
+    if (showStreamUrlDialog) {
+        StreamUrlDialog(
+            onPlayUrl = onPlayStreamUrl,
+            onDismiss = { showStreamUrlDialog = false }
+        )
+    }
+
     if (showClearDialog) {
         AlertDialog(
             onDismissRequest = { showClearDialog = false },
+            containerColor = VoxoraCardCharcoal,
             title = { Text("Clear Playback History?") },
             text = { Text("All saved resume positions and recent video records will be deleted.") },
             confirmButton = {
@@ -138,683 +190,150 @@ fun SettingsScreen(
         )
     }
 
+    val primaryLangName = remember(preferences.autoSubtitleTargetLanguageCode) {
+        AutoSubtitleLanguageCatalog.findByCode(preferences.autoSubtitleTargetLanguageCode).displayName
+    }
+    val updateSummary = when (updateState) {
+        is UpdateUiState.UpdateAvailable -> "v${updateState.release.versionName} available"
+        is UpdateUiState.Downloading -> "Downloading ${(updateState.progressFraction * 100).toInt()}%"
+        is UpdateUiState.ReadyToInstall -> "Ready to install"
+        is UpdateUiState.UpToDate -> "Up to date"
+        UpdateUiState.Checking -> "Checking..."
+        else -> "v${BuildConfig.VERSION_NAME}"
+    }
+
     Box(modifier = modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 118.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
             item {
-                Text(
-                    text = "Settings",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Text(
-                    text = "Customize playback, gestures, subtitles, and media discovery",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            // Theme Settings
-            item {
-                SettingsSectionCard(
-                    title = "Theme",
-                    icon = Icons.Rounded.Palette
-                ) {
-                    ThemeMode.entries.forEach { mode ->
-                        val selected = mode == preferences.themeMode
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable { viewModel.setThemeMode(mode) }
-                                .padding(vertical = 8.dp, horizontal = 6.dp)
-                                .testTag("theme_option_${mode.name}"),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(mode.label, style = MaterialTheme.typography.titleSmall)
-                                Text(
-                                    mode.description,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Surface(
-                                color = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                                shape = RoundedCornerShape(10.dp),
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (selected) MaterialTheme.colorScheme.primary else voxoraColors.cardBorder
-                                )
-                            ) {
-                                Text(
-                                    text = if (selected) "Active" else "Select",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-                    }
+                Column(modifier = Modifier.padding(horizontal = 2.dp)) {
+                    Text(
+                        text = "Settings",
+                        style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "VOXORA Cinema Spatial · v${BuildConfig.VERSION_NAME}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
-            // Playback Settings
+            // 1. Experience & Playback
             item {
-                SettingsSectionCard(
-                    title = "Playback & Default Speed",
-                    icon = Icons.Rounded.PlayCircleOutline
-                ) {
-                    SettingsSwitchRow(
-                        title = "Resume Playback",
-                        subtitle = "Automatically continue from last saved position",
-                        checked = preferences.resumePlaybackEnabled,
-                        onCheckedChange = viewModel::setResumePlaybackEnabled,
-                        testTag = "settings_resume_switch"
+                SettingsGroupHeader("EXPERIENCE")
+                Spacer(modifier = Modifier.height(8.dp))
+                SettingsGroupedCard {
+                    SettingsMenuRow(
+                        icon = Icons.Rounded.PlayCircleOutline,
+                        title = "Playback & Gestures",
+                        subtitle = "Auto-Orientation · ${preferences.defaultPlaybackSpeed}x · Hold ${preferences.holdSpeedMultiplier}x",
+                        onClick = { activeSheet = SettingsSheetType.PLAYBACK_GESTURES },
+                        testTag = "settings_row_playback"
                     )
-                    HorizontalDivider(color = voxoraColors.cardBorder.copy(alpha = 0.5f))
-                    SettingsSwitchRow(
-                        title = "Auto-Play Next Video",
-                        subtitle = "Continue seamlessly to the next video in library",
-                        checked = preferences.autoPlayNext,
-                        onCheckedChange = viewModel::setAutoPlayNext,
-                        testTag = "settings_autoplay_switch"
+                    SettingsGroupDivider()
+                    SettingsMenuRow(
+                        icon = Icons.Rounded.Subtitles,
+                        title = "AI Subtitles",
+                        subtitle = "$primaryLangName · ${preferences.subtitleFontSizeSp.toInt()}sp" +
+                            if (preferences.dualSubtitlesEnabled) " · Dual ON" else "",
+                        onClick = {
+                            viewModel.refreshOfflineModelStatus()
+                            activeSheet = SettingsSheetType.AI_SUBTITLES
+                        },
+                        testTag = "settings_row_subtitles"
                     )
-                    HorizontalDivider(color = voxoraColors.cardBorder.copy(alpha = 0.5f))
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text("Default Playback Speed", style = MaterialTheme.typography.titleSmall)
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->
-                            FilterChip(
-                                selected = kotlin.math.abs(preferences.defaultPlaybackSpeed - speed) < 0.01f,
-                                onClick = { viewModel.setDefaultPlaybackSpeed(speed) },
-                                label = { Text("${speed}x") },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                    selectedLabelColor = Color.White
-                                )
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text("Default Aspect Ratio", style = MaterialTheme.typography.titleSmall)
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        AspectRatioMode.entries.forEach { mode ->
-                            FilterChip(
-                                selected = preferences.defaultAspectRatio == mode,
-                                onClick = { viewModel.setDefaultAspectRatio(mode) },
-                                label = { Text(mode.label) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                    selectedLabelColor = Color.White
-                                )
-                            )
-                        }
-                    }
+                    SettingsGroupDivider()
+                    SettingsMenuRow(
+                        icon = Icons.Rounded.Equalizer,
+                        title = "Audio & Visual",
+                        subtitle = "${preferences.themeMode.label} · Boost +${preferences.volumeBoostPercent}% · ${preferences.audioEqPreset.label}",
+                        onClick = { activeSheet = SettingsSheetType.AUDIO_VISUAL },
+                        testTag = "settings_row_audio_visual"
+                    )
                 }
             }
 
-            // Locked AI Audio Dubbing — Coming Soon Card
+            // 2. Tools & Privacy (Stream URL, Private Vault, Storage Cleaner, Library Data)
             item {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(18.dp))
-                        .clickable {
+                SettingsGroupHeader("TOOLS & PRIVACY")
+                Spacer(modifier = Modifier.height(8.dp))
+                SettingsGroupedCard {
+                    SettingsMenuRow(
+                        icon = Icons.Rounded.Security,
+                        title = "Private Vault",
+                        subtitle = if (preferences.vaultPinSha256.isNotBlank()) "PIN & Biometric Lock active" else "Lock private videos behind PIN or biometrics",
+                        onClick = onOpenVault,
+                        testTag = "settings_open_vault_button"
+                    )
+                    SettingsGroupDivider()
+                    SettingsMenuRow(
+                        icon = Icons.Rounded.Link,
+                        title = "Stream Network URL",
+                        subtitle = "Play direct MP4, MKV, HLS (.m3u8) or DASH links",
+                        onClick = { showStreamUrlDialog = true },
+                        testTag = "settings_stream_url_button"
+                    )
+                    SettingsGroupDivider()
+                    SettingsMenuRow(
+                        icon = Icons.Rounded.CleaningServices,
+                        title = "Storage Cleaner",
+                        subtitle = "Find duplicate & oversized video files",
+                        onClick = onOpenCleaner,
+                        testTag = "settings_open_cleaner_button"
+                    )
+                    SettingsGroupDivider()
+                    SettingsMenuRow(
+                        icon = Icons.Rounded.VideoLibrary,
+                        title = "Library & History",
+                        subtitle = "Scan filters, hidden folders, rescan & history",
+                        onClick = { activeSheet = SettingsSheetType.LIBRARY_DATA },
+                        testTag = "settings_row_library_data"
+                    )
+                }
+            }
+
+            // 3. Upcoming & About
+            item {
+                SettingsGroupHeader("UPCOMING & ABOUT")
+                Spacer(modifier = Modifier.height(8.dp))
+                SettingsGroupedCard {
+                    SettingsMenuRow(
+                        icon = Icons.Rounded.GraphicEq,
+                        title = "AI Audio Dubbing",
+                        subtitle = "On-device neural voice dubbing roadmap",
+                        trailingBadge = "Coming Soon",
+                        trailingIcon = Icons.Rounded.Lock,
+                        onClick = {
                             scope.launch {
                                 snackbarHostState.currentSnackbarData?.dismiss()
                                 snackbarHostState.showSnackbar(comingSoonMessage)
                             }
-                        }
-                        .testTag("settings_ai_dubbing_coming_soon_card"),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
-                    ),
-                    border = BorderStroke(
-                        width = 1.dp,
-                        brush = Brush.horizontalGradient(
-                            listOf(
-                                VoxoraElectricPurple.copy(alpha = 0.55f),
-                                VoxoraCyan.copy(alpha = 0.45f)
-                            )
-                        )
+                        },
+                        testTag = "settings_ai_dubbing_coming_soon_card"
                     )
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Surface(
-                            color = VoxoraElectricPurple.copy(alpha = 0.16f),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.size(44.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Rounded.GraphicEq,
-                                    contentDescription = null,
-                                    tint = VoxoraElectricPurple,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
-                        }
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    text = "AI Audio Dubbing",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Icon(
-                                    imageVector = Icons.Rounded.Lock,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                            Text(
-                                text = "Voice dubbing is paused while we focus on ultra-fast Live Auto AI Subtitles.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Surface(
-                            color = VoxoraCyan.copy(alpha = 0.15f),
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, VoxoraCyan.copy(alpha = 0.45f))
-                        ) {
-                            Text(
-                                text = "Coming Soon",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = VoxoraCyan,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                            )
-                        }
-                    }
+                    SettingsGroupDivider()
+                    SettingsMenuRow(
+                        icon = Icons.Rounded.SystemUpdate,
+                        title = "App Updates",
+                        subtitle = "GitHub Releases in-app updater · $updateSummary",
+                        onClick = { activeSheet = SettingsSheetType.UPDATES },
+                        testTag = "settings_row_updates"
+                    )
+                    SettingsGroupDivider()
+                    SettingsMenuRow(
+                        icon = Icons.Rounded.Info,
+                        title = "About VOXORA",
+                        subtitle = "Version ${BuildConfig.VERSION_NAME} · Media3 + whisper.cpp + ML Kit",
+                        onClick = { activeSheet = SettingsSheetType.ABOUT },
+                        testTag = "settings_row_about"
+                    )
                 }
-            }
-
-            // Gesture Settings
-            item {
-                SettingsSectionCard(
-                    title = "Player Gestures",
-                    icon = Icons.Rounded.TouchApp
-                ) {
-                    SettingsSwitchRow(
-                        title = "Brightness Swipe (Left Side)",
-                        subtitle = "Swipe up/down on left side to adjust screen brightness",
-                        checked = preferences.brightnessGestureEnabled,
-                        onCheckedChange = viewModel::setBrightnessGestureEnabled,
-                        testTag = "settings_brightness_gesture_switch"
-                    )
-                    HorizontalDivider(color = voxoraColors.cardBorder.copy(alpha = 0.5f))
-                    SettingsSwitchRow(
-                        title = "Volume Swipe (Right Side)",
-                        subtitle = "Swipe up/down on right side to adjust media volume",
-                        checked = preferences.volumeGestureEnabled,
-                        onCheckedChange = viewModel::setVolumeGestureEnabled,
-                        testTag = "settings_volume_gesture_switch"
-                    )
-                    HorizontalDivider(color = voxoraColors.cardBorder.copy(alpha = 0.5f))
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text("Double-Tap Seek Duration", style = MaterialTheme.typography.titleSmall)
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf(5, 10, 15, 30).forEach { seconds ->
-                            FilterChip(
-                                selected = preferences.doubleTapSeekSeconds == seconds,
-                                onClick = { viewModel.setDoubleTapSeekSeconds(seconds) },
-                                label = { Text("${seconds}s") },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                    selectedLabelColor = Color.White
-                                )
-                            )
-                        }
-                    }
-                    HorizontalDivider(color = voxoraColors.cardBorder.copy(alpha = 0.5f))
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Press & Hold Fast-Forward Speed", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        text = "Press and hold anywhere on the player to boost speed; slide up/down to switch between 2.0x and 3.0x",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf(2.0f, 3.0f).forEach { holdSpeed ->
-                            FilterChip(
-                                selected = kotlin.math.abs(preferences.holdSpeedMultiplier - holdSpeed) < 0.05f,
-                                onClick = { viewModel.setHoldSpeedMultiplier(holdSpeed) },
-                                label = { Text("${holdSpeed}x") },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = VoxoraCyan,
-                                    selectedLabelColor = Color(0xFF061018)
-                                ),
-                                modifier = Modifier.testTag("settings_hold_speed_${holdSpeed.toInt()}x")
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Subtitle Settings
-            item {
-                SettingsSectionCard(
-                    title = "Subtitles",
-                    icon = Icons.Rounded.Subtitles
-                ) {
-                    // Live Preview Box
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF0B0D12))
-                            .padding(vertical = 14.dp, horizontal = 12.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Surface(
-                            color = Color.Black.copy(alpha = preferences.subtitleBackgroundOpacity),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = "VOXORA Live Auto AI Subtitle Preview",
-                                color = Color(preferences.subtitleTextColor.colorHex),
-                                fontSize = preferences.subtitleFontSizeSp.sp,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-
-                    Text("Text Color", style = MaterialTheme.typography.titleSmall)
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        SubtitleTextColor.entries.forEach { textColor ->
-                            FilterChip(
-                                selected = preferences.subtitleTextColor == textColor,
-                                onClick = { viewModel.setSubtitleTextColor(textColor) },
-                                label = { Text(textColor.label) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                    selectedLabelColor = Color.White
-                                ),
-                                modifier = Modifier.testTag("settings_subtitle_color_${textColor.name}")
-                            )
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Font Size", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            "${preferences.subtitleFontSizeSp.toInt()} sp",
-                            style = TabularTimeStyle,
-                            color = voxoraColors.blueHighlight
-                        )
-                    }
-                    Slider(
-                        value = preferences.subtitleFontSizeSp.coerceIn(11f, 26f),
-                        onValueChange = viewModel::setSubtitleFontSizeSp,
-                        valueRange = 11f..26f
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Vertical Position (Top → Bottom)", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            "${(preferences.subtitleVerticalPositionFraction * 100).toInt()}%",
-                            style = TabularTimeStyle,
-                            color = voxoraColors.blueHighlight
-                        )
-                    }
-                    Slider(
-                        value = preferences.subtitleVerticalPositionFraction.coerceIn(0.05f, 0.95f),
-                        onValueChange = viewModel::setSubtitleVerticalPositionFraction,
-                        valueRange = 0.05f..0.95f
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Background Opacity", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            "${(preferences.subtitleBackgroundOpacity * 100).toInt()}%",
-                            style = TabularTimeStyle,
-                            color = voxoraColors.blueHighlight
-                        )
-                    }
-                    Slider(
-                        value = preferences.subtitleBackgroundOpacity,
-                        onValueChange = viewModel::setSubtitleBackgroundOpacity,
-                        valueRange = 0f..1f
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Default Sync Offset", style = MaterialTheme.typography.titleSmall)
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    viewModel.setSubtitleDefaultSyncOffsetMs(
-                                        (preferences.subtitleDefaultSyncOffsetMs - 100L).coerceAtLeast(-5000L)
-                                    )
-                                }
-                            ) { Text("-0.1s") }
-                            Text(
-                                text = FormatUtils.formatSyncOffset(preferences.subtitleDefaultSyncOffsetMs),
-                                style = TabularTimeStyle,
-                                color = voxoraColors.blueHighlight
-                            )
-                            OutlinedButton(
-                                onClick = {
-                                    viewModel.setSubtitleDefaultSyncOffsetMs(
-                                        (preferences.subtitleDefaultSyncOffsetMs + 100L).coerceAtMost(5000L)
-                                    )
-                                }
-                            ) { Text("+0.1s") }
-                        }
-                    }
-                }
-            }
-
-            // Video Scanning & History
-            item {
-                SettingsSectionCard(
-                    title = "Library Scanning & Data",
-                    icon = Icons.Rounded.VideoLibrary
-                ) {
-                    Text("Minimum Video Duration Filter", style = MaterialTheme.typography.titleSmall)
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf(0 to "All", 5 to "5s+", 30 to "30s+", 60 to "1m+").forEach { (sec, label) ->
-                            FilterChip(
-                                selected = preferences.minVideoDurationSec == sec,
-                                onClick = { viewModel.setMinVideoDurationSec(sec) },
-                                label = { Text(label) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                    selectedLabelColor = Color.White
-                                )
-                            )
-                        }
-                    }
-                    HorizontalDivider(color = voxoraColors.cardBorder.copy(alpha = 0.5f))
-                    SettingsSwitchRow(
-                        title = "Show Hidden Folders",
-                        subtitle = "Include dot-prefixed hidden directories when scanning",
-                        checked = preferences.showHiddenFolders,
-                        onCheckedChange = viewModel::setShowHiddenFolders,
-                        testTag = "settings_hidden_folders_switch"
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = viewModel::rescanLibrary,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("settings_rescan_button")
-                        ) {
-                            Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Rescan Library")
-                        }
-                        OutlinedButton(
-                            onClick = { showClearDialog = true },
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                contentColor = MaterialTheme.colorScheme.error
-                            ),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("settings_clear_history_button")
-                        ) {
-                            Icon(Icons.Rounded.DeleteSweep, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Clear History")
-                        }
-                    }
-                }
-            }
-
-            // Privacy & Storage Tools
-            item {
-                SettingsSectionCard(
-                    title = "Privacy & Storage Tools",
-                    icon = Icons.Rounded.Security
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = onOpenVault,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("settings_open_vault_button")
-                        ) {
-                            Icon(Icons.Rounded.Security, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Private Vault")
-                        }
-                        OutlinedButton(
-                            onClick = onOpenCleaner,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("settings_open_cleaner_button")
-                        ) {
-                            Icon(Icons.Rounded.CleaningServices, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("File Cleaner")
-                        }
-                    }
-                }
-            }
-
-            // App Updates (GitHub Releases In-App Updater)
-            item {
-                SettingsSectionCard(
-                    title = "App Updates",
-                    icon = Icons.Rounded.SystemUpdate
-                ) {
-                    val statusText = when (updateState) {
-                        UpdateUiState.Idle -> "Installed: v${BuildConfig.VERSION_NAME} · Ready to check GitHub Releases"
-                        UpdateUiState.Checking -> "Checking GitHub Releases for updates..."
-                        is UpdateUiState.UpToDate -> "You are on the latest version (v${updateState.currentVersion})"
-                        is UpdateUiState.UpdateAvailable -> "New version v${updateState.release.versionName} is available!"
-                        is UpdateUiState.Downloading -> "Downloading v${updateState.release.versionName} (${(updateState.progressFraction * 100).toInt()}%)..."
-                        is UpdateUiState.ReadyToInstall -> "v${updateState.release.versionName} downloaded and ready to install"
-                        is UpdateUiState.Error -> updateState.message
-                    }
-
-                    Text(
-                        text = statusText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = when (updateState) {
-                            is UpdateUiState.UpdateAvailable,
-                            is UpdateUiState.ReadyToInstall -> voxoraColors.success
-                            is UpdateUiState.Error -> MaterialTheme.colorScheme.error
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
-
-                    SettingsSwitchRow(
-                        title = "Auto-Check & Notify Updates",
-                        subtitle = "Check GitHub Releases on launch and send a notification when a new update arrives",
-                        checked = preferences.autoCheckUpdates,
-                        onCheckedChange = viewModel::setAutoCheckUpdates,
-                        testTag = "settings_auto_update_switch"
-                    )
-
-                    if (!hasNotificationPermission) {
-                        OutlinedButton(
-                            onClick = onRequestNotificationPermission,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("settings_enable_update_notifications_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.NotificationsActive,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Enable Update Notifications")
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        val isUpdateActionable = updateState is UpdateUiState.UpdateAvailable ||
-                            updateState is UpdateUiState.Downloading ||
-                            updateState is UpdateUiState.ReadyToInstall
-
-                        if (isUpdateActionable) {
-                            Button(
-                                onClick = onOpenUpdateDialog,
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("settings_open_update_button")
-                            ) {
-                                Text(
-                                    text = when (updateState) {
-                                        is UpdateUiState.ReadyToInstall -> "Install v${updateState.release.versionName}"
-                                        is UpdateUiState.Downloading -> "View Download"
-                                        is UpdateUiState.UpdateAvailable -> "Download v${updateState.release.versionName}"
-                                        else -> "Update"
-                                    }
-                                )
-                            }
-                        } else {
-                            Button(
-                                onClick = onCheckForUpdates,
-                                enabled = updateState !is UpdateUiState.Checking,
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("settings_check_updates_button")
-                            ) {
-                                if (updateState is UpdateUiState.Checking) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(16.dp),
-                                        strokeWidth = 2.dp,
-                                        color = Color.White
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Checking...")
-                                } else {
-                                    Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Check for Updates")
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // About VOXORA
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-                    border = BorderStroke(1.dp, voxoraColors.cardBorder)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            VoxoraBrandMark(size = 44.dp)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "VOXORA Media Player",
-                                    style = MaterialTheme.typography.titleLarge
-                                )
-                                Text(
-                                    text = "Play Beyond Language · Version ${BuildConfig.VERSION_NAME}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = voxoraColors.blueHighlight
-                                )
-                            }
-                        }
-                        Text(
-                            text = "Built on AndroidX Media3 ExoPlayer, Jetpack Compose, Room, whisper.cpp, and Google ML Kit for smooth hardware-accelerated playback and 100% free on-device Auto AI Subtitles.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Surface(
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.AutoAwesome,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = "VOXORA Media Player v${BuildConfig.VERSION_NAME} — VAD Speech-Synced Auto AI Subtitles, Dual Subtitles, .SRT Export, Dialogue Search, 200% Volume Booster + 5-Band EQ, Background Audio, Eye Care, 4x Pinch Zoom, Frame Step, Scene Bookmarks, Playlists, Private Vault, Cleaner & Kids Lock.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                        }
-                        Text(
-                            text = "Package: ${BuildConfig.APPLICATION_ID} · v${BuildConfig.VERSION_NAME}",
-                            style = TabularTimeStyle,
-                            color = voxoraColors.textMuted
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(16.dp))
             }
         }
 
@@ -822,46 +341,1000 @@ fun SettingsScreen(
             hostState = snackbarHostState,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(16.dp)
+                .padding(start = 16.dp, end = 16.dp, bottom = 104.dp)
+        )
+    }
+
+    // Focused Category Bottom Sheets
+    if (activeSheet != SettingsSheetType.NONE) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { activeSheet = SettingsSheetType.NONE },
+            sheetState = sheetState,
+            containerColor = VoxoraCardCharcoal,
+            contentColor = Color.White
+        ) {
+            when (activeSheet) {
+                SettingsSheetType.PLAYBACK_GESTURES -> PlaybackGesturesSheetContent(
+                    preferences = preferences,
+                    viewModel = viewModel
+                )
+                SettingsSheetType.AI_SUBTITLES -> AiSubtitlesSheetContent(
+                    preferences = preferences,
+                    isWhisperInstalled = isWhisperInstalled,
+                    viewModel = viewModel
+                )
+                SettingsSheetType.AUDIO_VISUAL -> AudioVisualSheetContent(
+                    preferences = preferences,
+                    viewModel = viewModel
+                )
+                SettingsSheetType.LIBRARY_DATA -> LibraryDataSheetContent(
+                    preferences = preferences,
+                    viewModel = viewModel,
+                    onRequestClearHistory = {
+                        activeSheet = SettingsSheetType.NONE
+                        showClearDialog = true
+                    }
+                )
+                SettingsSheetType.UPDATES -> UpdatesSheetContent(
+                    preferences = preferences,
+                    updateState = updateState,
+                    hasNotificationPermission = hasNotificationPermission,
+                    onToggleAutoCheck = viewModel::setAutoCheckUpdates,
+                    onRequestNotificationPermission = onRequestNotificationPermission,
+                    onCheckForUpdates = onCheckForUpdates,
+                    onOpenUpdateDialog = {
+                        activeSheet = SettingsSheetType.NONE
+                        onOpenUpdateDialog()
+                    }
+                )
+                SettingsSheetType.ABOUT -> AboutVoxoraSheetContent()
+                SettingsSheetType.NONE -> Unit
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsGroupHeader(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.labelMedium.copy(
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.2.sp
+        ),
+        color = VoxoraAmberBright,
+        modifier = Modifier.padding(start = 6.dp)
+    )
+}
+
+@Composable
+private fun SettingsGroupedCard(
+    content: @Composable () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = VoxoraCardCharcoal),
+        border = BorderStroke(0.8.dp, VoxoraHairlineBorder)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            content()
+        }
+    }
+}
+
+@Composable
+private fun SettingsGroupDivider() {
+    HorizontalDivider(
+        color = VoxoraHairlineBorder.copy(alpha = 0.7f),
+        thickness = 0.7.dp,
+        modifier = Modifier.padding(start = 60.dp, end = 16.dp)
+    )
+}
+
+@Composable
+private fun SettingsMenuRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    testTag: String,
+    trailingBadge: String? = null,
+    trailingIcon: ImageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+            .testTag(testTag),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Surface(
+            color = VoxoraAmber.copy(alpha = 0.14f),
+            shape = RoundedCornerShape(11.dp),
+            modifier = Modifier.size(38.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = VoxoraAmber,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (trailingBadge != null) {
+            Surface(
+                color = VoxoraElevatedCharcoal,
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(0.8.dp, VoxoraHairlineBorder)
+            ) {
+                Text(
+                    text = trailingBadge,
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = VoxoraAmberBright,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+        }
+        Icon(
+            imageVector = trailingIcon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp)
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PlaybackGesturesSheetContent(
+    preferences: UserPreferences,
+    viewModel: SettingsViewModel
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Text(
+            text = "Playback & Gestures",
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+        )
+
+        Surface(
+            color = VoxoraElevatedCharcoal,
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(0.8.dp, VoxoraHairlineBorder)
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "Smart Auto-Orientation & Hardware Decoding",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = VoxoraAmberBright
+                )
+                Text(
+                    text = "Landscape videos automatically rotate to Sensor Landscape; vertical videos play in Portrait. Hardware MediaCodec acceleration is active by default.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.72f)
+                )
+            }
+        }
+
+        SettingsSwitchRow(
+            title = "Resume Playback",
+            subtitle = "Continue automatically from last saved position",
+            checked = preferences.resumePlaybackEnabled,
+            onCheckedChange = viewModel::setResumePlaybackEnabled,
+            testTag = "settings_resume_switch"
+        )
+        SettingsSwitchRow(
+            title = "Auto-Play Next Video",
+            subtitle = "Continue seamlessly to the next video in library",
+            checked = preferences.autoPlayNext,
+            onCheckedChange = viewModel::setAutoPlayNext,
+            testTag = "settings_autoplay_switch"
+        )
+
+        HorizontalDivider(color = VoxoraHairlineBorder)
+
+        Text("Default Playback Speed", style = MaterialTheme.typography.titleSmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { speed ->
+                AmberFilterChip(
+                    selected = kotlin.math.abs(preferences.defaultPlaybackSpeed - speed) < 0.01f,
+                    label = "${speed}x",
+                    onClick = { viewModel.setDefaultPlaybackSpeed(speed) }
+                )
+            }
+        }
+
+        Text("Press & Hold Fast-Forward Speed", style = MaterialTheme.typography.titleSmall)
+        Text(
+            text = "Hold anywhere on the video to boost speed; slide up/down to toggle 2.0x / 3.0x",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.White.copy(alpha = 0.65f)
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(2.0f, 3.0f).forEach { holdSpeed ->
+                AmberFilterChip(
+                    selected = kotlin.math.abs(preferences.holdSpeedMultiplier - holdSpeed) < 0.05f,
+                    label = "${holdSpeed}x Hold",
+                    onClick = { viewModel.setHoldSpeedMultiplier(holdSpeed) },
+                    modifier = Modifier.testTag("settings_hold_speed_${holdSpeed.toInt()}x")
+                )
+            }
+        }
+
+        Text("Default Aspect Ratio", style = MaterialTheme.typography.titleSmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            AspectRatioMode.entries.forEach { mode ->
+                AmberFilterChip(
+                    selected = preferences.defaultAspectRatio == mode,
+                    label = mode.label,
+                    onClick = { viewModel.setDefaultAspectRatio(mode) }
+                )
+            }
+        }
+
+        HorizontalDivider(color = VoxoraHairlineBorder)
+
+        SettingsSwitchRow(
+            title = "Brightness Swipe (Left Side)",
+            subtitle = "Swipe up/down on left side to adjust screen brightness",
+            checked = preferences.brightnessGestureEnabled,
+            onCheckedChange = viewModel::setBrightnessGestureEnabled,
+            testTag = "settings_brightness_gesture_switch"
+        )
+        SettingsSwitchRow(
+            title = "Volume Swipe (Right Side)",
+            subtitle = "Swipe up/down on right side to adjust media volume",
+            checked = preferences.volumeGestureEnabled,
+            onCheckedChange = viewModel::setVolumeGestureEnabled,
+            testTag = "settings_volume_gesture_switch"
+        )
+
+        Text("Double-Tap Seek Duration", style = MaterialTheme.typography.titleSmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(5, 10, 15, 30).forEach { seconds ->
+                AmberFilterChip(
+                    selected = preferences.doubleTapSeekSeconds == seconds,
+                    label = "${seconds}s",
+                    onClick = { viewModel.setDoubleTapSeekSeconds(seconds) }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AiSubtitlesSheetContent(
+    preferences: UserPreferences,
+    isWhisperInstalled: Boolean,
+    viewModel: SettingsViewModel
+) {
+    var pickingLanguageFor by remember { mutableStateOf<String?>(null) } // "primary" or "secondary"
+    var langQuery by remember { mutableStateOf("") }
+
+    if (pickingLanguageFor != null) {
+        val filtered = remember(langQuery) { AutoSubtitleLanguageCatalog.filter(langQuery) }
+        val activeCode = if (pickingLanguageFor == "primary") {
+            preferences.autoSubtitleTargetLanguageCode
+        } else {
+            preferences.secondarySubtitleLanguageCode
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 540.dp)
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (pickingLanguageFor == "primary") "Default Subtitle Language" else "Secondary Dual Language",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+                TextButton(onClick = {
+                    pickingLanguageFor = null
+                    langQuery = ""
+                }) {
+                    Text("Done", color = VoxoraAmberBright)
+                }
+            }
+            OutlinedTextField(
+                value = langQuery,
+                onValueChange = { langQuery = it },
+                placeholder = { Text("Search 59+ languages...") },
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (langQuery.isNotEmpty()) {
+                        IconButton(onClick = { langQuery = "" }) {
+                            Icon(Icons.Rounded.Close, contentDescription = "Clear")
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = VoxoraAmber,
+                    unfocusedBorderColor = VoxoraHairlineBorder
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                items(filtered, key = { it.code }) { option ->
+                    val selected = option.code == activeCode
+                    Surface(
+                        onClick = {
+                            if (pickingLanguageFor == "primary") {
+                                viewModel.setAutoSubtitleTargetLanguageCode(option.code)
+                            } else {
+                                viewModel.setSecondarySubtitleLanguageCode(option.code)
+                            }
+                            pickingLanguageFor = null
+                            langQuery = ""
+                        },
+                        color = if (selected) VoxoraAmber.copy(alpha = 0.16f) else VoxoraElevatedCharcoal,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(
+                            0.8.dp,
+                            if (selected) VoxoraAmber else VoxoraHairlineBorder
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = option.displayName,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = option.nativeName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.White.copy(alpha = 0.65f)
+                                )
+                            }
+                            if (selected) {
+                                Icon(Icons.Rounded.Check, contentDescription = null, tint = VoxoraAmber)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    val primaryLang = remember(preferences.autoSubtitleTargetLanguageCode) {
+        AutoSubtitleLanguageCatalog.findByCode(preferences.autoSubtitleTargetLanguageCode)
+    }
+    val secondaryLang = remember(preferences.secondarySubtitleLanguageCode) {
+        AutoSubtitleLanguageCatalog.findByCode(preferences.secondarySubtitleLanguageCode)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Text(
+            text = "AI Subtitles",
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+        )
+
+        // Offline Model Status Pill
+        Surface(
+            color = VoxoraElevatedCharcoal,
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(0.8.dp, if (isWhisperInstalled) VoxoraSuccess.copy(alpha = 0.5f) else VoxoraHairlineBorder)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Whisper Multilingual Engine (ggml-tiny-q5_1)",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = Color.White
+                    )
+                    Text(
+                        text = if (isWhisperInstalled) {
+                            "Installed offline (~31 MB) · Strict VAD speech-sync active"
+                        } else {
+                            "Auto-downloads automatically on first AI Subtitle activation (~31 MB)"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.7f)
+                    )
+                }
+                Surface(
+                    color = if (isWhisperInstalled) VoxoraSuccess.copy(alpha = 0.16f) else VoxoraAmber.copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        text = if (isWhisperInstalled) "Ready" else "On Demand",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = if (isWhisperInstalled) VoxoraSuccess else VoxoraAmberBright,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+        }
+
+        // Language Selection Rows
+        Surface(
+            onClick = { pickingLanguageFor = "primary" },
+            color = VoxoraElevatedCharcoal,
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(0.8.dp, VoxoraHairlineBorder)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text("Default Language (59+)", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = "${primaryLang.displayName} (${primaryLang.nativeName})",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = VoxoraAmberBright
+                    )
+                }
+                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = Color.White.copy(alpha = 0.6f))
+            }
+        }
+
+        SettingsSwitchRow(
+            title = "Dual Subtitles Mode",
+            subtitle = "Display two synchronized subtitle languages simultaneously",
+            checked = preferences.dualSubtitlesEnabled,
+            onCheckedChange = viewModel::setDualSubtitlesEnabled,
+            testTag = "settings_dual_subtitles_switch"
+        )
+
+        if (preferences.dualSubtitlesEnabled) {
+            Surface(
+                onClick = { pickingLanguageFor = "secondary" },
+                color = VoxoraElevatedCharcoal,
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(0.8.dp, VoxoraHairlineBorder)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text("Secondary Language", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = "${secondaryLang.displayName} (${secondaryLang.nativeName})",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = VoxoraAmberBright
+                        )
+                    }
+                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = Color.White.copy(alpha = 0.6f))
+                }
+            }
+        }
+
+        // Live Subtitle Preview Box
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(VoxoraObsidian)
+                .padding(vertical = 16.dp, horizontal = 12.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                color = Color.Black.copy(alpha = preferences.subtitleBackgroundOpacity),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text(
+                    text = "VOXORA Speech-Synced Subtitle Preview",
+                    color = Color(preferences.subtitleTextColor.colorHex),
+                    fontSize = preferences.subtitleFontSizeSp.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                )
+            }
+        }
+
+        Text("Text Color", style = MaterialTheme.typography.titleSmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            SubtitleTextColor.entries.forEach { textColor ->
+                AmberFilterChip(
+                    selected = preferences.subtitleTextColor == textColor,
+                    label = textColor.label,
+                    onClick = { viewModel.setSubtitleTextColor(textColor) },
+                    modifier = Modifier.testTag("settings_subtitle_color_${textColor.name}")
+                )
+            }
+        }
+
+        AmberSliderRow(
+            title = "Default Font Size",
+            valueLabel = "${preferences.subtitleFontSizeSp.toInt()} sp",
+            value = preferences.subtitleFontSizeSp.coerceIn(11f, 26f),
+            valueRange = 11f..26f,
+            onValueChange = viewModel::setSubtitleFontSizeSp
+        )
+
+        AmberSliderRow(
+            title = "Vertical Position (Top → Bottom)",
+            valueLabel = "${(preferences.subtitleVerticalPositionFraction * 100).toInt()}%",
+            value = preferences.subtitleVerticalPositionFraction.coerceIn(0.05f, 0.95f),
+            valueRange = 0.05f..0.95f,
+            onValueChange = viewModel::setSubtitleVerticalPositionFraction
+        )
+
+        AmberSliderRow(
+            title = "Background Opacity",
+            valueLabel = "${(preferences.subtitleBackgroundOpacity * 100).toInt()}%",
+            value = preferences.subtitleBackgroundOpacity,
+            valueRange = 0f..1f,
+            onValueChange = viewModel::setSubtitleBackgroundOpacity
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Default Sync Offset", style = MaterialTheme.typography.titleSmall)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        viewModel.setSubtitleDefaultSyncOffsetMs(
+                            (preferences.subtitleDefaultSyncOffsetMs - 100L).coerceAtLeast(-5000L)
+                        )
+                    }
+                ) { Text("-0.1s") }
+                Text(
+                    text = FormatUtils.formatSyncOffset(preferences.subtitleDefaultSyncOffsetMs),
+                    style = TabularTimeStyle,
+                    color = VoxoraAmberBright
+                )
+                OutlinedButton(
+                    onClick = {
+                        viewModel.setSubtitleDefaultSyncOffsetMs(
+                            (preferences.subtitleDefaultSyncOffsetMs + 100L).coerceAtMost(5000L)
+                        )
+                    }
+                ) { Text("+0.1s") }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AudioVisualSheetContent(
+    preferences: UserPreferences,
+    viewModel: SettingsViewModel
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Text(
+            text = "Audio & Visual",
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+        )
+
+        Text("Appearance Theme", style = MaterialTheme.typography.titleSmall)
+        ThemeMode.entries.forEach { mode ->
+            val selected = mode == preferences.themeMode
+            Surface(
+                onClick = { viewModel.setThemeMode(mode) },
+                color = if (selected) VoxoraAmber.copy(alpha = 0.16f) else VoxoraElevatedCharcoal,
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(0.8.dp, if (selected) VoxoraAmber else VoxoraHairlineBorder),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("theme_option_${mode.name}")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(mode.label, style = MaterialTheme.typography.titleSmall, color = Color.White)
+                        Text(mode.description, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.65f))
+                    }
+                    if (selected) {
+                        Icon(Icons.Rounded.Check, contentDescription = null, tint = VoxoraAmber)
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider(color = VoxoraHairlineBorder)
+
+        AmberSliderRow(
+            title = "Default Volume Booster",
+            valueLabel = if (preferences.volumeBoostPercent > 0) "+${preferences.volumeBoostPercent}% (${100 + preferences.volumeBoostPercent}%)" else "100% (Normal)",
+            value = preferences.volumeBoostPercent.toFloat(),
+            valueRange = 0f..100f,
+            onValueChange = { viewModel.setVolumeBoostPercent(it.toInt()) }
+        )
+
+        Text("5-Band Equalizer Preset", style = MaterialTheme.typography.titleSmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            AudioEqPreset.entries.forEach { preset ->
+                AmberFilterChip(
+                    selected = preferences.audioEqPreset == preset,
+                    label = preset.label,
+                    onClick = { viewModel.setAudioEqPreset(preset) }
+                )
+            }
+        }
+
+        HorizontalDivider(color = VoxoraHairlineBorder)
+
+        SettingsSwitchRow(
+            title = "Eye Care Warm Filter",
+            subtitle = "Reduce blue light automatically during night viewing",
+            checked = preferences.eyeCareEnabled,
+            onCheckedChange = viewModel::setEyeCareEnabled,
+            testTag = "settings_eye_care_switch"
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LibraryDataSheetContent(
+    preferences: UserPreferences,
+    viewModel: SettingsViewModel,
+    onRequestClearHistory: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Text(
+            text = "Library & History",
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+        )
+
+        Text("Minimum Video Duration Filter", style = MaterialTheme.typography.titleSmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(0 to "All", 5 to "5s+", 30 to "30s+", 60 to "1m+").forEach { (sec, label) ->
+                AmberFilterChip(
+                    selected = preferences.minVideoDurationSec == sec,
+                    label = label,
+                    onClick = { viewModel.setMinVideoDurationSec(sec) }
+                )
+            }
+        }
+
+        SettingsSwitchRow(
+            title = "Show Hidden Folders",
+            subtitle = "Include dot-prefixed directories when scanning storage",
+            checked = preferences.showHiddenFolders,
+            onCheckedChange = viewModel::setShowHiddenFolders,
+            testTag = "settings_hidden_folders_switch"
+        )
+
+        HorizontalDivider(color = VoxoraHairlineBorder)
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            OutlinedButton(
+                onClick = viewModel::rescanLibrary,
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("settings_rescan_button")
+            ) {
+                Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Rescan Library")
+            }
+            OutlinedButton(
+                onClick = onRequestClearHistory,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = VoxoraError),
+                border = BorderStroke(1.dp, VoxoraError.copy(alpha = 0.55f)),
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("settings_clear_history_button")
+            ) {
+                Icon(Icons.Rounded.DeleteSweep, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Clear History")
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdatesSheetContent(
+    preferences: UserPreferences,
+    updateState: UpdateUiState,
+    hasNotificationPermission: Boolean,
+    onToggleAutoCheck: (Boolean) -> Unit,
+    onRequestNotificationPermission: () -> Unit,
+    onCheckForUpdates: () -> Unit,
+    onOpenUpdateDialog: () -> Unit
+) {
+    val statusText = when (updateState) {
+        UpdateUiState.Idle -> "Installed: v${BuildConfig.VERSION_NAME} · Ready to check GitHub Releases"
+        UpdateUiState.Checking -> "Checking GitHub Releases for updates..."
+        is UpdateUiState.UpToDate -> "You are on the latest version (v${updateState.currentVersion})"
+        is UpdateUiState.UpdateAvailable -> "New version v${updateState.release.versionName} is available!"
+        is UpdateUiState.Downloading -> "Downloading v${updateState.release.versionName} (${(updateState.progressFraction * 100).toInt()}%)..."
+        is UpdateUiState.ReadyToInstall -> "v${updateState.release.versionName} downloaded and ready to install"
+        is UpdateUiState.Error -> updateState.message
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Text(
+            text = "App Updates",
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+        )
+        Text(
+            text = statusText,
+            style = MaterialTheme.typography.bodyMedium,
+            color = when (updateState) {
+                is UpdateUiState.UpdateAvailable,
+                is UpdateUiState.ReadyToInstall -> VoxoraSuccess
+                is UpdateUiState.Error -> VoxoraError
+                else -> Color.White.copy(alpha = 0.75f)
+            }
+        )
+
+        SettingsSwitchRow(
+            title = "Auto-Check & Notify Updates",
+            subtitle = "Check GitHub Releases on launch and notify when an update arrives",
+            checked = preferences.autoCheckUpdates,
+            onCheckedChange = onToggleAutoCheck,
+            testTag = "settings_auto_update_switch"
+        )
+
+        if (!hasNotificationPermission) {
+            OutlinedButton(
+                onClick = onRequestNotificationPermission,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_enable_update_notifications_button")
+            ) {
+                Icon(Icons.Rounded.NotificationsActive, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Enable Update Notifications")
+            }
+        }
+
+        val isUpdateActionable = updateState is UpdateUiState.UpdateAvailable ||
+            updateState is UpdateUiState.Downloading ||
+            updateState is UpdateUiState.ReadyToInstall
+
+        if (isUpdateActionable) {
+            Button(
+                onClick = onOpenUpdateDialog,
+                colors = ButtonDefaults.buttonColors(containerColor = VoxoraAmber, contentColor = Color(0xFF140D00)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_open_update_button")
+            ) {
+                Text(
+                    text = when (updateState) {
+                        is UpdateUiState.ReadyToInstall -> "Install v${updateState.release.versionName}"
+                        is UpdateUiState.Downloading -> "View Download"
+                        is UpdateUiState.UpdateAvailable -> "Download v${updateState.release.versionName}"
+                        else -> "Update"
+                    },
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        } else {
+            Button(
+                onClick = onCheckForUpdates,
+                enabled = updateState !is UpdateUiState.Checking,
+                colors = ButtonDefaults.buttonColors(containerColor = VoxoraAmber, contentColor = Color(0xFF140D00)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("settings_check_updates_button")
+            ) {
+                if (updateState is UpdateUiState.Checking) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color(0xFF140D00))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Checking...", fontWeight = FontWeight.Bold)
+                } else {
+                    Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Check for Updates", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AboutVoxoraSheetContent() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 34.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            VoxoraBrandMark(size = 46.dp)
+            Spacer(modifier = Modifier.width(12.dp))
+            Column {
+                Text(
+                    text = "VOXORA Media Player",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                )
+                Text(
+                    text = "Cinema Spatial · Version ${BuildConfig.VERSION_NAME}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = VoxoraAmberBright
+                )
+            }
+        }
+        Text(
+            text = "Built on AndroidX Media3 ExoPlayer, Jetpack Compose, Room, whisper.cpp, and Google ML Kit for flagship local cinema playback and 100% free on-device Auto AI Subtitles.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White.copy(alpha = 0.78f)
+        )
+        Surface(
+            color = VoxoraElevatedCharcoal,
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(0.8.dp, VoxoraHairlineBorder)
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = VoxoraAmber)
+                Text(
+                    text = "v${BuildConfig.VERSION_NAME} — VOXORA Cinema Spatial UI, Floating Glass Dock, MX-Style Slide-Out Player Drawer, Smart Episode Title Formatting, and Speech-Locked VAD Subtitles.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.88f)
+                )
+            }
+        }
+        Text(
+            text = "Package: ${BuildConfig.APPLICATION_ID} · Build ${BuildConfig.VERSION_CODE}",
+            style = TabularTimeStyle,
+            color = Color.White.copy(alpha = 0.45f)
         )
     }
 }
 
 @Composable
-private fun SettingsSectionCard(
-    title: String,
-    icon: ImageVector,
-    content: @Composable () -> Unit
+private fun AmberFilterChip(
+    selected: Boolean,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val voxoraColors = LocalVoxoraColors.current
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-        border = BorderStroke(1.dp, voxoraColors.cardBorder.copy(alpha = 0.8f))
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = {
+            Text(
+                text = label,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+            )
+        },
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = VoxoraAmber,
+            selectedLabelColor = Color(0xFF140D00),
+            containerColor = VoxoraElevatedCharcoal,
+            labelColor = Color.White.copy(alpha = 0.84f)
+        ),
+        border = FilterChipDefaults.filterChipBorder(
+            enabled = true,
+            selected = selected,
+            borderColor = VoxoraHairlineBorder,
+            selectedBorderColor = VoxoraAmber
+        ),
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun AmberSliderRow(
+    title: String,
+    valueLabel: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    onValueChange: (Float) -> Unit
+) {
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-            content()
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(valueLabel, style = TabularTimeStyle, color = VoxoraAmberBright)
         }
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = valueRange,
+            colors = SliderDefaults.colors(
+                thumbColor = VoxoraAmber,
+                activeTrackColor = VoxoraAmber,
+                inactiveTrackColor = VoxoraHairlineBorder
+            )
+        )
     }
 }
 
@@ -881,17 +1354,28 @@ private fun SettingsSwitchRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 12.dp)
+        ) {
+            Text(title, style = MaterialTheme.typography.titleSmall, color = Color.White)
             Text(
-                subtitle,
+                text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = Color.White.copy(alpha = 0.65f)
             )
         }
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color(0xFF140D00),
+                checkedTrackColor = VoxoraAmber,
+                uncheckedThumbColor = Color.White.copy(alpha = 0.8f),
+                uncheckedTrackColor = VoxoraElevatedCharcoal,
+                uncheckedBorderColor = VoxoraHairlineBorder
+            ),
             modifier = Modifier.testTag(testTag)
         )
     }

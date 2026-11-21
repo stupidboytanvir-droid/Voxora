@@ -191,6 +191,76 @@ enum class SleepTimerOption(val label: String, val durationMinutes: Int) {
     END_OF_VIDEO("End of Video", -1)
 }
 
+enum class AudioEqPreset(val label: String, val bandOffsetsMb: List<Short>) {
+    NORMAL("Normal", listOf(0, 0, 0, 0, 0)),
+    DIALOGUE_BOOST("Dialogue Boost", listOf(-200, 100, 450, 500, 200)),
+    BASS_BOOST("Bass Boost", listOf(600, 400, 0, 100, 150)),
+    CINEMA("Cinema", listOf(350, 150, 250, 300, 400)),
+    MUSIC("Music", listOf(300, 100, -100, 250, 400))
+}
+
+data class DisplayFilterSettings(
+    val eyeCareEnabled: Boolean = false,
+    val brightnessOffset: Float = 0f,     // -0.5f .. +0.5f
+    val contrast: Float = 1.0f,           // 0.5f .. 1.8f
+    val saturation: Float = 1.0f,         // 0.0f .. 2.0f
+    val isMirrored: Boolean = false,
+    val manualRotationDegrees: Int = 0    // 0, 90, 180, 270
+) {
+    val hasActiveFilter: Boolean
+        get() = eyeCareEnabled ||
+            kotlin.math.abs(brightnessOffset) > 0.02f ||
+            kotlin.math.abs(contrast - 1.0f) > 0.02f ||
+            kotlin.math.abs(saturation - 1.0f) > 0.02f ||
+            isMirrored ||
+            manualRotationDegrees != 0
+}
+
+data class ABLoopState(
+    val pointAMs: Long? = null,
+    val pointBMs: Long? = null
+) {
+    val isLooping: Boolean
+        get() = pointAMs != null && pointBMs != null && pointBMs > pointAMs
+}
+
+data class SceneBookmark(
+    val id: Long = 0L,
+    val videoUri: String,
+    val title: String,
+    val timestampMs: Long,
+    val createdAtMs: Long = System.currentTimeMillis()
+)
+
+data class PlaylistSummary(
+    val id: Long,
+    val name: String,
+    val isWatchLater: Boolean,
+    val videoCount: Int,
+    val previewUriString: String?,
+    val createdAtMs: Long
+)
+
+data class PlaylistEntryItem(
+    val id: Long,
+    val playlistId: Long,
+    val videoUri: String,
+    val title: String,
+    val durationMs: Long,
+    val sizeBytes: Long,
+    val folderName: String,
+    val addedAtMs: Long
+)
+
+data class VaultVideoItem(
+    val id: Long = 0L,
+    val originalTitle: String,
+    val filePath: String,
+    val durationMs: Long,
+    val sizeBytes: Long,
+    val addedAtMs: Long = System.currentTimeMillis()
+)
+
 data class UserPreferences(
     val themeMode: ThemeMode = ThemeMode.DARK_CHARCOAL,
     val defaultPlaybackSpeed: Float = 1.0f,
@@ -201,13 +271,22 @@ data class UserPreferences(
     val brightnessGestureEnabled: Boolean = true,
     val volumeGestureEnabled: Boolean = true,
     val doubleTapSeekSeconds: Int = 10,
-    val subtitleFontSizeSp: Float = 18f,
+    val subtitleFontSizeSp: Float = 15f,
     val subtitleBottomPaddingFraction: Float = 0.08f,
     val subtitleVerticalPositionFraction: Float = 0.88f,
     val subtitleTextColor: SubtitleTextColor = SubtitleTextColor.WHITE,
     val subtitleBackgroundOpacity: Float = 0.65f,
     val subtitleDefaultSyncOffsetMs: Long = 0L,
     val autoSubtitleTargetLanguageCode: String = "en",
+    val dualSubtitlesEnabled: Boolean = false,
+    val secondarySubtitleLanguageCode: String = "bn",
+    val secondarySubtitleTextColor: SubtitleTextColor = SubtitleTextColor.YELLOW,
+    val secondarySubtitleFontSizeSp: Float = 14f,
+    val volumeBoostPercent: Int = 0,
+    val audioEqPreset: AudioEqPreset = AudioEqPreset.NORMAL,
+    val eyeCareEnabled: Boolean = false,
+    val vaultPinSha256: String = "",
+    val vaultBiometricEnabled: Boolean = true,
     val minVideoDurationSec: Int = 0,
     val showHiddenFolders: Boolean = false,
     val sortOption: SortOption = SortOption.DATE_DESC,

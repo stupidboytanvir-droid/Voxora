@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
@@ -31,6 +32,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -44,12 +46,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.videoFrameMillis
+import com.voxora.player.R
 import com.voxora.player.model.MediaPermissionState
 import com.voxora.player.model.PlaybackHistoryItem
 import com.voxora.player.model.VideoFolder
@@ -226,7 +230,8 @@ fun VideoRowCard(
     video: VideoItem,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    lastPositionMs: Long? = null
+    lastPositionMs: Long? = null,
+    onMoreClick: (() -> Unit)? = null
 ) {
     val voxoraColors = LocalVoxoraColors.current
     val resolution = FormatUtils.formatResolution(video.width, video.height)
@@ -350,6 +355,21 @@ fun VideoRowCard(
                         text = video.displayName.substringAfterLast('.', "").uppercase(),
                         style = TabularTimeStyle,
                         color = voxoraColors.blueHighlight
+                    )
+                }
+            }
+
+            if (onMoreClick != null) {
+                IconButton(
+                    onClick = onMoreClick,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .testTag("video_more_${video.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.MoreVert,
+                        contentDescription = stringResource(R.string.cd_more_options),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }

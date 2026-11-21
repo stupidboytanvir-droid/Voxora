@@ -8,6 +8,7 @@ import com.voxora.player.data.local.db.VoxoraDatabase
 import com.voxora.player.data.local.power.BatteryMonitor
 import com.voxora.player.data.local.storage.MediaStoreVideoScanner
 import com.voxora.player.data.local.storage.StorageAccessManager
+import com.voxora.player.data.repository.LibraryOrganizationRepository
 import com.voxora.player.data.repository.MediaRepository
 import com.voxora.player.data.repository.PlaybackHistoryRepository
 import com.voxora.player.data.repository.SettingsRepository
@@ -41,6 +42,8 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
     lateinit var mediaRepository: MediaRepository
         private set
     lateinit var historyRepository: PlaybackHistoryRepository
+        private set
+    lateinit var libraryOrganizationRepository: LibraryOrganizationRepository
         private set
     lateinit var settingsRepository: SettingsRepository
         private set
@@ -88,6 +91,11 @@ class VoxoraApplication : Application(), ImageLoaderFactory {
         val scanner = MediaStoreVideoScanner(this)
         mediaRepository = MediaRepository(scanner, storageAccessManager)
         historyRepository = PlaybackHistoryRepository(database.playbackHistoryDao())
+        libraryOrganizationRepository = LibraryOrganizationRepository(
+            bookmarkDao = database.sceneBookmarkDao(),
+            playlistDao = database.playlistDao(),
+            vaultVideoDao = database.vaultVideoDao()
+        )
         settingsRepository = SettingsRepository(this)
         batteryMonitor = BatteryMonitor(this)
         appUpdateManager = AppUpdateManager(this)

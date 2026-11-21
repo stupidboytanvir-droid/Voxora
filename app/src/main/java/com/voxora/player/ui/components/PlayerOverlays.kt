@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -39,23 +40,36 @@ import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BrightnessHigh
+import androidx.compose.material.icons.rounded.Cast
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ChildCare
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ContentCut
+import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FastRewind
 import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.FullscreenExit
+import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.ScreenRotation
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.ZoomOutMap
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -79,8 +93,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -93,8 +109,11 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.voxora.player.R
+import com.voxora.player.model.ABLoopState
 import com.voxora.player.model.AspectRatioMode
+import com.voxora.player.model.AudioEqPreset
 import com.voxora.player.model.AudioTrackInfo
+import com.voxora.player.model.SceneBookmark
 import com.voxora.player.model.SleepTimerOption
 import com.voxora.player.model.SubtitleTextColor
 import com.voxora.player.ui.theme.TabularTimeStyle
@@ -110,21 +129,25 @@ import com.voxora.player.util.FormatUtils
 import kotlin.math.roundToInt
 
 /**
- * Draggable, customizable Subtitle Overlay positioned dynamically from 5% (Top) to 95% (Bottom).
- * Users can drag directly on the subtitle box vertically to reposition it smoothly on screen.
+ * Draggable, customizable Dual-Language Subtitle Overlay positioned dynamically from 5% (Top) to 95% (Bottom).
+ * Strictly hides completely during silence gaps when both primary and secondary cues are null/blank.
  */
 @Composable
 fun DraggableSubtitleOverlay(
     subtitleText: String?,
+    secondarySubtitleText: String? = null,
     fontSizeSp: Float,
+    secondaryFontSizeSp: Float = 13f,
     verticalPositionFraction: Float,
     textColor: SubtitleTextColor,
+    secondaryTextColor: SubtitleTextColor = SubtitleTextColor.CYAN,
     backgroundOpacity: Float,
     isLocked: Boolean,
     onVerticalPositionChange: (Float) -> Unit
 ) {
-    val isVisible = !subtitleText.isNullOrBlank()
-    if (!isVisible) return
+    val hasPrimary = !subtitleText.isNullOrBlank()
+    val hasSecondary = !secondarySubtitleText.isNullOrBlank()
+    if (!hasPrimary && !hasSecondary) return
 
     var isDragging by remember { mutableStateOf(false) }
     var liveFraction by remember(verticalPositionFraction) {
@@ -135,7 +158,7 @@ fun DraggableSubtitleOverlay(
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val totalHeightPx = with(density) { maxHeight.toPx() }.coerceAtLeast(1f)
-        val estimatedBoxHeightPx = with(density) { 80.dp.toPx() }
+        val estimatedBoxHeightPx = with(density) { if (hasSecondary) 108.dp.toPx() else 72.dp.toPx() }
         val usableHeightPx = (totalHeightPx - estimatedBoxHeightPx).coerceAtLeast(1f)
         val displayFraction = if (isDragging) liveFraction else verticalPositionFraction.coerceIn(0.05f, 0.95f)
         val offsetYPx = (usableHeightPx * displayFraction).roundToInt()
@@ -189,15 +212,32 @@ fun DraggableSubtitleOverlay(
                 shape = RoundedCornerShape(12.dp),
                 border = if (isDragging) BorderStroke(1.dp, VoxoraCyan.copy(alpha = 0.8f)) else null
             ) {
-                Text(
-                    text = subtitleText.orEmpty(),
-                    color = Color(textColor.colorHex),
-                    fontSize = fontSizeSp.sp,
-                    lineHeight = (fontSizeSp * 1.32f).sp,
-                    fontWeight = FontWeight.Medium,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 7.dp)
-                )
+                Column(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    if (hasPrimary) {
+                        Text(
+                            text = subtitleText.orEmpty(),
+                            color = Color(textColor.colorHex),
+                            fontSize = fontSizeSp.sp,
+                            lineHeight = (fontSizeSp * 1.3f).sp,
+                            fontWeight = FontWeight.Medium,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                    if (hasSecondary) {
+                        Text(
+                            text = secondarySubtitleText.orEmpty(),
+                            color = Color(secondaryTextColor.colorHex),
+                            fontSize = secondaryFontSizeSp.sp,
+                            lineHeight = (secondaryFontSizeSp * 1.28f).sp,
+                            fontWeight = FontWeight.Normal,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
             }
         }
     }
@@ -407,6 +447,14 @@ fun PlayerControlsOverlay(
     playbackSpeed: Float,
     aspectRatioMode: AspectRatioMode,
     isFullScreen: Boolean,
+    isBackgroundPlayActive: Boolean,
+    volumeBoostPercent: Int,
+    eqPreset: AudioEqPreset,
+    eyeCareEnabled: Boolean,
+    abLoop: ABLoopState,
+    bookmarks: List<SceneBookmark>,
+    zoomScale: Float,
+    isExtractingAudio: Boolean,
     resumedFromMs: Long?,
     autoSubtitleActive: Boolean,
     autoSubtitleBadgeText: String,
@@ -414,18 +462,31 @@ fun PlayerControlsOverlay(
     canEnterPip: Boolean,
     onBack: () -> Unit,
     onToggleLock: () -> Unit,
+    onEnableKidsLock: () -> Unit,
     onRotateScreen: () -> Unit,
     onToggleFullScreen: () -> Unit,
+    onToggleBackgroundPlay: () -> Unit,
+    onCaptureScreenshot: () -> Unit,
+    onOpenCast: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onSeekTo: (Long) -> Unit,
     onRewind: () -> Unit,
     onForward: () -> Unit,
+    onStepPrevFrame: () -> Unit,
+    onStepNextFrame: () -> Unit,
     onOpenSpeed: () -> Unit,
     onOpenSubtitles: () -> Unit,
     onOpenAudioTracks: () -> Unit,
+    onOpenAudioFx: () -> Unit,
+    onOpenDisplaySettings: () -> Unit,
+    onOpenBookmarks: () -> Unit,
+    onOpenABLoop: () -> Unit,
+    onOpenClipCutter: () -> Unit,
+    onExtractAudio: () -> Unit,
     onOpenAspectRatio: () -> Unit,
     onOpenSleepTimer: () -> Unit,
     onEnterPip: () -> Unit,
+    onResetZoom: () -> Unit,
     onTapAiDubbingComingSoon: () -> Unit,
     onStartFromBeginning: () -> Unit,
     onDismissResumeBanner: () -> Unit,
@@ -492,7 +553,7 @@ fun PlayerControlsOverlay(
                             Color(0xC80B0D12),
                             Color(0x1F0B0D12),
                             Color(0x1F0B0D12),
-                            Color(0xDE0B0D12)
+                            Color(0xE00B0D12)
                         )
                     )
                 )
@@ -503,7 +564,7 @@ fun PlayerControlsOverlay(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
@@ -567,6 +628,57 @@ fun PlayerControlsOverlay(
                         }
                     }
 
+                    IconButton(
+                        onClick = {
+                            onUserInteraction()
+                            onCaptureScreenshot()
+                        },
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("player_screenshot_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PhotoCamera,
+                            contentDescription = stringResource(R.string.cd_screenshot),
+                            tint = Color.White,
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            onUserInteraction()
+                            onToggleBackgroundPlay()
+                        },
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("player_background_play_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Headphones,
+                            contentDescription = stringResource(R.string.cd_background_play),
+                            tint = if (isBackgroundPlayActive) VoxoraCyan else Color.White,
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            onUserInteraction()
+                            onOpenCast()
+                        },
+                        modifier = Modifier
+                            .size(44.dp)
+                            .testTag("player_cast_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Cast,
+                            contentDescription = stringResource(R.string.cd_cast),
+                            tint = Color.White,
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
+
                     if (canEnterPip) {
                         IconButton(
                             onClick = {
@@ -574,13 +686,14 @@ fun PlayerControlsOverlay(
                                 onEnterPip()
                             },
                             modifier = Modifier
-                                .size(48.dp)
+                                .size(44.dp)
                                 .testTag("player_pip_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.PictureInPictureAlt,
                                 contentDescription = stringResource(R.string.cd_pip),
-                                tint = Color.White
+                                tint = Color.White,
+                                modifier = Modifier.size(21.dp)
                             )
                         }
                     }
@@ -591,71 +704,100 @@ fun PlayerControlsOverlay(
                             onOpenSleepTimer()
                         },
                         modifier = Modifier
-                            .size(48.dp)
+                            .size(44.dp)
                             .testTag("player_sleep_timer_button")
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Bedtime,
                             contentDescription = stringResource(R.string.cd_sleep_timer),
-                            tint = if (sleepTimerState.isActive) VoxoraCyan else Color.White
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            onUserInteraction()
-                            onOpenAudioTracks()
-                        },
-                        modifier = Modifier
-                            .size(48.dp)
-                            .testTag("player_audio_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Audiotrack,
-                            contentDescription = stringResource(R.string.cd_audio_track),
-                            tint = Color.White
+                            tint = if (sleepTimerState.isActive) VoxoraCyan else Color.White,
+                            modifier = Modifier.size(21.dp)
                         )
                     }
                 }
 
-                // Secondary subtle chips row (Sleep Timer active pill / Locked AI Dubbing Coming Soon pill)
+                // Secondary subtle status chips row
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp),
+                        .padding(horizontal = 10.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (sleepTimerState.isActive) {
-                        Surface(
-                            onClick = {
-                                onUserInteraction()
-                                onOpenSleepTimer()
-                            },
-                            color = VoxoraGlassDark,
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, VoxoraCyan.copy(alpha = 0.5f))
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (sleepTimerState.isActive) {
+                            Surface(
+                                onClick = {
+                                    onUserInteraction()
+                                    onOpenSleepTimer()
+                                },
+                                color = VoxoraGlassDark,
+                                shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.dp, VoxoraCyan.copy(alpha = 0.5f))
                             ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Bedtime,
-                                    contentDescription = null,
-                                    tint = VoxoraCyan,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Text(
-                                    text = "Sleep: ${sleepTimerState.badgeText()}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color.White
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(Icons.Rounded.Bedtime, contentDescription = null, tint = VoxoraCyan, modifier = Modifier.size(13.dp))
+                                    Text("Sleep ${sleepTimerState.badgeText()}", style = MaterialTheme.typography.labelSmall, color = Color.White)
+                                }
                             }
                         }
-                    } else {
-                        Spacer(modifier = Modifier.width(1.dp))
+
+                        if (abLoop.isLooping || abLoop.pointAMs != null) {
+                            Surface(
+                                onClick = {
+                                    onUserInteraction()
+                                    onOpenABLoop()
+                                },
+                                color = VoxoraGlassDark,
+                                shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.dp, VoxoraElectricPurpleBright.copy(alpha = 0.7f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(Icons.Rounded.Repeat, contentDescription = null, tint = VoxoraCyan, modifier = Modifier.size(13.dp))
+                                    Text(
+                                        text = if (abLoop.isLooping) "A–B Loop ON" else "Point A Set",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                        }
+
+                        if (zoomScale > 1.02f) {
+                            Surface(
+                                onClick = {
+                                    onUserInteraction()
+                                    onResetZoom()
+                                },
+                                color = VoxoraGlassDark,
+                                shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.dp, VoxoraCyan.copy(alpha = 0.65f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(Icons.Rounded.ZoomOutMap, contentDescription = null, tint = VoxoraCyan, modifier = Modifier.size(13.dp))
+                                    Text(
+                                        text = "${String.format(java.util.Locale.US, "%.1f", zoomScale)}x · Reset",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     // Locked "AI Audio Dubbing — Coming Soon" pill
@@ -730,11 +872,11 @@ fun PlayerControlsOverlay(
                 }
             }
 
-            // Center Transport Controls
+            // Center Transport Controls (+ Frame-by-Frame step buttons when paused)
             Row(
                 modifier = Modifier.align(Alignment.Center),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(30.dp)
+                horizontalArrangement = Arrangement.spacedBy(18.dp)
             ) {
                 IconButton(
                     onClick = {
@@ -742,7 +884,7 @@ fun PlayerControlsOverlay(
                         onRewind()
                     },
                     modifier = Modifier
-                        .size(56.dp)
+                        .size(54.dp)
                         .clip(CircleShape)
                         .background(VoxoraGlassDark)
                         .border(1.dp, VoxoraGlassBorder, CircleShape)
@@ -752,8 +894,36 @@ fun PlayerControlsOverlay(
                         imageVector = Icons.Rounded.Replay10,
                         contentDescription = stringResource(R.string.cd_rewind),
                         tint = Color.White,
-                        modifier = Modifier.size(30.dp)
+                        modifier = Modifier.size(28.dp)
                     )
+                }
+
+                if (!isPlaying) {
+                    Surface(
+                        onClick = {
+                            onUserInteraction()
+                            onStepPrevFrame()
+                        },
+                        color = VoxoraGlassDark,
+                        shape = CircleShape,
+                        border = BorderStroke(1.dp, VoxoraCyan.copy(alpha = 0.6f)),
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("player_prev_frame_button")
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.SkipPrevious,
+                                contentDescription = stringResource(R.string.cd_step_prev_frame),
+                                tint = VoxoraCyan,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text("-1F", style = MaterialTheme.typography.labelSmall, color = Color.White)
+                        }
+                    }
                 }
 
                 IconButton(
@@ -777,13 +947,41 @@ fun PlayerControlsOverlay(
                     )
                 }
 
+                if (!isPlaying) {
+                    Surface(
+                        onClick = {
+                            onUserInteraction()
+                            onStepNextFrame()
+                        },
+                        color = VoxoraGlassDark,
+                        shape = CircleShape,
+                        border = BorderStroke(1.dp, VoxoraCyan.copy(alpha = 0.6f)),
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("player_next_frame_button")
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.SkipNext,
+                                contentDescription = stringResource(R.string.cd_step_next_frame),
+                                tint = VoxoraCyan,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text("+1F", style = MaterialTheme.typography.labelSmall, color = Color.White)
+                        }
+                    }
+                }
+
                 IconButton(
                     onClick = {
                         onUserInteraction()
                         onForward()
                     },
                     modifier = Modifier
-                        .size(56.dp)
+                        .size(54.dp)
                         .clip(CircleShape)
                         .background(VoxoraGlassDark)
                         .border(1.dp, VoxoraGlassBorder, CircleShape)
@@ -793,12 +991,12 @@ fun PlayerControlsOverlay(
                         imageVector = Icons.Rounded.Forward10,
                         contentDescription = stringResource(R.string.cd_forward),
                         tint = Color.White,
-                        modifier = Modifier.size(30.dp)
+                        modifier = Modifier.size(28.dp)
                     )
                 }
             }
 
-            // Bottom Bar: Seekbar + Action Strip (No Battery Optimizer Icon)
+            // Bottom Bar: Seekbar (with Bookmark Markers + A-B Loop Highlight) + Pro Quick Action Strip
             var isScrubbing by remember { mutableStateOf(false) }
             var scrubFraction by remember { mutableFloatStateOf(0f) }
             val safeDuration = durationMs.coerceAtLeast(1L)
@@ -813,7 +1011,8 @@ fun PlayerControlsOverlay(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -824,27 +1023,66 @@ fun PlayerControlsOverlay(
                         style = TabularTimeStyle,
                         color = Color.White
                     )
-                    Slider(
-                        value = sliderValue,
-                        onValueChange = { value ->
-                            onUserInteraction()
-                            isScrubbing = true
-                            scrubFraction = value
-                        },
-                        onValueChangeFinished = {
-                            onSeekTo((scrubFraction * safeDuration).toLong())
-                            isScrubbing = false
-                        },
-                        colors = SliderDefaults.colors(
-                            thumbColor = VoxoraCyan,
-                            activeTrackColor = VoxoraElectricPurple,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.24f)
-                        ),
+                    Box(
                         modifier = Modifier
                             .weight(1f)
-                            .padding(horizontal = 10.dp)
-                            .testTag("player_seek_bar")
-                    )
+                            .padding(horizontal = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Slider(
+                            value = sliderValue,
+                            onValueChange = { value ->
+                                onUserInteraction()
+                                isScrubbing = true
+                                scrubFraction = value
+                            },
+                            onValueChangeFinished = {
+                                onSeekTo((scrubFraction * safeDuration).toLong())
+                                isScrubbing = false
+                            },
+                            colors = SliderDefaults.colors(
+                                thumbColor = VoxoraCyan,
+                                activeTrackColor = VoxoraElectricPurple,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.24f)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("player_seek_bar")
+                        )
+
+                        // Overlay Scene Bookmark markers & A-B Loop highlight along seekbar track
+                        if (durationMs > 0L && (bookmarks.isNotEmpty() || abLoop.pointAMs != null)) {
+                            Canvas(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(22.dp)
+                                    .padding(horizontal = 10.dp)
+                            ) {
+                                val cy = size.height / 2f
+                                if (abLoop.pointAMs != null && abLoop.pointBMs != null) {
+                                    val xA = (abLoop.pointAMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f) * size.width
+                                    val xB = (abLoop.pointBMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f) * size.width
+                                    drawLine(
+                                        color = VoxoraCyan,
+                                        start = Offset(xA, cy),
+                                        end = Offset(xB, cy),
+                                        strokeWidth = 6f,
+                                        cap = StrokeCap.Round
+                                    )
+                                }
+                                bookmarks.forEach { bm ->
+                                    val x = (bm.timestampMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f) * size.width
+                                    drawLine(
+                                        color = VoxoraCyan,
+                                        start = Offset(x, cy - 8f),
+                                        end = Offset(x, cy + 8f),
+                                        strokeWidth = 4f,
+                                        cap = StrokeCap.Round
+                                    )
+                                }
+                            }
+                        }
+                    }
                     Text(
                         text = FormatUtils.formatDuration(durationMs),
                         style = TabularTimeStyle,
@@ -852,114 +1090,153 @@ fun PlayerControlsOverlay(
                     )
                 }
 
+                // Horizontally scrollable Pro Quick-Action Strip (Obsidian Glass Pills, ZERO Battery Optimizer)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(
-                            onClick = {
-                                onUserInteraction()
-                                onToggleLock()
-                            },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("player_lock_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.LockOpen,
-                                contentDescription = stringResource(R.string.cd_lock_screen),
-                                tint = Color.White
-                            )
-                        }
-                        IconButton(
-                            onClick = {
-                                onUserInteraction()
-                                onRotateScreen()
-                            },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("player_rotate_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.ScreenRotation,
-                                contentDescription = stringResource(R.string.cd_rotate_screen),
-                                tint = Color.White
-                            )
-                        }
-                        TextButton(
-                            onClick = {
-                                onUserInteraction()
-                                onOpenSpeed()
-                            },
-                            contentPadding = PaddingValues(horizontal = 8.dp),
-                            modifier = Modifier.testTag("player_speed_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Speed,
-                                contentDescription = stringResource(R.string.cd_speed),
-                                tint = VoxoraCyan,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "${playbackSpeed}x",
-                                style = TabularTimeStyle,
-                                color = Color.White
-                            )
-                        }
-                    }
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        TextButton(
-                            onClick = {
-                                onUserInteraction()
-                                onOpenAspectRatio()
-                            },
-                            contentPadding = PaddingValues(horizontal = 8.dp),
-                            modifier = Modifier.testTag("player_aspect_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.AspectRatio,
-                                contentDescription = stringResource(R.string.cd_aspect_ratio),
-                                tint = Color.White,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = aspectRatioMode.label,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Color.White
-                            )
-                        }
-
-                        IconButton(
-                            onClick = {
-                                onUserInteraction()
-                                onToggleFullScreen()
-                            },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("player_fullscreen_button")
-                        ) {
-                            Icon(
-                                imageVector = if (isFullScreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
-                                contentDescription = stringResource(R.string.cd_fullscreen),
-                                tint = Color.White
-                            )
-                        }
-                    }
+                    PlayerActionPill(
+                        icon = Icons.Rounded.LockOpen,
+                        label = "Lock",
+                        contentDescription = stringResource(R.string.cd_lock_screen),
+                        onClick = { onUserInteraction(); onToggleLock() },
+                        testTag = "player_lock_button"
+                    )
+                    PlayerActionPill(
+                        icon = Icons.Rounded.ChildCare,
+                        label = "Kids",
+                        contentDescription = stringResource(R.string.cd_kids_lock),
+                        onClick = { onUserInteraction(); onEnableKidsLock() },
+                        testTag = "player_kids_lock_button"
+                    )
+                    PlayerActionPill(
+                        icon = Icons.Rounded.ScreenRotation,
+                        label = "Rotate",
+                        contentDescription = stringResource(R.string.cd_rotate_screen),
+                        onClick = { onUserInteraction(); onRotateScreen() },
+                        testTag = "player_rotate_button"
+                    )
+                    PlayerActionPill(
+                        icon = Icons.Rounded.Speed,
+                        label = "${playbackSpeed}x",
+                        contentDescription = stringResource(R.string.cd_speed),
+                        highlighted = kotlin.math.abs(playbackSpeed - 1.0f) > 0.05f,
+                        onClick = { onUserInteraction(); onOpenSpeed() },
+                        testTag = "player_speed_button"
+                    )
+                    PlayerActionPill(
+                        icon = Icons.Rounded.Equalizer,
+                        label = if (volumeBoostPercent > 0) "FX +$volumeBoostPercent%" else if (eqPreset != AudioEqPreset.NORMAL) eqPreset.label else "Audio FX",
+                        contentDescription = stringResource(R.string.cd_audio_fx),
+                        highlighted = volumeBoostPercent > 0 || eqPreset != AudioEqPreset.NORMAL,
+                        onClick = { onUserInteraction(); onOpenAudioFx() },
+                        testTag = "player_audio_fx_button"
+                    )
+                    PlayerActionPill(
+                        icon = Icons.Rounded.Visibility,
+                        label = if (eyeCareEnabled) "Eye Care" else "Display",
+                        contentDescription = stringResource(R.string.cd_display_settings),
+                        highlighted = eyeCareEnabled,
+                        onClick = { onUserInteraction(); onOpenDisplaySettings() },
+                        testTag = "player_display_button"
+                    )
+                    PlayerActionPill(
+                        icon = Icons.Rounded.Bookmark,
+                        label = if (bookmarks.isNotEmpty()) "Marks (${bookmarks.size})" else "Bookmark",
+                        contentDescription = stringResource(R.string.cd_bookmarks),
+                        highlighted = bookmarks.isNotEmpty(),
+                        onClick = { onUserInteraction(); onOpenBookmarks() },
+                        testTag = "player_bookmarks_button"
+                    )
+                    PlayerActionPill(
+                        icon = Icons.Rounded.Repeat,
+                        label = if (abLoop.isLooping) "A–B ON" else "A–B Loop",
+                        contentDescription = stringResource(R.string.cd_ab_loop),
+                        highlighted = abLoop.isLooping || abLoop.pointAMs != null,
+                        onClick = { onUserInteraction(); onOpenABLoop() },
+                        testTag = "player_ab_loop_button"
+                    )
+                    PlayerActionPill(
+                        icon = Icons.Rounded.ContentCut,
+                        label = "Clip",
+                        contentDescription = stringResource(R.string.cd_clip_cutter),
+                        onClick = { onUserInteraction(); onOpenClipCutter() },
+                        testTag = "player_clip_cutter_button"
+                    )
+                    PlayerActionPill(
+                        icon = Icons.Rounded.MusicNote,
+                        label = if (isExtractingAudio) "Extracting..." else "To Audio",
+                        contentDescription = stringResource(R.string.cd_extract_audio),
+                        highlighted = isExtractingAudio,
+                        onClick = { onUserInteraction(); onExtractAudio() },
+                        testTag = "player_extract_audio_button"
+                    )
+                    PlayerActionPill(
+                        icon = Icons.Rounded.Audiotrack,
+                        label = "Tracks",
+                        contentDescription = stringResource(R.string.cd_audio_track),
+                        onClick = { onUserInteraction(); onOpenAudioTracks() },
+                        testTag = "player_audio_button"
+                    )
+                    PlayerActionPill(
+                        icon = Icons.Rounded.AspectRatio,
+                        label = aspectRatioMode.label,
+                        contentDescription = stringResource(R.string.cd_aspect_ratio),
+                        onClick = { onUserInteraction(); onOpenAspectRatio() },
+                        testTag = "player_aspect_button"
+                    )
+                    PlayerActionPill(
+                        icon = if (isFullScreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                        label = if (isFullScreen) "Exit" else "Full",
+                        contentDescription = stringResource(R.string.cd_fullscreen),
+                        onClick = { onUserInteraction(); onToggleFullScreen() },
+                        testTag = "player_fullscreen_button"
+                    )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PlayerActionPill(
+    icon: ImageVector,
+    label: String,
+    contentDescription: String,
+    highlighted: Boolean = false,
+    onClick: () -> Unit,
+    testTag: String
+) {
+    Surface(
+        onClick = onClick,
+        color = if (highlighted) VoxoraElectricPurple.copy(alpha = 0.34f) else VoxoraGlassDark,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (highlighted) VoxoraCyan else Color.White.copy(alpha = 0.14f)
+        ),
+        modifier = Modifier.testTag(testTag)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = if (highlighted) VoxoraCyan else Color.White,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.White,
+                maxLines = 1
+            )
         }
     }
 }

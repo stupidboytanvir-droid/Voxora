@@ -11,11 +11,13 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
 import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import com.voxora.player.data.local.subtitles.SubtitleParser
+import com.voxora.player.model.AudioEqPreset
 import com.voxora.player.model.AudioTrackInfo
 import com.voxora.player.model.SubtitleCue
 import com.voxora.player.model.SubtitleTrackInfo
@@ -33,6 +35,11 @@ data class PlayerPlaybackState(
     val playbackSpeed: Float = 1.0f,
     val videoWidth: Int = 0,
     val videoHeight: Int = 0,
+    val videoRotationDegrees: Int = 0,
+    val effectiveVideoWidth: Int = 0,
+    val effectiveVideoHeight: Int = 0,
+    val frameRate: Float = 30f,
+    val audioSessionId: Int = 0,
     val audioTracks: List<AudioTrackInfo> = emptyList(),
     val subtitleTracks: List<SubtitleTrackInfo> = emptyList(),
     val activeEmbeddedCueText: String? = null,
@@ -44,9 +51,12 @@ data class PlayerPlaybackState(
 )
 
 /**
- * Clean Media3 ExoPlayer engine configured for battery-efficient hardware-accelerated
- * video decoding, clean AudioFocus management, zero lingering WakeLocks, track selection,
- * playback speed, embedded cues, and external SRT/VTT subtitle rendering.
+ * Flagship Media3 ExoPlayer engine for VOXORA v2.4.0:
+ * - Hardware-preferred MediaCodec decoding & clean AudioFocus management
+ * - Smart effective video dimension computation (accounting for `unappliedRotationDegrees`)
+ * - Audio FX integration (`LoudnessEnhancer` 0-200% boost + 5-band `Equalizer`)
+ * - Direct local files + network streams (MP4, MKV, HLS `.m3u8`, DASH `.mpd`)
+ * - Frame-by-frame stepping (`-1 Frame` / `+1 Frame`) when paused
  */
 @OptIn(UnstableApi::class)
 class VoxoraPlayerEngine(context: Context) {
@@ -67,6 +77,8 @@ class VoxoraPlayerEngine(context: Context) {
         .setWakeMode(C.WAKE_MODE_NONE)
         .build()
 
+    val audioFxController = AudioFxController()
+
     private val _state = MutableStateFlow(PlayerPlaybackState())
     val state: StateFlow<PlayerPlaybackState> = _state.asStateFlow()
 
@@ -80,21 +92,50 @@ class VoxoraPlayerEngine(context: Context) {
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
+            val fps = exoPlayer.videoFormat?.frameRate?.takeIf { it > 1f } ?: _state.value.frameRate
             _state.value = _state.value.copy(
                 isBuffering = playbackState == Player.STATE_BUFFERING,
                 isEnded = playbackState == Player.STATE_ENDED,
-                durationMs = exoPlayer.duration.takeIf { it > 0L } ?: _state.value.durationMs
+                durationMs = exoPlayer.duration.takeIf { it > 0L } ?: _state.value.durationMs,
+                frameRate = fps
             )
+            if (playbackState == Player.STATE_READY) {
+                val sid = exoPlayer.audioSessionId
+                if (sid > 0 && sid != _state.value.audioSessionId) {
+                    audioFxController.attachToAudioSession(sid)
+                    _state.value = _state.value.copy(audioSessionId = sid)
+                }
+            }
+        }
+
+        override fun onAudioSessionIdChanged(audioSessionId: Int) {
+            if (audioSessionId > 0) {
+                audioFxController.attachToAudioSession(audioSessionId)
+                _state.value = _state.value.copy(audioSessionId = audioSessionId)
+            }
         }
 
         override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
             _state.value = _state.value.copy(playbackSpeed = playbackParameters.speed)
         }
 
-        override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+        override fun onVideoSizeChanged(videoSize: VideoSize) {
+            val rotation = exoPlayer.videoFormat?.rotationDegrees
+                ?.takeIf { it != 0 }
+                ?: videoSize.unappliedRotationDegrees
+            val (effW, effH) = computeEffectiveVideoDimensions(
+                width = videoSize.width,
+                height = videoSize.height,
+                rotationDegrees = rotation
+            )
+            val fps = exoPlayer.videoFormat?.frameRate?.takeIf { it > 1f } ?: _state.value.frameRate
             _state.value = _state.value.copy(
                 videoWidth = videoSize.width,
-                videoHeight = videoSize.height
+                videoHeight = videoSize.height,
+                videoRotationDegrees = rotation,
+                effectiveVideoWidth = effW,
+                effectiveVideoHeight = effH,
+                frameRate = fps
             )
         }
 
@@ -117,6 +158,10 @@ class VoxoraPlayerEngine(context: Context) {
                 PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
                 PlaybackException.ERROR_CODE_IO_NO_PERMISSION ->
                     "Unable to access this video file. It may have been moved, deleted, or permission was revoked."
+                PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+                PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
+                    "Unable to connect to the network stream. Check the URL and your internet connection."
                 PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
                 PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
                 PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ->
@@ -202,6 +247,18 @@ class VoxoraPlayerEngine(context: Context) {
         seekTo(exoPlayer.currentPosition + deltaMs)
     }
 
+    /**
+     * Frame-by-frame stepping (`-1 Frame` / `+1 Frame`) when paused.
+     */
+    fun stepFrame(forward: Boolean) {
+        if (isReleased) return
+        if (exoPlayer.isPlaying) exoPlayer.pause()
+        val fps = _state.value.frameRate.coerceIn(12f, 120f)
+        val frameDurationMs = (1_000f / fps).toLong().coerceAtLeast(16L)
+        val delta = if (forward) frameDurationMs else -frameDurationMs
+        seekTo(exoPlayer.currentPosition + delta)
+    }
+
     fun setPlaybackSpeed(speed: Float) {
         if (isReleased) return
         val clamped = speed.coerceIn(0.25f, 3.0f)
@@ -209,13 +266,21 @@ class VoxoraPlayerEngine(context: Context) {
         _state.value = _state.value.copy(playbackSpeed = clamped)
     }
 
-    /**
-     * Adjusts original video track playback volume in real time for the AI Dubbing mixer
-     * without pausing or interrupting Media3 playback.
-     */
     fun setOriginalAudioVolume(volume: Float) {
         if (isReleased) return
         exoPlayer.volume = volume.coerceIn(0f, 1f)
+    }
+
+    fun applyVolumeBoost(percent: Int) {
+        val sid = exoPlayer.audioSessionId
+        if (sid > 0) audioFxController.attachToAudioSession(sid)
+        audioFxController.applyVolumeBoost(percent)
+    }
+
+    fun applyEqPreset(preset: AudioEqPreset) {
+        val sid = exoPlayer.audioSessionId
+        if (sid > 0) audioFxController.attachToAudioSession(sid)
+        audioFxController.applyEqPreset(preset)
     }
 
     fun selectAudioTrack(track: AudioTrackInfo) {
@@ -317,6 +382,7 @@ class VoxoraPlayerEngine(context: Context) {
     fun release() {
         if (!isReleased) {
             isReleased = true
+            audioFxController.release()
             exoPlayer.removeListener(listener)
             exoPlayer.release()
         }
@@ -395,5 +461,35 @@ class VoxoraPlayerEngine(context: Context) {
         if (code == "und" || code.isBlank()) return "Unknown"
         val locale = Locale.forLanguageTag(code)
         return locale.displayLanguage.takeIf { it.isNotBlank() && it != code } ?: code.uppercase()
+    }
+
+    companion object {
+        /**
+         * Computes the true visual (width, height) after applying rotation metadata
+         * (`unappliedRotationDegrees` / format rotation). Swaps width and height for 90°/270°.
+         */
+        fun computeEffectiveVideoDimensions(
+            width: Int,
+            height: Int,
+            rotationDegrees: Int
+        ): Pair<Int, Int> {
+            val norm = ((rotationDegrees % 360) + 360) % 360
+            return if (norm == 90 || norm == 270) {
+                height to width
+            } else {
+                width to height
+            }
+        }
+
+        fun isLandscapeVideo(effectiveWidth: Int, effectiveHeight: Int): Boolean {
+            return effectiveWidth > 0 && effectiveHeight > 0 && effectiveWidth > effectiveHeight
+        }
+
+        fun isNetworkStreamUri(uriString: String): Boolean {
+            val lower = uriString.trim().lowercase(Locale.ROOT)
+            return lower.startsWith("http://") ||
+                lower.startsWith("https://") ||
+                lower.startsWith("rtsp://")
+        }
     }
 }

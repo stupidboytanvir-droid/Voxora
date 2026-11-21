@@ -10,6 +10,12 @@ plugins {
   alias(libs.plugins.google.services)
 }
 
+val sdkDirPath = providers.environmentVariable("ANDROID_SDK_ROOT").orNull
+  ?: providers.environmentVariable("ANDROID_HOME").orNull
+val hasSdkCmake = !sdkDirPath.isNullOrBlank() && file("$sdkDirPath/cmake/3.31.6").exists()
+val isCiBuild = providers.environmentVariable("CI").orNull?.equals("true", ignoreCase = true) == true
+val enableNativeWhisperBuild = isCiBuild || hasSdkCmake
+
 android {
   namespace = "com.voxora.player"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
@@ -19,8 +25,8 @@ android {
     applicationId = "com.voxora.player"
     minSdk = 24
     targetSdk = 36
-    versionCode = 16
-    versionName = "2.3.0"
+    versionCode = 17
+    versionName = "2.4.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -28,13 +34,15 @@ android {
       abiFilters += listOf("arm64-v8a", "x86_64")
     }
 
-    externalNativeBuild {
-      cmake {
-        cppFlags += listOf("-std=c++17", "-O3")
-        arguments += listOf(
-          "-DANDROID_STL=c++_shared",
-          "-DGGML_OPENMP=OFF"
-        )
+    if (enableNativeWhisperBuild) {
+      externalNativeBuild {
+        cmake {
+          cppFlags += listOf("-std=c++17", "-O3")
+          arguments += listOf(
+            "-DANDROID_STL=c++_shared",
+            "-DGGML_OPENMP=OFF"
+          )
+        }
       }
     }
   }
@@ -72,10 +80,12 @@ android {
       signingConfig = signingConfigs.getByName("debugConfig")
     }
   }
-  externalNativeBuild {
-    cmake {
-      path = file("src/main/cpp/CMakeLists.txt")
-      version = "3.31.6"
+  if (enableNativeWhisperBuild) {
+    externalNativeBuild {
+      cmake {
+        path = file("src/main/cpp/CMakeLists.txt")
+        version = "3.31.6"
+      }
     }
   }
   compileOptions {
@@ -146,6 +156,8 @@ dependencies {
   implementation(libs.coil.compose)
   implementation(libs.coil.video)
   implementation(libs.androidx.media3.exoplayer)
+  implementation(libs.androidx.media3.exoplayer.hls)
+  implementation(libs.androidx.media3.exoplayer.dash)
   implementation(libs.androidx.media3.common)
   implementation(libs.androidx.media3.ui)
   implementation(libs.androidx.media3.ui.compose)

@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.History
@@ -36,7 +35,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -61,7 +59,9 @@ import com.voxora.player.ui.screens.FoldersScreen
 import com.voxora.player.ui.screens.HistoryScreen
 import com.voxora.player.ui.screens.HomeScreen
 import com.voxora.player.ui.screens.PlayerScreen
+import com.voxora.player.ui.screens.PrivateVaultScreen
 import com.voxora.player.ui.screens.SettingsScreen
+import com.voxora.player.ui.screens.StorageCleanerScreen
 import com.voxora.player.ui.screens.VideosScreen
 import com.voxora.player.ui.theme.LocalVoxoraColors
 import com.voxora.player.ui.viewmodel.LibraryViewModel
@@ -77,6 +77,8 @@ import java.io.File
 @Serializable data class FolderDetailRoute(val bucketId: String, val folderName: String)
 @Serializable data object HistoryRoute
 @Serializable data object SettingsRoute
+@Serializable data object PrivateVaultRoute
+@Serializable data object StorageCleanerRoute
 @Serializable data class PlayerRoute(
     val uriString: String,
     val title: String,
@@ -111,6 +113,12 @@ fun VoxoraApp(
     val updateViewModel: UpdateViewModel = viewModel(factory = UpdateViewModel.Factory(app))
 
     val libraryState by libraryViewModel.uiState.collectAsStateWithLifecycle()
+    val playlists by libraryViewModel.playlists.collectAsStateWithLifecycle()
+    val allPlaylistItems by libraryViewModel.allPlaylistItems.collectAsStateWithLifecycle()
+    val vaultVideos by libraryViewModel.vaultVideos.collectAsStateWithLifecycle()
+    val cleanerReport by libraryViewModel.cleanerReport.collectAsStateWithLifecycle()
+    val libraryMessage by libraryViewModel.libraryMessage.collectAsStateWithLifecycle()
+
     val preferences by settingsViewModel.preferences.collectAsStateWithLifecycle()
     val statusBanner by settingsViewModel.statusBanner.collectAsStateWithLifecycle()
     val updateState by updateViewModel.updateState.collectAsStateWithLifecycle()
@@ -167,19 +175,16 @@ fun VoxoraApp(
         }
     }
 
-    // Request notification permission once on Android 13+ so update alerts appear reliably
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
-    // Check GitHub Releases automatically on launch when enabled
     LaunchedEffect(preferences.autoCheckUpdates) {
         updateViewModel.checkOnStartupIfEnabled(preferences.autoCheckUpdates)
     }
 
-    // Handle tapping an update notification
     LaunchedEffect(openUpdateDialogRequest) {
         if (openUpdateDialogRequest) {
             val current = updateState
@@ -191,7 +196,6 @@ fun VoxoraApp(
         }
     }
 
-    // Refresh library and re-check install/notification permissions on resume
     DisposableEffect(lifecycleOwner, updateState, pendingInstallAfterPermission) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
@@ -210,7 +214,6 @@ fun VoxoraApp(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Handle external ACTION_VIEW video intent
     LaunchedEffect(incomingVideoUri) {
         if (incomingVideoUri != null) {
             libraryViewModel.openSafVideo(incomingVideoUri) { video ->
@@ -229,6 +232,8 @@ fun VoxoraApp(
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
     val isPlayerRoute = currentDestination?.hasRoute<PlayerRoute>() == true
+    val isSubToolRoute = currentDestination?.hasRoute<PrivateVaultRoute>() == true ||
+        currentDestination?.hasRoute<StorageCleanerRoute>() == true
 
     val tabs = listOf(
         BottomNavTab("Home", Icons.Rounded.Home, Icons.Outlined.Home, HomeRoute, "nav_home"),
@@ -260,7 +265,7 @@ fun VoxoraApp(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = if (isPlayerRoute || isInPipMode) WindowInsets(0) else WindowInsets.statusBars,
         bottomBar = {
-            if (!isPlayerRoute && !isInPipMode) {
+            if (!isPlayerRoute && !isSubToolRoute && !isInPipMode) {
                 NavigationBar(
                     containerColor = voxoraColors.glassSurface,
                     tonalElevation = 0.dp
@@ -320,11 +325,24 @@ fun VoxoraApp(
             composable<HomeRoute> {
                 HomeScreen(
                     uiState = libraryState,
+                    playlists = playlists,
+                    allPlaylistItems = allPlaylistItems,
+                    libraryMessage = libraryMessage,
                     updateState = updateState,
                     onOpenUpdateDialog = updateViewModel::openUpdateDialog,
                     onPlayVideo = { video ->
                         navController.navigate(
                             PlayerRoute(video.uriString, video.title, -1L)
+                        )
+                    },
+                    onPlayStreamUrl = { url, title ->
+                        navController.navigate(
+                            PlayerRoute(url, title, 0L)
+                        )
+                    },
+                    onPlayPlaylistEntry = { entry ->
+                        navController.navigate(
+                            PlayerRoute(entry.videoUri, entry.title, -1L)
                         )
                     },
                     onResumeHistory = { history ->
@@ -337,6 +355,16 @@ fun VoxoraApp(
                             FolderDetailRoute(folder.bucketId, folder.name)
                         )
                     },
+                    onOpenVault = { navController.navigate(PrivateVaultRoute) },
+                    onOpenCleaner = { navController.navigate(StorageCleanerRoute) },
+                    onCreatePlaylist = libraryViewModel::createPlaylist,
+                    onDeletePlaylist = libraryViewModel::deletePlaylist,
+                    onAddToWatchLater = libraryViewModel::addToWatchLater,
+                    onAddToPlaylist = libraryViewModel::addToPlaylist,
+                    onRemoveFromPlaylist = libraryViewModel::removeFromPlaylist,
+                    onExtractAudio = libraryViewModel::extractAudioForVideo,
+                    onHideInVault = libraryViewModel::hideVideoInVault,
+                    onClearLibraryMessage = libraryViewModel::clearLibraryMessage,
                     onSeeAllVideos = { navigateToTopTab(VideosRoute) },
                     onSeeAllFolders = { navigateToTopTab(FoldersRoute) },
                     onSeeAllHistory = { navigateToTopTab(HistoryRoute) },
@@ -351,6 +379,8 @@ fun VoxoraApp(
             composable<VideosRoute> {
                 VideosScreen(
                     uiState = libraryState,
+                    playlists = playlists,
+                    libraryMessage = libraryMessage,
                     onSearchQueryChange = libraryViewModel::onSearchQueryChange,
                     onSortSelected = libraryViewModel::onSortOptionSelected,
                     onRefresh = libraryViewModel::refreshLibrary,
@@ -360,7 +390,12 @@ fun VoxoraApp(
                         navController.navigate(
                             PlayerRoute(video.uriString, video.title, -1L)
                         )
-                    }
+                    },
+                    onAddToWatchLater = libraryViewModel::addToWatchLater,
+                    onAddToPlaylist = libraryViewModel::addToPlaylist,
+                    onExtractAudio = libraryViewModel::extractAudioForVideo,
+                    onHideInVault = libraryViewModel::hideVideoInVault,
+                    onClearLibraryMessage = libraryViewModel::clearLibraryMessage
                 )
             }
 
@@ -421,7 +456,49 @@ fun VoxoraApp(
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                         }
-                    }
+                    },
+                    onOpenVault = { navController.navigate(PrivateVaultRoute) },
+                    onOpenCleaner = { navController.navigate(StorageCleanerRoute) }
+                )
+            }
+
+            composable<PrivateVaultRoute> {
+                PrivateVaultScreen(
+                    storedPinHash = preferences.vaultPinSha256,
+                    biometricEnabled = preferences.vaultBiometricEnabled,
+                    vaultVideos = vaultVideos,
+                    allLibraryVideos = libraryState.allVideos,
+                    message = libraryMessage,
+                    onSetPin = libraryViewModel::setVaultPin,
+                    onToggleBiometric = libraryViewModel::setVaultBiometricEnabled,
+                    onHideVideo = libraryViewModel::hideVideoInVault,
+                    onRestoreVideo = libraryViewModel::restoreVaultVideo,
+                    onDeleteVaultVideo = libraryViewModel::deleteVaultVideo,
+                    onPlayVaultVideo = { item ->
+                        val fileUri = Uri.fromFile(File(item.filePath)).toString()
+                        navController.navigate(
+                            PlayerRoute(fileUri, item.originalTitle, 0L)
+                        )
+                    },
+                    onClearMessage = libraryViewModel::clearLibraryMessage,
+                    onBack = { navController.popBackStack() }
+                )
+            }
+
+            composable<StorageCleanerRoute> {
+                StorageCleanerScreen(
+                    report = cleanerReport,
+                    message = libraryMessage,
+                    onScan = libraryViewModel::scanStorageCleaner,
+                    onDeleteLegacy = libraryViewModel::deleteCleanerVideosLegacy,
+                    onDeleteConfirmed = libraryViewModel::onCleanerDeleteConfirmed,
+                    onPlayVideo = { video ->
+                        navController.navigate(
+                            PlayerRoute(video.uriString, video.title, -1L)
+                        )
+                    },
+                    onClearMessage = libraryViewModel::clearLibraryMessage,
+                    onBack = { navController.popBackStack() }
                 )
             }
 

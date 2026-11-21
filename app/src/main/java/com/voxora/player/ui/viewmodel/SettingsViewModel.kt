@@ -9,6 +9,7 @@ import com.voxora.player.data.repository.MediaRepository
 import com.voxora.player.data.repository.PlaybackHistoryRepository
 import com.voxora.player.data.repository.SettingsRepository
 import com.voxora.player.model.AspectRatioMode
+import com.voxora.player.model.AudioEqPreset
 import com.voxora.player.model.BatterySaverEvaluation
 import com.voxora.player.model.BatterySaverMode
 import com.voxora.player.model.BatterySavingPolicy
@@ -174,6 +175,42 @@ class SettingsViewModel(
 
     fun setAutoCheckUpdates(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setAutoCheckUpdates(enabled) }
+    }
+
+    fun setDualSubtitlesEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setDualSubtitlesEnabled(enabled) }
+    }
+
+    fun setSecondarySubtitleLanguageCode(code: String) {
+        viewModelScope.launch { settingsRepository.setSecondarySubtitleLanguageCode(code) }
+    }
+
+    fun setSecondarySubtitleTextColor(color: SubtitleTextColor) {
+        viewModelScope.launch { settingsRepository.setSecondarySubtitleTextColor(color) }
+    }
+
+    fun setSecondarySubtitleFontSizeSp(sizeSp: Float) {
+        viewModelScope.launch { settingsRepository.setSecondarySubtitleFontSizeSp(sizeSp) }
+    }
+
+    fun setVolumeBoostPercent(percent: Int) {
+        viewModelScope.launch { settingsRepository.setVolumeBoostPercent(percent) }
+    }
+
+    fun setAudioEqPreset(preset: AudioEqPreset) {
+        viewModelScope.launch { settingsRepository.setAudioEqPreset(preset) }
+    }
+
+    fun setEyeCareEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setEyeCareEnabled(enabled) }
+    }
+
+    fun setVaultPinSha256(hash: String) {
+        viewModelScope.launch { settingsRepository.setVaultPinSha256(hash) }
+    }
+
+    fun setVaultBiometricEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setVaultBiometricEnabled(enabled) }
     }
 
     fun dismissBanner() {

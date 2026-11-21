@@ -27,4 +27,22 @@
     <string name="ai_dubbing_coming_soon_message">AI Audio Dubbing is coming soon in a future update</string>
     <string name="update_channel_name">App Updates</string>
     <string name="update_channel_description">Notifications when a new version of VOXORA is available to download and install</string>
+    <string name="bg_playback_channel_name">Background Audio Playback</string>
+    <string name="bg_playback_channel_description">Controls while playing video audio in the background</string>
+    <string name="cd_cast">Cast to TV</string>
+    <string name="cd_screenshot">Take video screenshot</string>
+    <string name="cd_background_play">Play audio in background</string>
+    <string name="cd_audio_fx">Audio equalizer and volume booster</string>
+    <string name="cd_display_settings">Display filters and eye care</string>
+    <string name="cd_bookmarks">Scene bookmarks</string>
+    <string name="cd_ab_loop">A-B segment loop</string>
+    <string name="cd_clip_cutter">Cut video clip</string>
+    <string name="cd_extract_audio">Extract audio track</string>
+    <string name="cd_kids_lock">Kids lock mode</string>
+    <string name="cd_step_prev_frame">Previous frame</string>
+    <string name="cd_step_next_frame">Next frame</string>
+    <string name="cd_stream_url">Play network stream URL</string>
+    <string name="cd_private_vault">Private vault folder</string>
+    <string name="cd_storage_cleaner">Duplicate and large file cleaner</string>
+    <string name="cd_more_options">More video options</string>
 </resources>

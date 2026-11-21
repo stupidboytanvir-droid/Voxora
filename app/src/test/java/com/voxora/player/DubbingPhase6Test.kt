@@ -26,9 +26,15 @@ import com.voxora.player.ai.subtitles.AutoSubtitleLanguageCatalog
 import com.voxora.player.ai.subtitles.AutoSubtitleManager
 import com.voxora.player.dubbing.whisper.WhisperModelCatalog
 import com.voxora.player.dubbing.whisper.WhisperNativeBridge
+import com.voxora.player.model.ABLoopState
+import com.voxora.player.model.AudioEqPreset
 import com.voxora.player.model.SleepTimerOption
 import com.voxora.player.model.SubtitleCue
 import com.voxora.player.model.SubtitleTextColor
+import com.voxora.player.model.UserPreferences
+import com.voxora.player.player.VoxoraPlayerEngine
+import com.voxora.player.util.PrivateVaultManager
+import com.voxora.player.util.SubtitleParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -398,8 +404,8 @@ class DubbingPhase6Test {
 
         // Exact frame-synced binary-search lookup & silence clearing
         val cues = listOf(
-            SubtitleCue(startMs = 1_000L, endMs = 3_200L, text = "Hello world"),
-            SubtitleCue(startMs = 4_500L, endMs = 6_000L, text = "Second line")
+            SubtitleCue(startTimeMs = 1_000L, endTimeMs = 3_200L, text = "Hello world"),
+            SubtitleCue(startTimeMs = 4_500L, endTimeMs = 6_000L, text = "Second line")
         )
         assertNull(AutoSubtitleManager.findExactCueForPosition(cues, 500L))
         assertEquals("Hello world", AutoSubtitleManager.findExactCueForPosition(cues, 2_000L))
@@ -416,5 +422,74 @@ class DubbingPhase6Test {
         assertEquals(6, SleepTimerOption.entries.size)
         assertEquals(15, SleepTimerOption.MIN_15.durationMinutes)
         assertEquals(60, SleepTimerOption.MIN_60.durationMinutes)
+    }
+
+    @Test
+    fun v240_flagshipUpgrade_vadTrimmingAutoOrientationDefaultFontSrtAndVault() {
+        // 1. Default subtitle font size is 15sp (clean, uncluttered)
+        assertEquals(15f, UserPreferences().subtitleFontSizeSp, 0.001f)
+
+        // 2. VAD speech-onset trimming eliminates premature subtitles during 5-second silence gaps
+        val sr = 16_000
+        val totalSeconds = 8
+        val pcm = FloatArray(sr * totalSeconds) { i ->
+            val timeMs = (i * 1000L) / sr
+            if (timeMs in 5_000L..6_800L) {
+                (0.25 * sin(2.0 * PI * 220.0 * i / sr)).toFloat()
+            } else {
+                0.0005f // quiet background floor
+            }
+        }
+        val trimmed = AutoSubtitleManager.trimSegmentWithVad(
+            chunkPcm = pcm,
+            chunkStartMs = 0L,
+            rawStartMs = 0L,
+            rawEndMs = 8_000L
+        )
+        assertNotNull("Expected voiced region to survive VAD trim", trimmed)
+        val (vadStartMs, vadEndMs) = trimmed!!
+        assertTrue("Expected VAD start near 5000ms (got $vadStartMs)", vadStartMs in 4_900L..5_100L)
+        assertTrue("Expected VAD end near 6800ms (got $vadEndMs)", vadEndMs in 6_750L..6_950L)
+
+        // Zero look-ahead during the 5-second silence gap
+        val syncedCues = listOf(SubtitleCue(startTimeMs = vadStartMs, endTimeMs = vadEndMs, text = "Hello now"))
+        assertNull(AutoSubtitleManager.findExactCueForPosition(syncedCues, 2_500L))
+        assertNull(AutoSubtitleManager.findExactCueForPosition(syncedCues, vadStartMs - 1L))
+        assertEquals("Hello now", AutoSubtitleManager.findExactCueForPosition(syncedCues, 5_500L))
+        assertNull(AutoSubtitleManager.findExactCueForPosition(syncedCues, vadEndMs + 1L))
+
+        // 3. Smart Auto-Orientation handles rotation metadata cleanly
+        assertEquals(1920 to 1080, VoxoraPlayerEngine.computeEffectiveVideoDimensions(1920, 1080, 0))
+        assertEquals(1080 to 1920, VoxoraPlayerEngine.computeEffectiveVideoDimensions(1920, 1080, 90))
+        assertEquals(1080 to 1920, VoxoraPlayerEngine.computeEffectiveVideoDimensions(1920, 1080, 270))
+        assertEquals(1920 to 1080, VoxoraPlayerEngine.computeEffectiveVideoDimensions(1920, 1080, 180))
+
+        // 4. SRT export and parser round-trip
+        val srtText = AutoSubtitleManager.formatAsSrt(
+            listOf(
+                SubtitleCue(startTimeMs = 1_250L, endTimeMs = 3_500L, text = "First line"),
+                SubtitleCue(startTimeMs = 65_000L, endTimeMs = 68_120L, text = "Second line")
+            )
+        )
+        val reparsed = SubtitleParser.parse(srtText, "movie.srt")
+        assertEquals(2, reparsed.size)
+        assertEquals(1_250L, reparsed[0].startTimeMs)
+        assertEquals(3_500L, reparsed[0].endTimeMs)
+        assertEquals("First line", reparsed[0].text)
+        assertEquals(65_000L, reparsed[1].startTimeMs)
+        assertEquals("Second line", reparsed[1].text)
+
+        // 5. Private Vault SHA-256 PIN hashing & verification
+        val pinHash = PrivateVaultManager.hashPin("2468")
+        assertEquals(64, pinHash.length)
+        assertTrue(PrivateVaultManager.verifyPin("2468", pinHash))
+        assertFalse(PrivateVaultManager.verifyPin("0000", pinHash))
+
+        // 6. Pro Audio EQ presets & A-B Loop validation
+        assertEquals(5, AudioEqPreset.entries.size)
+        assertTrue(AudioEqPreset.entries.all { it.bandOffsetsMb.size == 5 })
+        assertFalse(ABLoopState(pointAMs = 5_000L, pointBMs = null).isLooping)
+        assertFalse(ABLoopState(pointAMs = 5_000L, pointBMs = 3_000L).isLooping)
+        assertTrue(ABLoopState(pointAMs = 5_000L, pointBMs = 12_000L).isLooping)
     }
 }

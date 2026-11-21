@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.voxora.player.model.AspectRatioMode
+import com.voxora.player.model.AudioEqPreset
 import com.voxora.player.model.BatterySaverMode
 import com.voxora.player.model.SortOption
 import com.voxora.player.model.SubtitleTextColor
@@ -40,6 +41,15 @@ class SettingsRepository(private val context: Context) {
         val SUBTITLE_BG_OPACITY = floatPreferencesKey("subtitle_bg_opacity")
         val SUBTITLE_DEFAULT_SYNC_MS = longPreferencesKey("subtitle_default_sync_ms")
         val AUTO_SUBTITLE_TARGET_LANG = stringPreferencesKey("auto_subtitle_target_language_code")
+        val DUAL_SUBTITLES_ENABLED = booleanPreferencesKey("dual_subtitles_enabled")
+        val SECONDARY_SUBTITLE_LANG = stringPreferencesKey("secondary_subtitle_language_code")
+        val SECONDARY_SUBTITLE_COLOR = stringPreferencesKey("secondary_subtitle_text_color")
+        val SECONDARY_SUBTITLE_FONT_SP = floatPreferencesKey("secondary_subtitle_font_size_sp")
+        val VOLUME_BOOST_PERCENT = intPreferencesKey("volume_boost_percent")
+        val AUDIO_EQ_PRESET = stringPreferencesKey("audio_eq_preset")
+        val EYE_CARE_ENABLED = booleanPreferencesKey("eye_care_enabled")
+        val VAULT_PIN_SHA256 = stringPreferencesKey("vault_pin_sha256")
+        val VAULT_BIOMETRIC_ENABLED = booleanPreferencesKey("vault_biometric_enabled")
         val MIN_VIDEO_DURATION_SEC = intPreferencesKey("min_video_duration_sec")
         val SHOW_HIDDEN_FOLDERS = booleanPreferencesKey("show_hidden_folders")
         val SORT_OPTION = stringPreferencesKey("sort_option")
@@ -65,7 +75,7 @@ class SettingsRepository(private val context: Context) {
             brightnessGestureEnabled = prefs[Keys.BRIGHTNESS_GESTURE] ?: true,
             volumeGestureEnabled = prefs[Keys.VOLUME_GESTURE] ?: true,
             doubleTapSeekSeconds = prefs[Keys.DOUBLE_TAP_SEEK_SEC] ?: 10,
-            subtitleFontSizeSp = prefs[Keys.SUBTITLE_FONT_SIZE_SP] ?: 18f,
+            subtitleFontSizeSp = (prefs[Keys.SUBTITLE_FONT_SIZE_SP] ?: 15f).coerceIn(11f, 26f),
             subtitleBottomPaddingFraction = prefs[Keys.SUBTITLE_BOTTOM_PADDING] ?: 0.08f,
             subtitleVerticalPositionFraction = (prefs[Keys.SUBTITLE_VERTICAL_POSITION] ?: 0.88f).coerceIn(0.05f, 0.95f),
             subtitleTextColor = prefs[Keys.SUBTITLE_TEXT_COLOR]?.let { name ->
@@ -74,6 +84,19 @@ class SettingsRepository(private val context: Context) {
             subtitleBackgroundOpacity = prefs[Keys.SUBTITLE_BG_OPACITY] ?: 0.65f,
             subtitleDefaultSyncOffsetMs = prefs[Keys.SUBTITLE_DEFAULT_SYNC_MS] ?: 0L,
             autoSubtitleTargetLanguageCode = prefs[Keys.AUTO_SUBTITLE_TARGET_LANG] ?: "en",
+            dualSubtitlesEnabled = prefs[Keys.DUAL_SUBTITLES_ENABLED] ?: false,
+            secondarySubtitleLanguageCode = prefs[Keys.SECONDARY_SUBTITLE_LANG] ?: "bn",
+            secondarySubtitleTextColor = prefs[Keys.SECONDARY_SUBTITLE_COLOR]?.let { name ->
+                SubtitleTextColor.entries.firstOrNull { it.name == name }
+            } ?: SubtitleTextColor.YELLOW,
+            secondarySubtitleFontSizeSp = (prefs[Keys.SECONDARY_SUBTITLE_FONT_SP] ?: 14f).coerceIn(11f, 26f),
+            volumeBoostPercent = (prefs[Keys.VOLUME_BOOST_PERCENT] ?: 0).coerceIn(0, 200),
+            audioEqPreset = prefs[Keys.AUDIO_EQ_PRESET]?.let { name ->
+                AudioEqPreset.entries.firstOrNull { it.name == name }
+            } ?: AudioEqPreset.NORMAL,
+            eyeCareEnabled = prefs[Keys.EYE_CARE_ENABLED] ?: false,
+            vaultPinSha256 = prefs[Keys.VAULT_PIN_SHA256] ?: "",
+            vaultBiometricEnabled = prefs[Keys.VAULT_BIOMETRIC_ENABLED] ?: true,
             minVideoDurationSec = prefs[Keys.MIN_VIDEO_DURATION_SEC] ?: 0,
             showHiddenFolders = prefs[Keys.SHOW_HIDDEN_FOLDERS] ?: false,
             sortOption = prefs[Keys.SORT_OPTION]?.let { name ->
@@ -122,7 +145,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setSubtitleFontSizeSp(sizeSp: Float) {
-        context.voxoraDataStore.edit { it[Keys.SUBTITLE_FONT_SIZE_SP] = sizeSp.coerceIn(12f, 36f) }
+        context.voxoraDataStore.edit { it[Keys.SUBTITLE_FONT_SIZE_SP] = sizeSp.coerceIn(11f, 26f) }
     }
 
     suspend fun setSubtitleBottomPaddingFraction(fraction: Float) {
@@ -185,5 +208,41 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setAutoSubtitleTargetLanguageCode(code: String) {
         context.voxoraDataStore.edit { it[Keys.AUTO_SUBTITLE_TARGET_LANG] = code }
+    }
+
+    suspend fun setDualSubtitlesEnabled(enabled: Boolean) {
+        context.voxoraDataStore.edit { it[Keys.DUAL_SUBTITLES_ENABLED] = enabled }
+    }
+
+    suspend fun setSecondarySubtitleLanguageCode(code: String) {
+        context.voxoraDataStore.edit { it[Keys.SECONDARY_SUBTITLE_LANG] = code }
+    }
+
+    suspend fun setSecondarySubtitleTextColor(color: SubtitleTextColor) {
+        context.voxoraDataStore.edit { it[Keys.SECONDARY_SUBTITLE_COLOR] = color.name }
+    }
+
+    suspend fun setSecondarySubtitleFontSizeSp(sizeSp: Float) {
+        context.voxoraDataStore.edit { it[Keys.SECONDARY_SUBTITLE_FONT_SP] = sizeSp.coerceIn(11f, 26f) }
+    }
+
+    suspend fun setVolumeBoostPercent(percent: Int) {
+        context.voxoraDataStore.edit { it[Keys.VOLUME_BOOST_PERCENT] = percent.coerceIn(0, 200) }
+    }
+
+    suspend fun setAudioEqPreset(preset: AudioEqPreset) {
+        context.voxoraDataStore.edit { it[Keys.AUDIO_EQ_PRESET] = preset.name }
+    }
+
+    suspend fun setEyeCareEnabled(enabled: Boolean) {
+        context.voxoraDataStore.edit { it[Keys.EYE_CARE_ENABLED] = enabled }
+    }
+
+    suspend fun setVaultPinSha256(hash: String) {
+        context.voxoraDataStore.edit { it[Keys.VAULT_PIN_SHA256] = hash }
+    }
+
+    suspend fun setVaultBiometricEnabled(enabled: Boolean) {
+        context.voxoraDataStore.edit { it[Keys.VAULT_BIOMETRIC_ENABLED] = enabled }
     }
 }

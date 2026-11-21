@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.CleaningServices
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Lock
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PlayCircleOutline
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.TouchApp
@@ -95,6 +97,8 @@ fun SettingsScreen(
     onCheckForUpdates: () -> Unit = {},
     onOpenUpdateDialog: () -> Unit = {},
     onRequestNotificationPermission: () -> Unit = {},
+    onOpenVault: () -> Unit = {},
+    onOpenCleaner: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val voxoraColors = LocalVoxoraColors.current
@@ -474,9 +478,9 @@ fun SettingsScreen(
                         )
                     }
                     Slider(
-                        value = preferences.subtitleFontSizeSp,
+                        value = preferences.subtitleFontSizeSp.coerceIn(11f, 26f),
                         onValueChange = viewModel::setSubtitleFontSizeSp,
-                        valueRange = 12f..34f
+                        valueRange = 11f..26f
                     )
 
                     Row(
@@ -606,6 +610,40 @@ fun SettingsScreen(
                             Icon(Icons.Rounded.DeleteSweep, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("Clear History")
+                        }
+                    }
+                }
+            }
+
+            // Privacy & Storage Tools
+            item {
+                SettingsSectionCard(
+                    title = "Privacy & Storage Tools",
+                    icon = Icons.Rounded.Security
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onOpenVault,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("settings_open_vault_button")
+                        ) {
+                            Icon(Icons.Rounded.Security, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Private Vault")
+                        }
+                        OutlinedButton(
+                            onClick = onOpenCleaner,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("settings_open_cleaner_button")
+                        ) {
+                            Icon(Icons.Rounded.CleaningServices, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("File Cleaner")
                         }
                     }
                 }
@@ -763,7 +801,7 @@ fun SettingsScreen(
                                     tint = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = "VOXORA Media Player v${BuildConfig.VERSION_NAME} — Free Live Auto AI Subtitles (59+ languages, drag-to-reposition), Press & Hold 2x/3x Speed, Picture-in-Picture, Sleep Timer & Obsidian UI. AI Audio Dubbing coming soon.",
+                                    text = "VOXORA Media Player v${BuildConfig.VERSION_NAME} — VAD Speech-Synced Auto AI Subtitles, Dual Subtitles, .SRT Export, Dialogue Search, 200% Volume Booster + 5-Band EQ, Background Audio, Eye Care, 4x Pinch Zoom, Frame Step, Scene Bookmarks, Playlists, Private Vault, Cleaner & Kids Lock.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )

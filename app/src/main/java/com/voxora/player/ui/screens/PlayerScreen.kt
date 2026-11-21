@@ -2,8 +2,12 @@ package com.voxora.player.ui.screens
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.RenderEffect
 import android.media.AudioManager
 import android.os.Build
 import android.provider.Settings
@@ -16,6 +20,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,6 +52,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,7 +61,9 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -73,19 +82,27 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.compose.ContentFrame
-import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
+import androidx.media3.ui.compose.SURFACE_TYPE_TEXTURE_VIEW
 import com.voxora.player.R
 import com.voxora.player.model.AspectRatioMode
+import com.voxora.player.model.DisplayFilterSettings
+import com.voxora.player.ui.components.ABLoopSheet
 import com.voxora.player.ui.components.AspectRatioSheet
+import com.voxora.player.ui.components.AudioFxSheet
 import com.voxora.player.ui.components.AudioTrackSheet
 import com.voxora.player.ui.components.AutoSubtitleSettingsSheet
+import com.voxora.player.ui.components.BookmarksSheet
+import com.voxora.player.ui.components.ClipCutterSheet
+import com.voxora.player.ui.components.DisplaySettingsSheet
 import com.voxora.player.ui.components.DraggableSubtitleOverlay
 import com.voxora.player.ui.components.GestureHudOverlay
 import com.voxora.player.ui.components.GestureHudState
 import com.voxora.player.ui.components.HoldSpeedIndicatorPill
+import com.voxora.player.ui.components.KidsLockOverlay
 import com.voxora.player.ui.components.PlayerControlsOverlay
 import com.voxora.player.ui.components.SleepTimerSheet
 import com.voxora.player.ui.components.SpeedSelectorSheet
+import com.voxora.player.ui.components.UpNextOverlayCard
 import com.voxora.player.ui.theme.VoxoraCyan
 import com.voxora.player.ui.theme.VoxoraElectricPurple
 import com.voxora.player.ui.viewmodel.PlayerViewModel
@@ -97,6 +114,11 @@ private enum class ActiveSheet {
     NONE,
     SUBTITLES,
     AUDIO_TRACKS,
+    AUDIO_FX,
+    DISPLAY,
+    BOOKMARKS,
+    AB_LOOP,
+    CLIP_CUTTER,
     SPEED,
     ASPECT_RATIO,
     SLEEP_TIMER
@@ -126,6 +148,8 @@ fun PlayerScreen(
     val preferences by viewModel.preferences.collectAsStateWithLifecycle()
     val autoSubtitleState by viewModel.autoSubtitleState.collectAsStateWithLifecycle()
     val sleepTimerState by viewModel.sleepTimerState.collectAsStateWithLifecycle()
+    val upNextState by viewModel.upNextState.collectAsStateWithLifecycle()
+    val bookmarks by viewModel.bookmarks.collectAsStateWithLifecycle()
 
     val comingSoonMessage = stringResource(R.string.ai_dubbing_coming_soon_message)
     val latestIsInPip by rememberUpdatedState(isInPipMode)
@@ -135,6 +159,13 @@ fun PlayerScreen(
     var lastInteractionMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var activeSheet by remember { mutableStateOf(ActiveSheet.NONE) }
     var gestureHudState by remember { mutableStateOf<GestureHudState>(GestureHudState.Hidden) }
+
+    // Smart Auto-Orientation state (resets per video URI, respects manual Rotate button override)
+    var userManualOrientation by remember(uriString) { mutableStateOf(false) }
+
+    // Pinch-to-Zoom (1.0x to 4.0x) and Pan state
+    var zoomScale by remember(uriString) { mutableFloatStateOf(1f) }
+    var panOffset by remember(uriString) { mutableStateOf(Offset.Zero) }
 
     val subtitlePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -152,20 +183,31 @@ fun PlayerScreen(
         )
     }
 
-    // Handle auto-play next when video finishes
-    LaunchedEffect(playbackState.isEnded) {
-        if (playbackState.isEnded) {
-            val movedToNext = viewModel.playNextInLibraryIfEnabled()
-            if (!movedToNext) {
-                controlsVisible = true
+    // Smart Auto-Orientation: Landscape videos -> SENSOR_LANDSCAPE; Portrait/Square -> PORTRAIT
+    LaunchedEffect(
+        playbackState.effectiveVideoWidth,
+        playbackState.effectiveVideoHeight,
+        userManualOrientation,
+        isInPipMode
+    ) {
+        val act = activity ?: return@LaunchedEffect
+        if (userManualOrientation || isInPipMode) return@LaunchedEffect
+        val w = playbackState.effectiveVideoWidth
+        val h = playbackState.effectiveVideoHeight
+        if (w > 0 && h > 0) {
+            act.requestedOrientation = if (w > h) {
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            } else {
+                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             }
         }
     }
 
-    // Show user feedback toasts/snackbars (subtitle load, sleep timer, AI Dubbing Coming Soon)
+    // Show user feedback toasts/snackbars
     LaunchedEffect(uiState.feedbackMessage) {
         val msg = uiState.feedbackMessage
         if (msg != null) {
+            snackbarHostState.currentSnackbarData?.dismiss()
             snackbarHostState.showSnackbar(msg)
             viewModel.clearFeedbackMessage()
         }
@@ -184,7 +226,7 @@ fun PlayerScreen(
         }
     }
 
-    // Battery-safe WakeLock/Keep-Screen-On: ONLY active while video is actively playing!
+    // Battery-safe Keep-Screen-On: ONLY active while video is actively playing
     DisposableEffect(playbackState.isPlaying, activity) {
         val window = activity?.window
         if (window != null) {
@@ -199,12 +241,12 @@ fun PlayerScreen(
         }
     }
 
-    // Lifecycle pause/background handling: immediately cancels polling & AI coroutines when leaving
+    // Lifecycle pause/background handling (keeps playing in PiP or Background Audio Mode)
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_PAUSE) {
                 viewModel.onActivityBackgrounded(isInPipMode = latestIsInPip)
-            } else if (event == Lifecycle.Event.ON_STOP && !latestIsInPip) {
+            } else if (event == Lifecycle.Event.ON_STOP && !latestIsInPip && !viewModel.uiState.value.isBackgroundPlayActive) {
                 viewModel.pausePlayback()
             }
         }
@@ -235,11 +277,19 @@ fun PlayerScreen(
     }
 
     BackHandler {
-        if (activeSheet != ActiveSheet.NONE) {
-            activeSheet = ActiveSheet.NONE
-        } else {
-            viewModel.pausePlayback()
-            onBack()
+        when {
+            uiState.isKidsLockActive -> {
+                // Kids Lock blocks system back navigation until unlocked by holding 3s
+            }
+            activeSheet != ActiveSheet.NONE -> {
+                activeSheet = ActiveSheet.NONE
+            }
+            else -> {
+                if (!uiState.isBackgroundPlayActive) {
+                    viewModel.pausePlayback()
+                }
+                onBack()
+            }
         }
     }
 
@@ -254,6 +304,7 @@ fun PlayerScreen(
 
     fun toggleOrientation() {
         val act = activity ?: return
+        userManualOrientation = true
         val isCurrentlyLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         act.requestedOrientation = if (isCurrentlyLandscape) {
             ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -262,19 +313,35 @@ fun PlayerScreen(
         }
     }
 
+    fun openSystemCastSettings() {
+        runCatching {
+            val intent = Intent(Settings.ACTION_CAST_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+        }.onFailure {
+            viewModel.showFeedbackMessage("Wireless Cast / Screen Mirroring is not available on this device.")
+        }
+    }
+
+    val filters = uiState.displayFilters
+    val composeColorRenderEffect = remember(filters.contrast, filters.saturation, filters.brightnessOffset) {
+        buildVideoColorRenderEffect(filters)
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // Video Surface Area with Aspect Ratio Mode
+        // Video Surface Area with Aspect Ratio, Pinch-to-Zoom (up to 4x + pan), Mirror, 90° Rotation & GPU ColorMatrix
+        val baseAspectScale = if (uiState.aspectRatioMode == AspectRatioMode.ZOOM) 1.25f else 1f
+        val effectiveScale = (baseAspectScale * zoomScale).coerceIn(1f, 4f)
+        val mirrorMultiplier = if (filters.isMirrored) -1f else 1f
+
         val videoSurfaceModifier = when (uiState.aspectRatioMode) {
             AspectRatioMode.FIT,
             AspectRatioMode.FILL,
+            AspectRatioMode.ZOOM,
             AspectRatioMode.STRETCH -> Modifier.fillMaxSize()
-            AspectRatioMode.ZOOM -> Modifier
-                .fillMaxSize()
-                .graphicsLayer(scaleX = 1.25f, scaleY = 1.25f)
             AspectRatioMode.RATIO_16_9 -> Modifier
                 .align(Alignment.Center)
                 .fillMaxWidth()
@@ -283,6 +350,15 @@ fun PlayerScreen(
                 .align(Alignment.Center)
                 .fillMaxWidth()
                 .aspectRatio(4f / 3f)
+        }.graphicsLayer {
+            scaleX = effectiveScale * mirrorMultiplier
+            scaleY = effectiveScale
+            translationX = if (zoomScale > 1.01f) panOffset.x else 0f
+            translationY = if (zoomScale > 1.01f) panOffset.y else 0f
+            rotationZ = filters.manualRotationDegrees.toFloat()
+            if (composeColorRenderEffect != null) {
+                renderEffect = composeColorRenderEffect
+            }
         }
 
         val contentScale = when (uiState.aspectRatioMode) {
@@ -293,15 +369,40 @@ fun PlayerScreen(
             AspectRatioMode.STRETCH -> ContentScale.FillBounds
         }
 
+        // TextureView ensures smooth Compose graphicsLayer zoom, pan, mirror, 90° rotate & RenderEffect filters
         ContentFrame(
             player = viewModel.playerEngine.exoPlayer,
             modifier = videoSurfaceModifier,
-            surfaceType = SURFACE_TYPE_SURFACE_VIEW,
+            surfaceType = SURFACE_TYPE_TEXTURE_VIEW,
             contentScale = contentScale
         )
 
-        // Gesture Capture Layer: Tap, Double-Tap Seek, Press & Hold 2x/3x Speed (with slide up/down), Brightness, Volume, Seek
-        if (!isInPipMode) {
+        // Pre-API-31 Brightness fallback scrim (API 31+ uses full GPU ColorMatrix RenderEffect above)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && abs(filters.brightnessOffset) > 0.01f) {
+            val scrimColor = if (filters.brightnessOffset < 0f) {
+                Color.Black.copy(alpha = (-filters.brightnessOffset * 0.9f).coerceIn(0f, 0.7f))
+            } else {
+                Color.White.copy(alpha = (filters.brightnessOffset * 0.45f).coerceIn(0f, 0.35f))
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(scrimColor)
+            )
+        }
+
+        // Night Mode / Eye Care Warm Blue-Light Filter Overlay
+        if (filters.eyeCareEnabled) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x36FF9800))
+            )
+        }
+
+        // Gesture Capture Layer: Pinch-to-Zoom (up to 4x + pan), Tap, Double-Tap Seek,
+        // Press & Hold 2x/3x Speed (slide up/down), Brightness, Volume, Horizontal Seek
+        if (!isInPipMode && !uiState.isKidsLockActive) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -343,7 +444,7 @@ fun PlayerScreen(
 
                             val startX = down.position.x
                             val isLeftHalf = startX < size.width / 2f
-                            // 0=undecided, 1=horizontal seek, 2=vertical brightness/volume, 3=hold-to-speed (2x/3x)
+                            // 0=undecided, 1=horizontal seek, 2=vertical brightness/volume, 3=hold-to-speed (2x/3x), 4=pinch-zoom/pan
                             var dragMode = 0
                             var totalDx = 0f
                             var totalDy = 0f
@@ -376,7 +477,7 @@ fun PlayerScreen(
                                         awaitPointerEvent()
                                     }
 
-                                    // Long-press threshold reached without dragging -> Activate Hold-to-Speed (2x / 3x)!
+                                    // Long-press threshold reached without dragging -> Activate Hold-to-Speed (2x / 3x)
                                     if (event == null && dragMode == 0) {
                                         dragMode = 3
                                         holdActivated = true
@@ -386,8 +487,9 @@ fun PlayerScreen(
                                         continue
                                     }
 
-                                    val change = event?.changes?.firstOrNull() ?: break
-                                    if (!change.pressed) {
+                                    if (event == null) break
+                                    val pressedCount = event.changes.count { it.pressed }
+                                    if (pressedCount == 0) {
                                         if (dragMode == 1) {
                                             viewModel.seekTo(seekTargetMs)
                                         }
@@ -397,6 +499,49 @@ fun PlayerScreen(
                                         break
                                     }
 
+                                    // Multi-touch Pinch-to-Zoom (up to 4x) & Pan
+                                    if (pressedCount >= 2) {
+                                        if (holdActivated) {
+                                            viewModel.endHoldSpeed()
+                                            holdActivated = false
+                                        }
+                                        dragMode = 4
+                                        val zoomDelta = event.calculateZoom()
+                                        val panDelta = event.calculatePan()
+                                        val nextZoom = (zoomScale * zoomDelta).coerceIn(1f, 4f)
+                                        zoomScale = nextZoom
+                                        if (nextZoom <= 1.02f) {
+                                            zoomScale = 1f
+                                            panOffset = Offset.Zero
+                                        } else {
+                                            val maxX = size.width * (nextZoom - 1f) * 0.5f
+                                            val maxY = size.height * (nextZoom - 1f) * 0.5f
+                                            panOffset = Offset(
+                                                x = (panOffset.x + panDelta.x).coerceIn(-maxX, maxX),
+                                                y = (panOffset.y + panDelta.y).coerceIn(-maxY, maxY)
+                                            )
+                                        }
+                                        event.changes.forEach { it.consume() }
+                                        continue
+                                    }
+
+                                    if (dragMode == 4) {
+                                        // Single-finger pan while zoomed in
+                                        val change = event.changes.firstOrNull() ?: break
+                                        val delta = change.position - change.previousPosition
+                                        if (zoomScale > 1.02f) {
+                                            val maxX = size.width * (zoomScale - 1f) * 0.5f
+                                            val maxY = size.height * (zoomScale - 1f) * 0.5f
+                                            panOffset = Offset(
+                                                x = (panOffset.x + delta.x).coerceIn(-maxX, maxX),
+                                                y = (panOffset.y + delta.y).coerceIn(-maxY, maxY)
+                                            )
+                                            change.consume()
+                                        }
+                                        continue
+                                    }
+
+                                    val change = event.changes.firstOrNull() ?: break
                                     val delta = change.position - change.previousPosition
                                     totalDx += delta.x
                                     totalDy += delta.y
@@ -471,14 +616,17 @@ fun PlayerScreen(
             )
         }
 
-        // Draggable, Frame-Synced Subtitles Overlay (visible in both full & PiP mode)
+        // Draggable, Speech-Synced Dual Subtitles Overlay (15sp default, hidden in silence)
         DraggableSubtitleOverlay(
             subtitleText = uiState.activeSubtitleText,
-            fontSizeSp = if (isInPipMode) (preferences.subtitleFontSizeSp * 0.65f).coerceAtLeast(11f) else preferences.subtitleFontSizeSp,
+            secondarySubtitleText = uiState.activeSecondarySubtitleText,
+            fontSizeSp = if (isInPipMode) (preferences.subtitleFontSizeSp * 0.7f).coerceAtLeast(11f) else preferences.subtitleFontSizeSp,
+            secondaryFontSizeSp = if (isInPipMode) (preferences.secondarySubtitleFontSizeSp * 0.7f).coerceAtLeast(10f) else preferences.secondarySubtitleFontSizeSp,
             verticalPositionFraction = preferences.subtitleVerticalPositionFraction,
             textColor = preferences.subtitleTextColor,
+            secondaryTextColor = preferences.secondarySubtitleTextColor,
             backgroundOpacity = preferences.subtitleBackgroundOpacity,
-            isLocked = uiState.isLocked || isInPipMode,
+            isLocked = uiState.isLocked || uiState.isKidsLockActive || isInPipMode,
             onVerticalPositionChange = viewModel::setSubtitleVerticalPosition
         )
 
@@ -490,92 +638,153 @@ fun PlayerScreen(
             )
         }
 
-        // Hold-to-Speed Top Pill (⚡ 2.0x Speed >> / ⚡ 3.0x Speed >>)
         if (!isInPipMode) {
-            HoldSpeedIndicatorPill(
-                visible = uiState.isHoldSpeedActive,
-                speed = uiState.activeHoldSpeed
-            )
-
-            // Gesture Feedback HUD
-            GestureHudOverlay(state = gestureHudState)
-
-            // Controls Overlay
-            val autoBadge = if (autoSubtitleState.isEnabled) {
-                if (autoSubtitleState.isSetupRunning) {
-                    "AI ${autoSubtitleState.setupProgressPercent}%"
-                } else {
-                    "AI · ${autoSubtitleState.targetLanguageCode.uppercase()}"
-                }
+            if (uiState.isKidsLockActive) {
+                KidsLockOverlay(onUnlock = viewModel::unlockKidsLock)
             } else {
-                "CC AI"
-            }
+                // Hold-to-Speed Top Pill (2.0x / 3.0x Speed >>)
+                HoldSpeedIndicatorPill(
+                    visible = uiState.isHoldSpeedActive,
+                    speed = uiState.activeHoldSpeed
+                )
 
-            PlayerControlsOverlay(
-                visible = controlsVisible && uiState.fileMissingError == null && playbackState.errorMessage == null && !uiState.isHoldSpeedActive,
-                isLocked = uiState.isLocked,
-                title = uiState.videoTitle.ifBlank { videoTitle },
-                isPlaying = playbackState.isPlaying,
-                currentPositionMs = playbackState.currentPositionMs,
-                durationMs = playbackState.durationMs,
-                playbackSpeed = playbackState.playbackSpeed,
-                aspectRatioMode = uiState.aspectRatioMode,
-                isFullScreen = uiState.isFullScreen,
-                resumedFromMs = uiState.resumedFromPositionMs,
-                autoSubtitleActive = autoSubtitleState.isEnabled,
-                autoSubtitleBadgeText = autoBadge,
-                sleepTimerState = sleepTimerState,
-                canEnterPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O,
-                onBack = {
-                    viewModel.pausePlayback()
-                    onBack()
-                },
-                onToggleLock = {
-                    viewModel.toggleScreenLock()
-                    controlsVisible = true
-                    registerInteraction()
-                },
-                onRotateScreen = {
-                    toggleOrientation()
-                    registerInteraction()
-                },
-                onToggleFullScreen = {
-                    viewModel.toggleFullScreen()
-                    registerInteraction()
-                },
-                onTogglePlayPause = {
-                    viewModel.togglePlayPause()
-                    registerInteraction()
-                },
-                onSeekTo = { target ->
-                    viewModel.seekTo(target)
-                    registerInteraction()
-                },
-                onRewind = {
-                    viewModel.seekBySeconds(-10)
-                    registerInteraction()
-                },
-                onForward = {
-                    viewModel.seekBySeconds(10)
-                    registerInteraction()
-                },
-                onOpenSpeed = { activeSheet = ActiveSheet.SPEED },
-                onOpenSubtitles = { activeSheet = ActiveSheet.SUBTITLES },
-                onOpenAudioTracks = { activeSheet = ActiveSheet.AUDIO_TRACKS },
-                onOpenAspectRatio = { activeSheet = ActiveSheet.ASPECT_RATIO },
-                onOpenSleepTimer = { activeSheet = ActiveSheet.SLEEP_TIMER },
-                onEnterPip = {
-                    controlsVisible = false
-                    activeSheet = ActiveSheet.NONE
-                    onEnterPipMode(playbackState.videoWidth, playbackState.videoHeight)
-                },
-                onTapAiDubbingComingSoon = {
-                    viewModel.showFeedbackMessage(comingSoonMessage)
-                },
-                onStartFromBeginning = { viewModel.startFromBeginning() },
-                onDismissResumeBanner = { viewModel.dismissResumeBanner() },
-                onUserInteraction = { registerInteraction() }
-            )
+                // Gesture Feedback HUD
+                GestureHudOverlay(state = gestureHudState)
+
+                // Controls Overlay
+                val autoBadge = if (autoSubtitleState.isEnabled) {
+                    if (autoSubtitleState.isSetupRunning) {
+                        "AI ${autoSubtitleState.setupProgressPercent}%"
+                    } else if (autoSubtitleState.dualSubtitlesEnabled) {
+                        "AI · ${autoSubtitleState.targetLanguageCode.uppercase()}+${autoSubtitleState.secondaryLanguageCode.uppercase()}"
+                    } else {
+                        "AI · ${autoSubtitleState.targetLanguageCode.uppercase()}"
+                    }
+                } else {
+                    "CC AI"
+                }
+
+                PlayerControlsOverlay(
+                    visible = controlsVisible && uiState.fileMissingError == null && playbackState.errorMessage == null && !uiState.isHoldSpeedActive,
+                    isLocked = uiState.isLocked,
+                    title = uiState.videoTitle.ifBlank { videoTitle },
+                    isPlaying = playbackState.isPlaying,
+                    currentPositionMs = playbackState.currentPositionMs,
+                    durationMs = playbackState.durationMs,
+                    playbackSpeed = playbackState.playbackSpeed,
+                    aspectRatioMode = uiState.aspectRatioMode,
+                    isFullScreen = uiState.isFullScreen,
+                    isBackgroundPlayActive = uiState.isBackgroundPlayActive,
+                    volumeBoostPercent = preferences.volumeBoostPercent,
+                    eqPreset = preferences.audioEqPreset,
+                    eyeCareEnabled = uiState.displayFilters.eyeCareEnabled,
+                    abLoop = uiState.abLoop,
+                    bookmarks = bookmarks,
+                    zoomScale = zoomScale,
+                    isExtractingAudio = uiState.isExtractingAudio,
+                    resumedFromMs = uiState.resumedFromPositionMs,
+                    autoSubtitleActive = autoSubtitleState.isEnabled,
+                    autoSubtitleBadgeText = autoBadge,
+                    sleepTimerState = sleepTimerState,
+                    canEnterPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O,
+                    onBack = {
+                        if (!uiState.isBackgroundPlayActive) {
+                            viewModel.pausePlayback()
+                        }
+                        onBack()
+                    },
+                    onToggleLock = {
+                        viewModel.toggleScreenLock()
+                        controlsVisible = true
+                        registerInteraction()
+                    },
+                    onEnableKidsLock = {
+                        controlsVisible = false
+                        activeSheet = ActiveSheet.NONE
+                        viewModel.enableKidsLock()
+                    },
+                    onRotateScreen = {
+                        toggleOrientation()
+                        registerInteraction()
+                    },
+                    onToggleFullScreen = {
+                        viewModel.toggleFullScreen()
+                        registerInteraction()
+                    },
+                    onToggleBackgroundPlay = {
+                        viewModel.toggleBackgroundAudioMode()
+                        registerInteraction()
+                    },
+                    onCaptureScreenshot = {
+                        viewModel.captureScreenshot()
+                        registerInteraction()
+                    },
+                    onOpenCast = {
+                        openSystemCastSettings()
+                        registerInteraction()
+                    },
+                    onTogglePlayPause = {
+                        viewModel.togglePlayPause()
+                        registerInteraction()
+                    },
+                    onSeekTo = { target ->
+                        viewModel.seekTo(target)
+                        registerInteraction()
+                    },
+                    onRewind = {
+                        viewModel.seekBySeconds(-10)
+                        registerInteraction()
+                    },
+                    onForward = {
+                        viewModel.seekBySeconds(10)
+                        registerInteraction()
+                    },
+                    onStepPrevFrame = {
+                        viewModel.stepFrameBackward()
+                        registerInteraction()
+                    },
+                    onStepNextFrame = {
+                        viewModel.stepFrameForward()
+                        registerInteraction()
+                    },
+                    onOpenSpeed = { activeSheet = ActiveSheet.SPEED },
+                    onOpenSubtitles = { activeSheet = ActiveSheet.SUBTITLES },
+                    onOpenAudioTracks = { activeSheet = ActiveSheet.AUDIO_TRACKS },
+                    onOpenAudioFx = { activeSheet = ActiveSheet.AUDIO_FX },
+                    onOpenDisplaySettings = { activeSheet = ActiveSheet.DISPLAY },
+                    onOpenBookmarks = { activeSheet = ActiveSheet.BOOKMARKS },
+                    onOpenABLoop = { activeSheet = ActiveSheet.AB_LOOP },
+                    onOpenClipCutter = { activeSheet = ActiveSheet.CLIP_CUTTER },
+                    onExtractAudio = { viewModel.extractAudioToMusic() },
+                    onOpenAspectRatio = { activeSheet = ActiveSheet.ASPECT_RATIO },
+                    onOpenSleepTimer = { activeSheet = ActiveSheet.SLEEP_TIMER },
+                    onEnterPip = {
+                        controlsVisible = false
+                        activeSheet = ActiveSheet.NONE
+                        onEnterPipMode(
+                            playbackState.effectiveVideoWidth.takeIf { it > 0 } ?: playbackState.videoWidth,
+                            playbackState.effectiveVideoHeight.takeIf { it > 0 } ?: playbackState.videoHeight
+                        )
+                    },
+                    onResetZoom = {
+                        zoomScale = 1f
+                        panOffset = Offset.Zero
+                    },
+                    onTapAiDubbingComingSoon = {
+                        viewModel.showFeedbackMessage(comingSoonMessage)
+                    },
+                    onStartFromBeginning = { viewModel.startFromBeginning() },
+                    onDismissResumeBanner = { viewModel.dismissResumeBanner() },
+                    onUserInteraction = { registerInteraction() }
+                )
+
+                // 5-Second Cancelable "Up Next" Card
+                UpNextOverlayCard(
+                    upNextState = upNextState,
+                    onPlayNow = viewModel::playUpNextNow,
+                    onCancel = viewModel::cancelUpNext
+                )
+            }
         }
 
         // Graceful Error State
@@ -628,7 +837,7 @@ fun PlayerScreen(
         }
 
         // Modal Sheets
-        if (!isInPipMode) {
+        if (!isInPipMode && !uiState.isKidsLockActive) {
             when (activeSheet) {
                 ActiveSheet.SUBTITLES -> {
                     AutoSubtitleSettingsSheet(
@@ -637,10 +846,20 @@ fun PlayerScreen(
                         fontSizeSp = preferences.subtitleFontSizeSp,
                         verticalPositionFraction = preferences.subtitleVerticalPositionFraction,
                         textColor = preferences.subtitleTextColor,
+                        secondaryTextColor = preferences.secondarySubtitleTextColor,
+                        secondaryFontSizeSp = preferences.secondarySubtitleFontSizeSp,
                         backgroundOpacity = preferences.subtitleBackgroundOpacity,
                         syncOffsetMs = playbackState.subtitleSyncOffsetMs,
+                        isExportingSrt = uiState.isExportingSrt,
                         onToggleAutoSubtitles = viewModel::toggleAutoSubtitles,
                         onSelectAutoTargetLanguage = viewModel::setAutoSubtitleTargetLanguage,
+                        onToggleDualSubtitles = viewModel::setDualSubtitlesEnabled,
+                        onSelectSecondaryLanguage = viewModel::setSecondarySubtitleLanguage,
+                        onSecondaryTextColorChange = viewModel::setSecondarySubtitleTextColor,
+                        onSecondaryFontSizeChange = viewModel::setSecondarySubtitleFontSize,
+                        onExportSrt = viewModel::exportAutoSubtitlesToSrt,
+                        onSearchDialogue = viewModel::searchSubtitleDialogue,
+                        onJumpToTimestamp = viewModel::seekTo,
                         onSelectTrack = viewModel::selectSubtitleTrack,
                         onDisableSubtitles = viewModel::disableSubtitles,
                         onPickExternalSubtitle = {
@@ -666,6 +885,59 @@ fun PlayerScreen(
                     AudioTrackSheet(
                         tracks = playbackState.audioTracks,
                         onSelectTrack = viewModel::selectAudioTrack,
+                        onDismiss = { activeSheet = ActiveSheet.NONE }
+                    )
+                }
+                ActiveSheet.AUDIO_FX -> {
+                    AudioFxSheet(
+                        volumeBoostPercent = preferences.volumeBoostPercent,
+                        selectedPreset = preferences.audioEqPreset,
+                        onVolumeBoostChange = viewModel::setVolumeBoostPercent,
+                        onSelectPreset = viewModel::setAudioEqPreset,
+                        onDismiss = { activeSheet = ActiveSheet.NONE }
+                    )
+                }
+                ActiveSheet.DISPLAY -> {
+                    DisplaySettingsSheet(
+                        filters = uiState.displayFilters,
+                        onEyeCareToggle = viewModel::setEyeCareEnabled,
+                        onBrightnessChange = viewModel::setVideoBrightnessOffset,
+                        onContrastChange = viewModel::setVideoContrast,
+                        onSaturationChange = viewModel::setVideoSaturation,
+                        onToggleMirror = viewModel::toggleVideoMirror,
+                        onRotate90 = viewModel::rotateVideo90,
+                        onReset = viewModel::resetDisplayFilters,
+                        onDismiss = { activeSheet = ActiveSheet.NONE }
+                    )
+                }
+                ActiveSheet.BOOKMARKS -> {
+                    BookmarksSheet(
+                        currentPositionMs = playbackState.currentPositionMs,
+                        bookmarks = bookmarks,
+                        onAddBookmark = viewModel::addSceneBookmark,
+                        onJumpToBookmark = viewModel::seekTo,
+                        onDeleteBookmark = viewModel::deleteSceneBookmark,
+                        onDismiss = { activeSheet = ActiveSheet.NONE }
+                    )
+                }
+                ActiveSheet.AB_LOOP -> {
+                    ABLoopSheet(
+                        currentPositionMs = playbackState.currentPositionMs,
+                        abLoop = uiState.abLoop,
+                        onSetA = viewModel::setLoopPointA,
+                        onSetB = viewModel::setLoopPointB,
+                        onClear = viewModel::clearABLoop,
+                        onDismiss = { activeSheet = ActiveSheet.NONE }
+                    )
+                }
+                ActiveSheet.CLIP_CUTTER -> {
+                    ClipCutterSheet(
+                        currentPositionMs = playbackState.currentPositionMs,
+                        durationMs = playbackState.durationMs,
+                        isCutting = uiState.isClipCutting,
+                        onCutAndSave = { startMs, endMs ->
+                            viewModel.cutAndSaveClip(startMs, endMs)
+                        },
                         onDismiss = { activeSheet = ActiveSheet.NONE }
                     )
                 }
@@ -703,4 +975,33 @@ fun PlayerScreen(
             )
         }
     }
+}
+
+private fun buildVideoColorRenderEffect(
+    filters: DisplayFilterSettings
+): androidx.compose.ui.graphics.RenderEffect? {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+    val hasAdjustment = abs(filters.brightnessOffset) > 0.01f ||
+        abs(filters.contrast - 1.0f) > 0.01f ||
+        abs(filters.saturation - 1.0f) > 0.01f
+    if (!hasAdjustment) return null
+
+    val satMatrix = ColorMatrix().apply { setSaturation(filters.saturation.coerceIn(0f, 2f)) }
+    val c = filters.contrast.coerceIn(0.5f, 1.8f)
+    val t = (-0.5f * c + 0.5f) * 255f + (filters.brightnessOffset.coerceIn(-0.5f, 0.5f) * 255f)
+    val contrastBrightnessMatrix = ColorMatrix(
+        floatArrayOf(
+            c, 0f, 0f, 0f, t,
+            0f, c, 0f, 0f, t,
+            0f, 0f, c, 0f, t,
+            0f, 0f, 0f, 1f, 0f
+        )
+    )
+    val combined = ColorMatrix()
+    combined.postConcat(satMatrix)
+    combined.postConcat(contrastBrightnessMatrix)
+
+    return runCatching {
+        RenderEffect.createColorFilterEffect(ColorMatrixColorFilter(combined)).asComposeRenderEffect()
+    }.getOrNull()
 }
